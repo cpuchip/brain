@@ -12,6 +12,7 @@ import (
 	"github.com/cpuchip/brain/internal/classifier"
 	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/discord"
+	"github.com/cpuchip/brain/internal/relay"
 	"github.com/cpuchip/brain/internal/store"
 )
 
@@ -42,6 +43,8 @@ func run() error {
 		log.Printf("  Preset: %s", cfg.AIModelPreset)
 	}
 	log.Printf("  Confidence threshold: %.0f%%", cfg.ConfidenceThreshold*100)
+	log.Printf("  Relay: %v", cfg.RelayEnabled)
+	log.Printf("  Discord: %v", cfg.DiscordEnabled)
 
 	// Initialize git manager
 	git := store.NewGit(
@@ -64,7 +67,9 @@ func run() error {
 	// Initialize AI client (Copilot SDK)
 	aiClient := ai.NewClient(cfg.AIModel, cfg.GitHubToken)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	log.Printf("Starting Copilot SDK...")
 	if err := aiClient.Start(ctx); err != nil {
 		return fmt.Errorf("starting AI client: %w", err)
@@ -77,36 +82,49 @@ func run() error {
 	// Initialize store
 	st := store.New(cfg.BrainDataDir, git)
 
-	// Initialize Discord bot
-	bot, err := discord.NewBot(
-		cfg.DiscordToken,
-		classify,
-		st,
-		cfg.RateLimits.MaxNotificationsPerDay,
-	)
-	if err != nil {
-		return fmt.Errorf("creating Discord bot: %w", err)
+	// Start relay transport (WebSocket to ibeco.me)
+	var relayClient *relay.Client
+	if cfg.RelayEnabled {
+		relayClient = relay.NewClient(cfg.RelayURL, cfg.RelayToken, classify, st)
+		go relayClient.Run(ctx)
+		log.Printf("Relay transport started → %s", cfg.RelayURL)
 	}
 
-	// Set owner if configured
-	if ownerID := os.Getenv("DISCORD_OWNER_ID"); ownerID != "" {
-		bot.SetOwner(ownerID)
-		log.Printf("  Owner: %s", ownerID)
-	} else {
-		log.Printf("  Owner: (will be set on first DM)")
+	// Start Discord transport (optional)
+	var bot *discord.Bot
+	if cfg.DiscordEnabled && cfg.DiscordToken != "" {
+		var err error
+		bot, err = discord.NewBot(
+			cfg.DiscordToken,
+			classify,
+			st,
+			cfg.RateLimits.MaxNotificationsPerDay,
+		)
+		if err != nil {
+			return fmt.Errorf("creating Discord bot: %w", err)
+		}
+
+		if ownerID := os.Getenv("DISCORD_OWNER_ID"); ownerID != "" {
+			bot.SetOwner(ownerID)
+			log.Printf("  Discord owner: %s", ownerID)
+		}
+
+		bot.SetAIClient(aiClient, cfg.AIModelPreset)
+
+		if err := bot.Start(); err != nil {
+			return fmt.Errorf("starting Discord bot: %w", err)
+		}
+		defer bot.Stop()
+		log.Printf("Discord transport started")
 	}
 
-	// Give bot access to AI client for model switching
-	bot.SetAIClient(aiClient, cfg.AIModelPreset)
-
-	// Start Discord bot
-	if err := bot.Start(); err != nil {
-		return fmt.Errorf("starting Discord bot: %w", err)
+	log.Printf("Brain is running.")
+	if cfg.RelayEnabled {
+		log.Printf("  Relay: connected to %s", cfg.RelayURL)
 	}
-	defer bot.Stop()
-
-	log.Printf("Brain is running. Send me a DM on Discord!")
-	log.Printf("Commands: 'status', 'fix: <category>', 'model', 'model: <name>', 'stop'")
+	if cfg.DiscordEnabled {
+		log.Printf("  Discord: listening for DMs")
+	}
 
 	// Wait for interrupt
 	sig := make(chan os.Signal, 1)
@@ -114,6 +132,11 @@ func run() error {
 	<-sig
 
 	log.Printf("Shutting down...")
+	cancel() // Signal relay client to stop
+
+	if relayClient != nil {
+		relayClient.Stop()
+	}
 
 	// Push any uncommitted changes before exit
 	log.Printf("Pushing to origin...")

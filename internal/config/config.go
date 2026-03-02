@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,7 +37,13 @@ type Config struct {
 	AIModel       string // Current Copilot model ID (e.g. "gpt-5-mini")
 	AIModelPreset string // Current preset name (e.g. "gpt-mini")
 
+	// Relay (ibeco.me WebSocket)
+	RelayEnabled bool   // Enable relay transport
+	RelayURL     string // WebSocket endpoint (e.g. "wss://ibeco.me/ws/brain")
+	RelayToken   string // Bearer token (bec_...)
+
 	// Discord
+	DiscordEnabled   bool   // Enable Discord transport
 	DiscordToken     string // Discord bot token
 	DiscordChannelID string // Optional: restrict to specific channel
 
@@ -95,10 +102,17 @@ type CategoryConfig struct {
 }
 
 // Load reads config from environment variables and the brain data config file.
+// It loads .env from the current directory if present.
 func Load() (*Config, error) {
+	// Load .env file (silently ignore if missing)
+	_ = godotenv.Load()
+
 	cfg := &Config{
 		AIModel:             AvailableModels["gpt-mini"].ID,
 		AIModelPreset:       "gpt-mini",
+		RelayEnabled:        true,  // Relay on by default
+		RelayURL:            "wss://ibeco.me/ws/brain",
+		DiscordEnabled:      false, // Discord off by default
 		ConfidenceThreshold: 0.6,
 		RateLimits: RateLimitConfig{
 			MaxAPICallsPerHour:     60,
@@ -111,6 +125,20 @@ func Load() (*Config, error) {
 	cfg.GitHubToken = os.Getenv("GITHUB_TOKEN")
 	cfg.DiscordToken = os.Getenv("DISCORD_TOKEN")
 	cfg.DiscordChannelID = os.Getenv("DISCORD_CHANNEL_ID")
+
+	// Relay config
+	cfg.RelayToken = os.Getenv("RELAY_TOKEN")
+	if v := os.Getenv("RELAY_URL"); v != "" {
+		cfg.RelayURL = v
+	}
+	if v := os.Getenv("RELAY_ENABLED"); v != "" {
+		cfg.RelayEnabled = v == "true" || v == "1"
+	}
+
+	// Discord config
+	if v := os.Getenv("DISCORD_ENABLED"); v != "" {
+		cfg.DiscordEnabled = v == "true" || v == "1"
+	}
 
 	// Optional env vars with defaults
 	if v := os.Getenv("AI_MODEL"); v != "" {
@@ -150,9 +178,15 @@ func Load() (*Config, error) {
 
 // Validate checks that required configuration is present.
 func (c *Config) Validate() error {
-	// GITHUB_TOKEN is optional — Copilot SDK can use logged-in user
-	if c.DiscordToken == "" {
-		return fmt.Errorf("DISCORD_TOKEN is required")
+	// At least one transport must be enabled
+	if !c.RelayEnabled && !c.DiscordEnabled {
+		return fmt.Errorf("at least one transport must be enabled (RELAY_ENABLED or DISCORD_ENABLED)")
+	}
+	if c.RelayEnabled && c.RelayToken == "" {
+		return fmt.Errorf("RELAY_TOKEN is required when relay is enabled")
+	}
+	if c.DiscordEnabled && c.DiscordToken == "" {
+		return fmt.Errorf("DISCORD_TOKEN is required when Discord is enabled")
 	}
 	if c.BrainDataDir == "" {
 		return fmt.Errorf("brain data directory not configured")
