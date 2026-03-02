@@ -107,7 +107,8 @@ func (c *Client) Complete(ctx context.Context, messages []ChatMessage, temperatu
 
 	// Create a session for this request
 	sessionCfg := &copilot.SessionConfig{
-		Model: model,
+		Model:               model,
+		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 	}
 	if systemMsg != "" {
 		sessionCfg.SystemMessage = &copilot.SystemMessageConfig{
