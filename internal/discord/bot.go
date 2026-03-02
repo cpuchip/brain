@@ -4,26 +4,31 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/cpuchip/brain/internal/ai"
 	"github.com/cpuchip/brain/internal/classifier"
+	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/store"
 )
 
 // Bot is the Discord bot that captures thoughts via DM.
 type Bot struct {
-	session    *discordgo.Session
-	classify   *classifier.Classifier
-	store      *store.Store
-	ownerID    string // Only respond to DMs from this user
-	mu         sync.Mutex
-	lastPaths  map[string]string // messageID -> file relPath (for fix command)
-	notifCount int
-	maxNotifs  int
-	lastReset  int
+	session      *discordgo.Session
+	classify     *classifier.Classifier
+	store        *store.Store
+	aiClient     *ai.Client
+	currentModel string // Preset name (e.g. "gpt-mini") or empty for custom
+	ownerID      string // Only respond to DMs from this user
+	mu           sync.Mutex
+	lastPaths    map[string]string // messageID -> file relPath (for fix command)
+	notifCount   int
+	maxNotifs    int
+	lastReset    int
 }
 
 // NewBot creates a new Discord bot.
@@ -46,6 +51,12 @@ func NewBot(token string, classify *classifier.Classifier, st *store.Store, maxN
 	session.AddHandler(bot.onMessage)
 
 	return bot, nil
+}
+
+// SetAIClient gives the bot access to the AI client for model switching.
+func (b *Bot) SetAIClient(client *ai.Client, presetName string) {
+	b.aiClient = client
+	b.currentModel = presetName
 }
 
 // Start opens the Discord connection.
@@ -135,6 +146,11 @@ func (b *Bot) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	// Handle commands
+	if strings.HasPrefix(strings.ToLower(rawText), "model:") || strings.ToLower(rawText) == "model" {
+		b.handleModel(s, m, rawText)
+		return
+	}
+
 	if strings.HasPrefix(strings.ToLower(rawText), "fix:") {
 		b.handleFix(s, m, rawText)
 		return
@@ -260,6 +276,9 @@ func (b *Bot) handleFix(s *discordgo.Session, m *discordgo.MessageCreate, rawTex
 func (b *Bot) handleStatus(s *discordgo.Session, m *discordgo.MessageCreate) {
 	var sb strings.Builder
 	sb.WriteString("**Brain Status**\n")
+	if b.aiClient != nil {
+		sb.WriteString(fmt.Sprintf("Model: **%s** (`%s`)\n", b.currentModel, b.aiClient.Model()))
+	}
 	sb.WriteString(fmt.Sprintf("Confidence threshold: %.0f%%\n", b.classify.Threshold()*100))
 
 	// Count entries per category
@@ -282,4 +301,63 @@ func (b *Bot) checkNotifLimit() error {
 		return fmt.Errorf("daily notification limit reached (%d/%d)", b.notifCount, b.maxNotifs)
 	}
 	return nil
+}
+
+// handleModel switches AI model or lists available presets.
+func (b *Bot) handleModel(s *discordgo.Session, m *discordgo.MessageCreate, rawText string) {
+	if b.aiClient == nil {
+		s.ChannelMessageSend(m.ChannelID, "AI client not available for model switching.")
+		return
+	}
+
+	// "model" with no colon — list available models
+	if strings.ToLower(strings.TrimSpace(rawText)) == "model" {
+		var sb strings.Builder
+		sb.WriteString("**Available Models**\n")
+		sb.WriteString(fmt.Sprintf("Current: **%s** (`%s`)\n\n", b.currentModel, b.aiClient.Model()))
+
+		// Sort preset names for consistent output
+		names := make([]string, 0, len(config.AvailableModels))
+		for name := range config.AvailableModels {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		for _, name := range names {
+			preset := config.AvailableModels[name]
+			marker := "  "
+			if name == b.currentModel {
+				marker = "▸ "
+			}
+			sb.WriteString(fmt.Sprintf("%s**%s** — %s (%s premium)\n", marker, name, preset.DisplayName, preset.PremiumRate))
+		}
+		sb.WriteString("\nSwitch: `model: <name>`")
+		s.ChannelMessageSend(m.ChannelID, sb.String())
+		return
+	}
+
+	// "model: <preset>" — switch model
+	parts := strings.SplitN(rawText, ":", 2)
+	if len(parts) != 2 {
+		s.ChannelMessageSend(m.ChannelID, "Usage: `model: <name>` or just `model` to list options")
+		return
+	}
+
+	presetName := strings.TrimSpace(strings.ToLower(parts[1]))
+	preset, ok := config.AvailableModels[presetName]
+	if !ok {
+		names := make([]string, 0, len(config.AvailableModels))
+		for name := range config.AvailableModels {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Unknown model: %s\nAvailable: %s", presetName, strings.Join(names, ", ")))
+		return
+	}
+
+	b.aiClient.SetModel(preset.ID)
+	b.currentModel = presetName
+
+	s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Switched to **%s** — %s (%s premium)", presetName, preset.DisplayName, preset.PremiumRate))
+	log.Printf("Model switched to %s (%s)", presetName, preset.ID)
 }

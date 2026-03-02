@@ -1,14 +1,14 @@
 # Brain
 
-A personal second brain agent written in Go. Captures thoughts via Discord DM, classifies them using AI (GitHub Models API), and stores them as markdown files with YAML front matter in a private Git repository.
+A personal second brain agent written in Go. Captures thoughts via Discord DM, classifies them using AI (GitHub Copilot SDK), and stores them as markdown files with YAML front matter in a private Git repository.
 
 ## Architecture
 
 ```
 [Discord DM] → [Go Brain Binary] → [Private Git Repo]
                      ↑                 (markdown/YAML)
-               [GitHub Models API]
-               (classification AI)
+               [Copilot SDK]
+            (Copilot CLI server)
 ```
 
 ### Building Blocks (from Nate B Jones)
@@ -16,7 +16,7 @@ A personal second brain agent written in Go. Captures thoughts via Discord DM, c
 | Block | Implementation |
 |-------|---------------|
 | **Dropbox** (capture) | Discord DM to the bot |
-| **Sorter** (classifier) | GitHub Models API → structured JSON |
+| **Sorter** (classifier) | Copilot SDK → structured JSON |
 | **Form** (schema) | YAML front matter with category-specific fields |
 | **Filing Cabinet** (storage) | Private GitHub repo with markdown files |
 | **Receipt** (audit trail) | `.brain/audit-log/` YAML files |
@@ -40,9 +40,10 @@ A personal second brain agent written in Go. Captures thoughts via Discord DM, c
 ### Prerequisites
 
 1. Go 1.21+
-2. A GitHub PAT with `models` scope ([create one](https://github.com/settings/tokens))
-3. A Discord bot token ([create one](https://discord.com/developers/applications))
-4. The [private-brain](https://github.com/cpuchip/private-brain) repo cloned locally
+2. GitHub Copilot CLI installed and authenticated (`copilot --version`)
+3. A GitHub Copilot subscription (Free tier works — GPT-5 Mini is 0x premium)
+4. A Discord bot token ([create one](https://discord.com/developers/applications))
+5. The [private-brain](https://github.com/cpuchip/private-brain) repo cloned locally
 
 ### Discord Bot Setup
 
@@ -78,8 +79,26 @@ Then send a DM to your bot on Discord!
 |---------|--------|
 | *(any text)* | Capture and classify a thought |
 | `fix: <category>` | Reclassify the last entry |
+| `model` | List available AI models |
+| `model: <name>` | Switch AI model (gpt-mini, haiku, sonnet) |
 | `status` | Show brain status and entry counts |
 | `stop` | Pause autonomous processing |
+
+### AI Models
+
+Powered by the [GitHub Copilot SDK](https://github.com/github/copilot-sdk) — access to all models in your Copilot subscription.
+
+| Preset | Model | Premium Rate |
+|--------|-------|--------------|
+| `gpt-mini` (default) | gpt-5-mini | **0x** (free) |
+| `haiku` | claude-haiku-4.5 | 0.33x |
+| `flash` | gemini-3-flash | 0.33x |
+| `sonnet` | claude-sonnet-4.6 | 1x |
+| `gpt5` | gpt-5 | 1x |
+
+Switch at runtime via Discord: `model: haiku`
+Or set in .env: `AI_MODEL=sonnet`
+Or use any Copilot model ID directly: `AI_MODEL=claude-opus-4.6`
 
 ## Phases
 

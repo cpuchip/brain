@@ -12,11 +12,11 @@ import (
 
 // Result is the structured output from classification.
 type Result struct {
-	Category   string   `json:"category"`    // people, projects, ideas, actions, study, journal
-	Confidence float64  `json:"confidence"`  // 0.0 - 1.0
-	Title      string   `json:"title"`       // Generated title for the entry
-	Fields     Fields   `json:"fields"`      // Category-specific extracted fields
-	Tags       []string `json:"tags"`        // Auto-generated tags
+	Category   string   `json:"category"`   // people, projects, ideas, actions, study, journal
+	Confidence float64  `json:"confidence"` // 0.0 - 1.0
+	Title      string   `json:"title"`      // Generated title for the entry
+	Fields     Fields   `json:"fields"`     // Category-specific extracted fields
+	Tags       []string `json:"tags"`       // Auto-generated tags
 }
 
 // Fields holds the category-specific extracted data.
@@ -27,7 +27,7 @@ type Fields struct {
 	FollowUps string `json:"follow_ups,omitempty"`
 
 	// Projects
-	Status     string `json:"status,omitempty"`      // active, waiting, blocked, someday, done
+	Status     string `json:"status,omitempty"` // active, waiting, blocked, someday, done
 	NextAction string `json:"next_action,omitempty"`
 
 	// Ideas
@@ -69,7 +69,7 @@ func (c *Classifier) Classify(ctx context.Context, rawText string) (*Result, err
 		{Role: "user", Content: rawText},
 	}
 
-	respBytes, _, err := c.client.CompleteJSON(ctx, messages, 0.1)
+	respBytes, err := c.client.CompleteJSON(ctx, messages, 0.1)
 	if err != nil {
 		return nil, fmt.Errorf("classification failed: %w", err)
 	}

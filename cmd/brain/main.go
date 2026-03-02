@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -37,6 +38,9 @@ func run() error {
 	log.Printf("Brain starting...")
 	log.Printf("  Data dir: %s", cfg.BrainDataDir)
 	log.Printf("  AI model: %s", cfg.AIModel)
+	if cfg.AIModelPreset != "" {
+		log.Printf("  Preset: %s", cfg.AIModelPreset)
+	}
 	log.Printf("  Confidence threshold: %.0f%%", cfg.ConfidenceThreshold*100)
 
 	// Initialize git manager
@@ -57,13 +61,15 @@ func run() error {
 		log.Printf("warning: git pull failed (may be empty repo): %v", err)
 	}
 
-	// Initialize AI client
-	aiClient := ai.NewClient(
-		cfg.AIEndpoint,
-		cfg.GitHubToken,
-		cfg.AIModel,
-		cfg.RateLimits.MaxAPICallsPerHour,
-	)
+	// Initialize AI client (Copilot SDK)
+	aiClient := ai.NewClient(cfg.AIModel, cfg.GitHubToken)
+
+	ctx := context.Background()
+	log.Printf("Starting Copilot SDK...")
+	if err := aiClient.Start(ctx); err != nil {
+		return fmt.Errorf("starting AI client: %w", err)
+	}
+	defer aiClient.Stop()
 
 	// Initialize classifier
 	classify := classifier.New(aiClient, cfg.ConfidenceThreshold)
@@ -90,6 +96,9 @@ func run() error {
 		log.Printf("  Owner: (will be set on first DM)")
 	}
 
+	// Give bot access to AI client for model switching
+	bot.SetAIClient(aiClient, cfg.AIModelPreset)
+
 	// Start Discord bot
 	if err := bot.Start(); err != nil {
 		return fmt.Errorf("starting Discord bot: %w", err)
@@ -97,7 +106,7 @@ func run() error {
 	defer bot.Stop()
 
 	log.Printf("Brain is running. Send me a DM on Discord!")
-	log.Printf("Commands: 'status', 'fix: <category>', 'stop'")
+	log.Printf("Commands: 'status', 'fix: <category>', 'model', 'model: <name>', 'stop'")
 
 	// Wait for interrupt
 	sig := make(chan os.Signal, 1)

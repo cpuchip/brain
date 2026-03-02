@@ -9,6 +9,22 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ModelPreset maps a friendly name to a Copilot SDK model identifier.
+type ModelPreset struct {
+	ID          string // Copilot model ID (e.g. "gpt-5-mini")
+	DisplayName string // Human-friendly name
+	PremiumRate string // Premium request multiplier (e.g. "0x", "1x")
+}
+
+// AvailableModels are the presets the user can switch between via Discord.
+var AvailableModels = map[string]ModelPreset{
+	"gpt-mini": {ID: "gpt-5-mini", DisplayName: "GPT-5 Mini", PremiumRate: "0x"},
+	"haiku":    {ID: "claude-haiku-4.5", DisplayName: "Claude Haiku 4.5", PremiumRate: "0.33x"},
+	"sonnet":   {ID: "claude-sonnet-4.6", DisplayName: "Claude Sonnet 4.6", PremiumRate: "1x"},
+	"flash":    {ID: "gemini-3-flash", DisplayName: "Gemini 3 Flash", PremiumRate: "0.33x"},
+	"gpt5":     {ID: "gpt-5", DisplayName: "GPT-5", PremiumRate: "1x"},
+}
+
 // Config holds all brain configuration.
 type Config struct {
 	// Paths
@@ -16,9 +32,9 @@ type Config struct {
 	BrainCodeDir string // Path to this repo (scripts/brain)
 
 	// AI
-	GitHubToken string // GitHub PAT with models scope
-	AIModel     string // e.g. "openai/gpt-4o-mini"
-	AIEndpoint  string // GitHub Models endpoint
+	GitHubToken   string // Optional: GitHub PAT (SDK can use logged-in Copilot user)
+	AIModel       string // Current Copilot model ID (e.g. "gpt-5-mini")
+	AIModelPreset string // Current preset name (e.g. "gpt-mini")
 
 	// Discord
 	DiscordToken     string // Discord bot token
@@ -51,8 +67,8 @@ type DigestConfig struct {
 
 // RateLimitConfig prevents runaway behavior.
 type RateLimitConfig struct {
-	MaxAPICallsPerHour    int `yaml:"max_api_calls_per_hour"`
-	MaxGitCommitsPerDay   int `yaml:"max_git_commits_per_day"`
+	MaxAPICallsPerHour     int `yaml:"max_api_calls_per_hour"`
+	MaxGitCommitsPerDay    int `yaml:"max_git_commits_per_day"`
 	MaxNotificationsPerDay int `yaml:"max_notifications_per_day"`
 }
 
@@ -81,12 +97,12 @@ type CategoryConfig struct {
 // Load reads config from environment variables and the brain data config file.
 func Load() (*Config, error) {
 	cfg := &Config{
-		AIEndpoint:          "https://models.github.ai/inference",
-		AIModel:             "openai/gpt-4o-mini",
+		AIModel:             AvailableModels["gpt-mini"].ID,
+		AIModelPreset:       "gpt-mini",
 		ConfidenceThreshold: 0.6,
 		RateLimits: RateLimitConfig{
-			MaxAPICallsPerHour:    60,
-			MaxGitCommitsPerDay:   100,
+			MaxAPICallsPerHour:     60,
+			MaxGitCommitsPerDay:    100,
 			MaxNotificationsPerDay: 20,
 		},
 	}
@@ -98,10 +114,15 @@ func Load() (*Config, error) {
 
 	// Optional env vars with defaults
 	if v := os.Getenv("AI_MODEL"); v != "" {
-		cfg.AIModel = v
-	}
-	if v := os.Getenv("AI_ENDPOINT"); v != "" {
-		cfg.AIEndpoint = v
+		// Check if it's a preset name first
+		if preset, ok := AvailableModels[v]; ok {
+			cfg.AIModel = preset.ID
+			cfg.AIModelPreset = v
+		} else {
+			// Otherwise treat it as a raw model ID
+			cfg.AIModel = v
+			cfg.AIModelPreset = ""
+		}
 	}
 	if v := os.Getenv("BRAIN_DATA_DIR"); v != "" {
 		cfg.BrainDataDir = v
@@ -129,9 +150,7 @@ func Load() (*Config, error) {
 
 // Validate checks that required configuration is present.
 func (c *Config) Validate() error {
-	if c.GitHubToken == "" {
-		return fmt.Errorf("GITHUB_TOKEN is required (PAT with 'models' scope)")
-	}
+	// GITHUB_TOKEN is optional — Copilot SDK can use logged-in user
 	if c.DiscordToken == "" {
 		return fmt.Errorf("DISCORD_TOKEN is required")
 	}
