@@ -15,9 +15,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -179,9 +181,14 @@ func doCapture(baseURL, token, text string) {
 	for {
 		_, data, err := ws.ReadMessage()
 		if err != nil {
-			if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "deadline") {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				fmt.Println("\n⏱  Timed out waiting for result.")
 				fmt.Println("   The thought was queued — the agent may be offline.")
+				return
+			}
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				fmt.Println("\nConnection closed. The thought was queued if agent was offline.")
 				return
 			}
 			log.Fatalf("Read failed: %v", err)
@@ -307,7 +314,8 @@ func doFix(baseURL, token, thoughtID, newCategory string) {
 	for {
 		_, data, err := ws.ReadMessage()
 		if err != nil {
-			if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "deadline") {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				fmt.Println("\n⏱  Timed out. Agent may be offline.")
 				return
 			}
