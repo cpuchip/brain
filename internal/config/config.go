@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -110,7 +111,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		AIModel:             AvailableModels["gpt-mini"].ID,
 		AIModelPreset:       "gpt-mini",
-		RelayEnabled:        true,  // Relay on by default
+		RelayEnabled:        true, // Relay on by default
 		RelayURL:            "wss://ibeco.me/ws/brain",
 		DiscordEnabled:      false, // Discord off by default
 		ConfidenceThreshold: 0.6,
@@ -126,12 +127,20 @@ func Load() (*Config, error) {
 	cfg.DiscordToken = os.Getenv("DISCORD_TOKEN")
 	cfg.DiscordChannelID = os.Getenv("DISCORD_CHANNEL_ID")
 
-	// Relay config
-	cfg.RelayToken = os.Getenv("RELAY_TOKEN")
-	if v := os.Getenv("RELAY_URL"); v != "" {
-		cfg.RelayURL = v
+	// Relay config — prefer IBECOME_* (matches .env convention), fall back to RELAY_*
+	cfg.RelayToken = envFirst("IBECOME_TOKEN", "RELAY_TOKEN")
+	if v := envFirst("IBECOME_URL", "RELAY_URL"); v != "" {
+		// Convert HTTP URL to WebSocket URL if needed
+		u := v
+		u = strings.Replace(u, "https://", "wss://", 1)
+		u = strings.Replace(u, "http://", "ws://", 1)
+		u = strings.TrimRight(u, "/")
+		if !strings.HasSuffix(u, "/ws/brain") {
+			u += "/ws/brain"
+		}
+		cfg.RelayURL = u
 	}
-	if v := os.Getenv("RELAY_ENABLED"); v != "" {
+	if v := envFirst("IBECOME_ENABLED", "RELAY_ENABLED"); v != "" {
 		cfg.RelayEnabled = v == "true" || v == "1"
 	}
 
@@ -183,7 +192,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("at least one transport must be enabled (RELAY_ENABLED or DISCORD_ENABLED)")
 	}
 	if c.RelayEnabled && c.RelayToken == "" {
-		return fmt.Errorf("RELAY_TOKEN is required when relay is enabled")
+		return fmt.Errorf("IBECOME_TOKEN (or RELAY_TOKEN) is required when relay is enabled")
 	}
 	if c.DiscordEnabled && c.DiscordToken == "" {
 		return fmt.Errorf("DISCORD_TOKEN is required when Discord is enabled")
@@ -247,6 +256,16 @@ func findBrainDataDir() string {
 		}
 		if info, err := os.Stat(abs); err == nil && info.IsDir() {
 			return abs
+		}
+	}
+	return ""
+}
+
+// envFirst returns the first non-empty value from the given env var names.
+func envFirst(names ...string) string {
+	for _, name := range names {
+		if v := os.Getenv(name); v != "" {
+			return v
 		}
 	}
 	return ""
