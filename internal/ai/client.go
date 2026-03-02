@@ -17,6 +17,10 @@ type Client struct {
 	model         string
 	mu            sync.Mutex
 	started       bool
+
+	// Persistent session for classification (reused across thoughts)
+	classifierSession *copilot.Session
+	classifierSystem  string // system message the session was created with
 }
 
 // NewClient creates a new AI client using the Copilot SDK.
@@ -57,6 +61,11 @@ func (c *Client) Stop() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.classifierSession != nil {
+		c.classifierSession.Destroy()
+		c.classifierSession = nil
+	}
+
 	if !c.started {
 		return nil
 	}
@@ -72,11 +81,16 @@ func (c *Client) Model() string {
 	return c.model
 }
 
-// SetModel hot-swaps the active model. Takes effect on the next session.
+// SetModel hot-swaps the active model. Destroys any cached session so the next
+// call picks up the new model.
 func (c *Client) SetModel(model string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.model = model
+	if c.classifierSession != nil {
+		c.classifierSession.Destroy()
+		c.classifierSession = nil
+	}
 	log.Printf("AI model switched to: %s", model)
 }
 
@@ -87,13 +101,14 @@ type ChatMessage struct {
 }
 
 // Complete sends a prompt through the Copilot SDK and returns the response text.
-// The system message should be the first ChatMessage with Role "system".
+// If the system message matches a previous call, the existing session is reused
+// (avoiding a new background process per thought). A new session is created when
+// the system message or model changes.
 func (c *Client) Complete(ctx context.Context, messages []ChatMessage, temperature float64) (string, error) {
 	c.mu.Lock()
 	model := c.model
-	c.mu.Unlock()
 
-	// Build system message from the messages list
+	// Build system message and user prompt from the messages list
 	var systemMsg string
 	var userPrompt string
 	for _, m := range messages {
@@ -105,76 +120,70 @@ func (c *Client) Complete(ctx context.Context, messages []ChatMessage, temperatu
 		}
 	}
 
-	// Create a session for this request
-	sessionCfg := &copilot.SessionConfig{
-		Model:               model,
-		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
+	// Reuse existing session if system message matches, otherwise create new
+	session := c.classifierSession
+	if session != nil && c.classifierSystem != systemMsg {
+		session.Destroy()
+		session = nil
+		c.classifierSession = nil
 	}
-	if systemMsg != "" {
-		sessionCfg.SystemMessage = &copilot.SystemMessageConfig{
-			Content: systemMsg,
+
+	if session == nil {
+		c.mu.Unlock() // unlock during session creation (may block)
+
+		sessionCfg := &copilot.SessionConfig{
+			Model:               model,
+			OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		}
-	}
-
-	session, err := c.copilotClient.CreateSession(ctx, sessionCfg)
-	if err != nil {
-		return "", fmt.Errorf("creating session (model=%s): %w", model, err)
-	}
-	defer session.Destroy()
-
-	// Collect the response via events
-	var response string
-	done := make(chan struct{})
-	var eventErr error
-
-	session.On(func(event copilot.SessionEvent) {
-		switch event.Type {
-		case "assistant.message":
-			if event.Data.Content != nil {
-				response = *event.Data.Content
-			}
-		case "session.idle":
-			close(done)
-		case "error":
-			if event.Data.Content != nil {
-				eventErr = fmt.Errorf("session error: %s", *event.Data.Content)
-			}
-			select {
-			case <-done:
-			default:
-				close(done)
+		if systemMsg != "" {
+			sessionCfg.SystemMessage = &copilot.SystemMessageConfig{
+				Content: systemMsg,
 			}
 		}
-	})
 
-	// Send the user prompt
-	_, err = session.Send(ctx, copilot.MessageOptions{
+		var err error
+		session, err = c.copilotClient.CreateSession(ctx, sessionCfg)
+		if err != nil {
+			return "", fmt.Errorf("creating session (model=%s): %w", model, err)
+		}
+
+		c.mu.Lock()
+		// Check if another goroutine created one while we were unlocked
+		if c.classifierSession != nil {
+			session.Destroy()
+			session = c.classifierSession
+		} else {
+			c.classifierSession = session
+			c.classifierSystem = systemMsg
+			log.Printf("Created reusable classifier session (model: %s)", model)
+		}
+	}
+	c.mu.Unlock()
+
+	// Send and wait for response (synchronous — much simpler than event-driven)
+	response, err := session.SendAndWait(ctx, copilot.MessageOptions{
 		Prompt: userPrompt,
 	})
 	if err != nil {
+		// Session may be broken — destroy it so next call creates a fresh one
+		c.mu.Lock()
+		if c.classifierSession == session {
+			c.classifierSession.Destroy()
+			c.classifierSession = nil
+		}
+		c.mu.Unlock()
 		return "", fmt.Errorf("sending message: %w", err)
 	}
 
-	// Wait for completion or context cancellation
-	select {
-	case <-done:
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-
-	if eventErr != nil {
-		return "", eventErr
-	}
-
-	if response == "" {
+	if response == nil || response.Data.Content == nil || *response.Data.Content == "" {
 		return "", fmt.Errorf("empty response from model %s", model)
 	}
 
-	return response, nil
+	return *response.Data.Content, nil
 }
 
 // CompleteJSON sends a request expecting a JSON response. Strips markdown fences
-// if the model wraps JSON in ```json blocks.
+// if the model wraps JSON in ```json blocks. Retries once if the response isn't valid JSON.
 func (c *Client) CompleteJSON(ctx context.Context, messages []ChatMessage, temperature float64) ([]byte, error) {
 	content, err := c.Complete(ctx, messages, temperature)
 	if err != nil {
@@ -185,8 +194,24 @@ func (c *Client) CompleteJSON(ctx context.Context, messages []ChatMessage, tempe
 	cleaned := stripJSONFences(content)
 
 	// Validate it's actual JSON
+	if json.Valid([]byte(cleaned)) {
+		return []byte(cleaned), nil
+	}
+
+	// Model returned prose instead of JSON — retry with a nudge
+	log.Printf("Model returned non-JSON, retrying with correction...")
+	retryMessages := append(messages, ChatMessage{
+		Role:    "user",
+		Content: "Your response was not valid JSON. Return ONLY the JSON object, nothing else.",
+	})
+	content, err = c.Complete(ctx, retryMessages, temperature)
+	if err != nil {
+		return nil, err
+	}
+
+	cleaned = stripJSONFences(content)
 	if !json.Valid([]byte(cleaned)) {
-		return nil, fmt.Errorf("response is not valid JSON: %s", content)
+		return nil, fmt.Errorf("response is not valid JSON after retry: %s", content[:min(len(content), 200)])
 	}
 
 	return []byte(cleaned), nil
