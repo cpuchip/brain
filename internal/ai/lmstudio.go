@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -94,7 +96,7 @@ func (c *LMStudioClient) Complete(ctx context.Context, messages []ChatMessage, t
 		Model:       model,
 		Messages:    lmMsgs,
 		Temperature: temperature,
-		MaxTokens:   1024, // classification responses are small
+		MaxTokens:   4096, // thinking models need headroom for CoT + response
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -137,7 +139,35 @@ func (c *LMStudioClient) Complete(ctx context.Context, messages []ChatMessage, t
 		return "", fmt.Errorf("empty response from LM Studio (model: %s)", model)
 	}
 
-	return lmResp.Choices[0].Message.Content, nil
+	return stripThinkingContent(lmResp.Choices[0].Message.Content), nil
+}
+
+// stripThinkingContent removes chain-of-thought output from "thinking" models
+// like Qwen 3.5 that embed reasoning in the response content.
+// Handles both <think>...</think> tags and "Thinking Process:" rendered blocks.
+func stripThinkingContent(s string) string {
+	// Strip <think>...</think> tags (possibly multiline, non-greedy)
+	reThink := regexp.MustCompile(`(?s)<think>.*?</think>`)
+	s = reThink.ReplaceAllString(s, "")
+
+	// Strip unclosed <think> tag (model hit token limit mid-thought)
+	if idx := strings.Index(s, "<think>"); idx >= 0 {
+		s = s[:idx]
+	}
+
+	// Strip "Thinking Process:" blocks (LM Studio's rendered format)
+	// These run from the header to the first { or end of string
+	if strings.HasPrefix(strings.TrimSpace(s), "Thinking Process") {
+		// Find the first JSON object start
+		if idx := strings.Index(s, "{"); idx >= 0 {
+			s = s[idx:]
+		} else {
+			// No JSON found — return empty so caller can retry
+			return ""
+		}
+	}
+
+	return strings.TrimSpace(s)
 }
 
 // CompleteJSON sends a request expecting a JSON response. Strips markdown fences
