@@ -109,14 +109,16 @@ func (c *Client) Run(ctx context.Context) {
 		err := c.connect(ctx)
 		if err != nil {
 			log.Printf("[relay] connection error: %v", err)
+		} else {
+			backoff = time.Second // reset on clean disconnect
 		}
 
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(backoff):
-			backoff = min(backoff*2, maxBackoff)
 			log.Printf("[relay] reconnecting in %v...", backoff)
+			backoff = min(backoff*2, maxBackoff)
 		}
 	}
 }
@@ -175,9 +177,39 @@ func (c *Client) connect(ctx context.Context) error {
 	// Send initial status
 	c.sendStatus(ws)
 
-	// Set up pong handler
+	// When the hub sends a WS Ping, reset our read deadline and reply with Pong.
+	// (SetPongHandler would only fire if *we* sent pings — but we don't initiate them.)
+	ws.SetPingHandler(func(appData string) error {
+		ws.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return ws.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+	})
+
+	// Client-side ping sender — belt-and-suspenders keepalive in case
+	// the hub's pings aren't enough (e.g. during long classifications).
+	pingDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(25 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pingDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.mu.Lock()
+				if c.ws != nil {
+					c.ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+				}
+				c.mu.Unlock()
+			}
+		}
+	}()
+	defer close(pingDone)
+
+	// Also listen for pong responses to our pings
 	ws.SetPongHandler(func(string) error {
-		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+		ws.SetReadDeadline(time.Now().Add(90 * time.Second))
 		return nil
 	})
 
@@ -191,7 +223,7 @@ func (c *Client) connect(ctx context.Context) error {
 		default:
 		}
 
-		ws.SetReadDeadline(time.Now().Add(60 * time.Second))
+		ws.SetReadDeadline(time.Now().Add(90 * time.Second))
 		_, data, err := ws.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
@@ -234,7 +266,7 @@ func (c *Client) handleThought(ctx context.Context, ws *websocket.Conn, data []b
 
 	log.Printf("[relay] classifying thought %s: %.50s...", thought.ID, thought.Text)
 
-	classifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	classifyCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
 	// Classify
