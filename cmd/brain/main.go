@@ -38,9 +38,14 @@ func run() error {
 
 	log.Printf("Brain starting...")
 	log.Printf("  Data dir: %s", cfg.BrainDataDir)
-	log.Printf("  AI model: %s", cfg.AIModel)
-	if cfg.AIModelPreset != "" {
-		log.Printf("  Preset: %s", cfg.AIModelPreset)
+	log.Printf("  AI backend: %s", cfg.AIBackend)
+	if cfg.AIBackend == "copilot" {
+		log.Printf("  Copilot model: %s", cfg.AIModel)
+		if cfg.AIModelPreset != "" {
+			log.Printf("  Preset: %s", cfg.AIModelPreset)
+		}
+	} else {
+		log.Printf("  LM Studio: %s (model: %s)", cfg.LMStudioURL, cfg.LMStudioModel)
 	}
 	log.Printf("  Confidence threshold: %.0f%%", cfg.ConfidenceThreshold*100)
 	log.Printf("  Relay: %v", cfg.RelayEnabled)
@@ -64,20 +69,35 @@ func run() error {
 		log.Printf("warning: git pull failed (may be empty repo): %v", err)
 	}
 
-	// Initialize AI client (Copilot SDK)
-	aiClient := ai.NewClient(cfg.AIModel, cfg.GitHubToken)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	log.Printf("Starting Copilot SDK...")
-	if err := aiClient.Start(ctx); err != nil {
-		return fmt.Errorf("starting AI client: %w", err)
+	// Initialize AI backend
+	var completer ai.Completer
+	var copilotClient *ai.Client // kept for future self-improvement features + Discord model switching
+
+	switch cfg.AIBackend {
+	case "copilot":
+		copilotClient = ai.NewClient(cfg.AIModel, cfg.GitHubToken)
+		log.Printf("Starting Copilot SDK...")
+		if err := copilotClient.Start(ctx); err != nil {
+			return fmt.Errorf("starting AI client: %w", err)
+		}
+		defer copilotClient.Stop()
+		completer = copilotClient
+
+	default: // "lmstudio"
+		lm := ai.NewLMStudioClient(cfg.LMStudioURL, cfg.LMStudioModel)
+		log.Printf("Checking LM Studio connectivity...")
+		if err := lm.Ping(ctx); err != nil {
+			return fmt.Errorf("LM Studio not reachable: %w", err)
+		}
+		log.Printf("LM Studio connected (%s)", cfg.LMStudioURL)
+		completer = lm
 	}
-	defer aiClient.Stop()
 
 	// Initialize classifier
-	classify := classifier.New(aiClient, cfg.ConfidenceThreshold)
+	classify := classifier.New(completer, cfg.ConfidenceThreshold)
 
 	// Initialize store
 	st := store.New(cfg.BrainDataDir, git)
@@ -109,7 +129,9 @@ func run() error {
 			log.Printf("  Discord owner: %s", ownerID)
 		}
 
-		bot.SetAIClient(aiClient, cfg.AIModelPreset)
+		if copilotClient != nil {
+			bot.SetAIClient(copilotClient, cfg.AIModelPreset)
+		}
 
 		if err := bot.Start(); err != nil {
 			return fmt.Errorf("starting Discord bot: %w", err)

@@ -50,12 +50,12 @@ type Fields struct {
 
 // Classifier routes raw thoughts into categories using AI.
 type Classifier struct {
-	client    *ai.Client
+	client    ai.Completer
 	threshold float64
 }
 
-// New creates a new Classifier.
-func New(client *ai.Client, confidenceThreshold float64) *Classifier {
+// New creates a new Classifier. The client can be any AI backend (Copilot SDK, LM Studio, etc.).
+func New(client ai.Completer, confidenceThreshold float64) *Classifier {
 	return &Classifier{
 		client:    client,
 		threshold: confidenceThreshold,

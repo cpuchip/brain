@@ -34,9 +34,14 @@ type Config struct {
 	BrainCodeDir string // Path to this repo (scripts/brain)
 
 	// AI
+	AIBackend     string // "lmstudio" or "copilot" (default: lmstudio)
 	GitHubToken   string // Optional: GitHub PAT (SDK can use logged-in Copilot user)
 	AIModel       string // Current Copilot model ID (e.g. "gpt-5-mini")
 	AIModelPreset string // Current preset name (e.g. "gpt-mini")
+
+	// LM Studio
+	LMStudioURL   string // LM Studio API base URL (default: http://localhost:1234/v1)
+	LMStudioModel string // Model identifier loaded in LM Studio
 
 	// Relay (ibeco.me WebSocket)
 	RelayEnabled bool   // Enable relay transport
@@ -109,8 +114,11 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
+		AIBackend:           "lmstudio", // default to local LM Studio
 		AIModel:             AvailableModels["gpt-mini"].ID,
 		AIModelPreset:       "gpt-mini",
+		LMStudioURL:         "http://localhost:1234/v1",
+		LMStudioModel:       "qwen3.5-9b",
 		RelayEnabled:        true, // Relay on by default
 		RelayURL:            "wss://ibeco.me/ws/brain",
 		DiscordEnabled:      false, // Discord off by default
@@ -147,6 +155,19 @@ func Load() (*Config, error) {
 	// Discord config
 	if v := os.Getenv("DISCORD_ENABLED"); v != "" {
 		cfg.DiscordEnabled = v == "true" || v == "1"
+	}
+
+	// AI backend
+	if v := os.Getenv("AI_BACKEND"); v != "" {
+		cfg.AIBackend = v
+	}
+
+	// LM Studio config
+	if v := os.Getenv("LMSTUDIO_URL"); v != "" {
+		cfg.LMStudioURL = v
+	}
+	if v := os.Getenv("LMSTUDIO_MODEL"); v != "" {
+		cfg.LMStudioModel = v
 	}
 
 	// Optional env vars with defaults
