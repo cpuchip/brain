@@ -96,7 +96,7 @@ func (c *LMStudioClient) Complete(ctx context.Context, messages []ChatMessage, t
 		Model:       model,
 		Messages:    lmMsgs,
 		Temperature: temperature,
-		MaxTokens:   4096, // thinking models need headroom for CoT + response
+		MaxTokens:   32768, // thinking models need headroom for CoT + response
 	}
 
 	body, err := json.Marshal(reqBody)
