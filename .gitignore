@@ -27,6 +27,13 @@ go.work.sum
 # env file
 .env
 
+# Runtime data (SQLite, vectors)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+vec/
+
 # Editor/IDE
 # .idea/
 # .vscode/

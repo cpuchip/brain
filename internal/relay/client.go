@@ -284,7 +284,7 @@ func (c *Client) handleThought(ctx context.Context, ws *websocket.Conn, data []b
 	needsReview := c.classify.NeedsReview(result)
 
 	// Store
-	relPath, err := c.store.Save(result, thought.Text, needsReview)
+	relPath, err := c.store.Save(result, thought.Text, needsReview, "relay")
 	if err != nil {
 		log.Printf("[relay] store error: %v", err)
 		return
@@ -303,6 +303,7 @@ func (c *Client) handleThought(ctx context.Context, ws *websocket.Conn, data []b
 		Title:       result.Title,
 		Confidence:  result.Confidence,
 		NeedsReview: needsReview,
+		Source:      "relay",
 		FilePath:    relPath,
 		Tags:        result.Tags,
 	}

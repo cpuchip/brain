@@ -14,6 +14,8 @@ import (
 	"github.com/cpuchip/brain/internal/discord"
 	"github.com/cpuchip/brain/internal/relay"
 	"github.com/cpuchip/brain/internal/store"
+	"github.com/cpuchip/brain/internal/web"
+	"github.com/philippgille/chromem-go"
 )
 
 func main() {
@@ -38,6 +40,7 @@ func run() error {
 
 	log.Printf("Brain starting...")
 	log.Printf("  Data dir: %s", cfg.BrainDataDir)
+	log.Printf("  Database: %s", cfg.DBPath)
 	log.Printf("  AI backend: %s", cfg.AIBackend)
 	if cfg.AIBackend == "copilot" {
 		log.Printf("  Copilot model: %s", cfg.AIModel)
@@ -47,34 +50,18 @@ func run() error {
 	} else {
 		log.Printf("  LM Studio: %s (model: %s)", cfg.LMStudioURL, cfg.LMStudioModel)
 	}
+	log.Printf("  Embedding: %s (model: %s)", cfg.EmbeddingBackend, cfg.EmbeddingModel)
 	log.Printf("  Confidence threshold: %.0f%%", cfg.ConfidenceThreshold*100)
 	log.Printf("  Relay: %v", cfg.RelayEnabled)
 	log.Printf("  Discord: %v", cfg.DiscordEnabled)
-
-	// Initialize git manager
-	git := store.NewGit(
-		cfg.BrainDataDir,
-		"brain:",
-		true, // auto-commit
-		cfg.RateLimits.MaxGitCommitsPerDay,
-	)
-
-	if err := git.EnsureRepo(); err != nil {
-		return fmt.Errorf("git check: %w", err)
-	}
-
-	// Pull latest
-	log.Printf("Pulling latest from origin...")
-	if err := git.Pull(); err != nil {
-		log.Printf("warning: git pull failed (may be empty repo): %v", err)
-	}
+	log.Printf("  Web UI: %v (port %s)", cfg.WebEnabled, cfg.WebPort)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Initialize AI backend
 	var completer ai.Completer
-	var copilotClient *ai.Client // kept for future self-improvement features + Discord model switching
+	var copilotClient *ai.Client
 
 	switch cfg.AIBackend {
 	case "copilot":
@@ -96,11 +83,64 @@ func run() error {
 		completer = lm
 	}
 
+	// Initialize embedding function
+	embedFunc := chooseEmbedder(cfg)
+
+	// Initialize SQLite database
+	db, err := store.OpenDB(cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+
+	count, _ := db.EntryCount()
+	log.Printf("  Database entries: %d", count)
+
+	// Initialize vector store
+	vec, err := store.NewVecStore(cfg.VecDir, embedFunc, cfg.EmbeddingModel)
+	if err != nil {
+		return fmt.Errorf("opening vector store: %w", err)
+	}
+	if vec.Enabled() {
+		log.Printf("  Vector store: enabled (%d documents)", vec.Count(ctx))
+	} else {
+		log.Printf("  Vector store: disabled (no embedding backend)")
+	}
+
+	// Initialize git for archive export (optional)
+	var git *store.Git
+	if cfg.ArchiveDir != "" {
+		git = store.NewGit(
+			cfg.ArchiveDir,
+			"brain:",
+			true,
+			cfg.RateLimits.MaxGitCommitsPerDay,
+		)
+		if err := git.EnsureRepo(); err != nil {
+			log.Printf("warning: archive repo not available: %v", err)
+			git = nil
+		} else {
+			log.Printf("  Archive dir: %s", cfg.ArchiveDir)
+		}
+	}
+
+	// Initialize store (wires together SQLite + vector + optional git)
+	st := store.New(db, vec, git)
+
 	// Initialize classifier
 	classify := classifier.New(completer, cfg.ConfidenceThreshold)
 
-	// Initialize store
-	st := store.New(cfg.BrainDataDir, git)
+	// Start web UI
+	if cfg.WebEnabled {
+		srv := web.NewServer(st, cfg)
+		go func() {
+			addr := ":" + cfg.WebPort
+			log.Printf("Web UI starting on http://localhost%s", addr)
+			if err := srv.ListenAndServe(addr); err != nil {
+				log.Printf("warning: web server error: %v", err)
+			}
+		}()
+	}
 
 	// Start relay transport (WebSocket to ibeco.me)
 	var relayClient *relay.Client
@@ -147,6 +187,9 @@ func run() error {
 	if cfg.DiscordEnabled {
 		log.Printf("  Discord: listening for DMs")
 	}
+	if cfg.WebEnabled {
+		log.Printf("  Web: http://localhost:%s", cfg.WebPort)
+	}
 
 	// Wait for interrupt
 	sig := make(chan os.Signal, 1)
@@ -154,17 +197,52 @@ func run() error {
 	<-sig
 
 	log.Printf("Shutting down...")
-	cancel() // Signal relay client to stop
+	cancel()
 
 	if relayClient != nil {
 		relayClient.Stop()
 	}
 
-	// Push any uncommitted changes before exit
-	log.Printf("Pushing to origin...")
-	if err := git.Push(); err != nil {
-		log.Printf("warning: git push failed: %v", err)
+	// Push archive if configured
+	if git != nil {
+		log.Printf("Pushing archive to origin...")
+		if err := git.Push(); err != nil {
+			log.Printf("warning: git push failed: %v", err)
+		}
 	}
 
 	return nil
+}
+
+// chooseEmbedder selects an embedding function based on config.
+func chooseEmbedder(cfg *config.Config) chromem.EmbeddingFunc {
+	switch cfg.EmbeddingBackend {
+	case "lmstudio":
+		if cfg.LMStudioURL == "" {
+			return nil
+		}
+		log.Printf("Embedding: LM Studio (%s, model: %s)", cfg.LMStudioURL, cfg.EmbeddingModel)
+		return chromem.NewEmbeddingFuncOpenAICompat(
+			cfg.LMStudioURL, "", cfg.EmbeddingModel, nil,
+		)
+
+	case "ollama":
+		if cfg.OllamaURL == "" {
+			return nil
+		}
+		log.Printf("Embedding: Ollama (%s, model: %s)", cfg.OllamaURL, cfg.EmbeddingModel)
+		return chromem.NewEmbeddingFuncOllama(cfg.EmbeddingModel, cfg.OllamaURL)
+
+	case "openai":
+		if os.Getenv("OPENAI_API_KEY") == "" {
+			log.Printf("warning: EMBEDDING_BACKEND=openai but OPENAI_API_KEY not set")
+			return nil
+		}
+		log.Printf("Embedding: OpenAI (text-embedding-3-small)")
+		return chromem.NewEmbeddingFuncDefault()
+
+	default: // "none" or unrecognized
+		log.Printf("Embedding: disabled")
+		return nil
+	}
 }

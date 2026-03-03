@@ -4,56 +4,59 @@ import (
 	"time"
 )
 
-// Entry is a classified thought stored as a markdown file with YAML front matter.
+// Entry is a classified thought stored in SQLite with optional vector embedding.
 type Entry struct {
-	// Front matter
-	Title      string    `yaml:"title"`
-	Category   string    `yaml:"category"`
-	Created    time.Time `yaml:"created"`
-	Updated    time.Time `yaml:"updated"`
-	Tags       []string  `yaml:"tags,omitempty"`
-	Confidence float64   `yaml:"confidence"`
+	// Identity
+	ID       string    `json:"id" yaml:"id,omitempty"`
+	Title    string    `json:"title" yaml:"title"`
+	Category string    `json:"category" yaml:"category"`
+	Created  time.Time `json:"created_at" yaml:"created"`
+	Updated  time.Time `json:"updated_at" yaml:"updated"`
+	Tags     []string  `json:"tags,omitempty" yaml:"tags,omitempty"`
+
+	// Classification
+	Confidence  float64 `json:"confidence" yaml:"confidence"`
+	NeedsReview bool    `json:"needs_review" yaml:"needs_review,omitempty"`
+	Source      string  `json:"source" yaml:"source,omitempty"` // relay, discord, cli, web, app
 
 	// Category-specific fields
 	// People
-	Name      string `yaml:"name,omitempty"`
-	Context   string `yaml:"context,omitempty"`
-	FollowUps string `yaml:"follow_ups,omitempty"`
+	Name      string `json:"name,omitempty" yaml:"name,omitempty"`
+	Context   string `json:"context,omitempty" yaml:"context,omitempty"`
+	FollowUps string `json:"follow_ups,omitempty" yaml:"follow_ups,omitempty"`
 
 	// Projects
-	Status     string `yaml:"status,omitempty"`
-	NextAction string `yaml:"next_action,omitempty"`
+	Status     string `json:"status,omitempty" yaml:"status,omitempty"`
+	NextAction string `json:"next_action,omitempty" yaml:"next_action,omitempty"`
 
 	// Ideas
-	OneLiner string `yaml:"one_liner,omitempty"`
+	OneLiner string `json:"one_liner,omitempty" yaml:"one_liner,omitempty"`
 
 	// Actions
-	DueDate    string `yaml:"due_date,omitempty"`
-	ActionDone bool   `yaml:"done,omitempty"`
+	DueDate    string `json:"due_date,omitempty" yaml:"due_date,omitempty"`
+	ActionDone bool   `json:"action_done,omitempty" yaml:"done,omitempty"`
 
 	// Study
-	References string `yaml:"references,omitempty"`
-	Insight    string `yaml:"insight,omitempty"`
+	References string `json:"references,omitempty" yaml:"references,omitempty"`
+	Insight    string `json:"insight,omitempty" yaml:"insight,omitempty"`
 
 	// Journal
-	Mood      string `yaml:"mood,omitempty"`
-	Gratitude string `yaml:"gratitude,omitempty"`
+	Mood      string `json:"mood,omitempty" yaml:"mood,omitempty"`
+	Gratitude string `json:"gratitude,omitempty" yaml:"gratitude,omitempty"`
 
-	// Review
-	NeedsReview bool `yaml:"needs_review,omitempty"`
-
-	// Body (not in front matter — stored as markdown body)
-	Body string `yaml:"-"`
+	// Body (not in front matter — stored as markdown body for archive export)
+	Body string `json:"body" yaml:"-"`
 }
 
 // AuditRecord logs what the brain did with a capture.
 type AuditRecord struct {
-	Timestamp   time.Time `yaml:"timestamp"`
-	RawText     string    `yaml:"raw_text"`
-	Category    string    `yaml:"category"`
-	Title       string    `yaml:"title"`
-	Confidence  float64   `yaml:"confidence"`
-	NeedsReview bool      `yaml:"needs_review"`
-	FilePath    string    `yaml:"file_path"`
-	Tags        []string  `yaml:"tags,omitempty"`
+	Timestamp   time.Time `json:"timestamp" yaml:"timestamp"`
+	RawText     string    `json:"raw_text" yaml:"raw_text"`
+	Category    string    `json:"category" yaml:"category"`
+	Title       string    `json:"title" yaml:"title"`
+	Confidence  float64   `json:"confidence" yaml:"confidence"`
+	NeedsReview bool      `json:"needs_review" yaml:"needs_review"`
+	Source      string    `json:"source" yaml:"source,omitempty"`
+	FilePath    string    `json:"file_path,omitempty" yaml:"file_path"`
+	Tags        []string  `json:"tags,omitempty" yaml:"tags,omitempty"`
 }

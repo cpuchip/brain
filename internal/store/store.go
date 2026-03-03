@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,32 +14,57 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Store manages reading and writing entries to the brain data directory.
+// Store manages reading and writing entries using SQLite (structured data)
+// and chromem-go (semantic search). Replaces the previous filesystem+git backend.
 type Store struct {
-	dataDir string
-	git     *Git
+	db  *DB
+	vec *VecStore
+	git *Git // optional — for archive export only
 }
 
-// New creates a new Store backed by the given data directory.
-func New(dataDir string, git *Git) *Store {
+// New creates a new Store backed by SQLite + chromem-go.
+// The git parameter is optional — pass nil to disable archive export.
+func New(db *DB, vec *VecStore, git *Git) *Store {
 	return &Store{
-		dataDir: dataDir,
-		git:     git,
+		db:  db,
+		vec: vec,
+		git: git,
 	}
 }
 
-// Save writes a classified result to the appropriate directory as a markdown
-// file with YAML front matter, then commits it.
-func (s *Store) Save(result *classifier.Result, rawText string, needsReview bool) (string, error) {
-	now := time.Now()
+// DB returns the underlying SQLite database.
+func (s *Store) DB() *DB {
+	return s.db
+}
 
-	entry := Entry{
+// Vec returns the underlying vector store.
+func (s *Store) Vec() *VecStore {
+	return s.vec
+}
+
+// Close closes the SQLite database.
+func (s *Store) Close() error {
+	return s.db.Close()
+}
+
+// Save writes a classified result to SQLite and embeds it in the vector store.
+// Returns the entry ID (previously returned a file path).
+// The source parameter identifies the origin (relay, discord, cli, web, app).
+func (s *Store) Save(result *classifier.Result, rawText string, needsReview bool, source string) (string, error) {
+	now := time.Now().UTC()
+
+	if source == "" {
+		source = "unknown"
+	}
+
+	entry := &Entry{
 		Title:      result.Title,
 		Category:   result.Category,
 		Created:    now,
 		Updated:    now,
 		Tags:       result.Tags,
 		Confidence: result.Confidence,
+		Source:     source,
 		// People
 		Name:      result.Fields.Name,
 		Context:   result.Fields.Context,
@@ -61,164 +88,129 @@ func (s *Store) Save(result *classifier.Result, rawText string, needsReview bool
 		Body: rawText,
 	}
 
-	// Determine target directory
-	dir := result.Category
 	if needsReview {
-		dir = "inbox"
+		entry.Category = "inbox"
 	}
 
-	// Generate filename: YYYY-MM-DD-slug.md
-	slug := slugify(result.Title)
-	filename := fmt.Sprintf("%s-%s.md", now.Format("2006-01-02"), slug)
-	relPath := filepath.Join(dir, filename)
-	absPath := filepath.Join(s.dataDir, relPath)
+	id, err := s.db.InsertEntry(entry)
+	if err != nil {
+		return "", fmt.Errorf("inserting entry: %w", err)
+	}
+	entry.ID = id
 
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
-		return "", fmt.Errorf("creating directory: %w", err)
+	// Embed in vector store (async-safe, non-blocking intent)
+	if s.vec != nil && s.vec.Enabled() {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := s.vec.Embed(ctx, entry); err != nil {
+				log.Printf("warning: embedding failed for %s: %v", id, err)
+				_ = s.db.SetEmbeddingStatus(id, s.vec.Model(), time.Time{}, err.Error())
+			} else {
+				_ = s.db.SetEmbeddingStatus(id, s.vec.Model(), time.Now().UTC(), "")
+			}
+		}()
 	}
 
-	// If file exists, add a numeric suffix
-	absPath, relPath = s.deduplicatePath(absPath, relPath)
+	return id, nil
+}
 
-	// Write the file
-	content, err := renderEntry(&entry)
+// SaveAudit writes an audit log entry.
+// The record's FilePath field is used as the entry ID (Save() now returns UUIDs).
+func (s *Store) SaveAudit(record *AuditRecord) error {
+	return s.db.InsertAudit(record.FilePath, record)
+}
+
+// Reclassify moves an entry from one category to another.
+// The currentPath parameter is now an entry ID (for backward compat with relay/discord,
+// which pass the return value of Save()).
+func (s *Store) Reclassify(currentPath, newCategory string) (string, error) {
+	entryID := currentPath // Save() now returns an ID, so this is the ID
+
+	if err := s.db.Reclassify(entryID, newCategory); err != nil {
+		return "", fmt.Errorf("reclassifying: %w", err)
+	}
+
+	// Re-embed with updated category
+	if s.vec != nil && s.vec.Enabled() {
+		go func() {
+			entry, err := s.db.GetEntry(entryID)
+			if err != nil {
+				log.Printf("warning: could not re-embed after reclassify: %v", err)
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := s.vec.ReEmbed(ctx, entry); err != nil {
+				log.Printf("warning: re-embed failed for %s: %v", entryID, err)
+			}
+		}()
+	}
+
+	return entryID, nil
+}
+
+// ListCategory returns entry IDs for a given category.
+// (Previously returned file paths — relay/discord use these as opaque strings.)
+func (s *Store) ListCategory(category string) ([]string, error) {
+	entries, err := s.db.ListCategory(category)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(entries))
+	for i, e := range entries {
+		ids[i] = e.ID
+	}
+	return ids, nil
+}
+
+// ReadEntry retrieves an entry by ID.
+func (s *Store) ReadEntry(id string) (*Entry, error) {
+	return s.db.GetEntry(id)
+}
+
+// --- Archive export (renders entries to markdown for private-brain) ---
+
+// ExportToMarkdown renders an entry as YAML front matter + markdown body,
+// suitable for writing to the private-brain archive.
+func ExportToMarkdown(e *Entry) (string, error) {
+	return renderEntry(e)
+}
+
+// ExportEntry writes a single entry as a markdown file to the given base directory.
+func (s *Store) ExportEntry(baseDir string, e *Entry) (string, error) {
+	content, err := renderEntry(e)
 	if err != nil {
 		return "", fmt.Errorf("rendering entry: %w", err)
+	}
+
+	dir := e.Category
+	slug := slugify(e.Title)
+	filename := fmt.Sprintf("%s-%s.md", e.Created.Format("2006-01-02"), slug)
+	relPath := filepath.Join(dir, filename)
+	absPath := filepath.Join(baseDir, relPath)
+
+	if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+		return "", fmt.Errorf("creating directory: %w", err)
 	}
 
 	if err := os.WriteFile(absPath, []byte(content), 0644); err != nil {
 		return "", fmt.Errorf("writing file: %w", err)
 	}
 
-	// Git commit
-	commitMsg := fmt.Sprintf("classify %s → %s", truncate(rawText, 50), dir)
-	if err := s.git.CommitFile(relPath, commitMsg); err != nil {
-		// Log but don't fail — the file was written
-		fmt.Fprintf(os.Stderr, "warning: git commit failed: %v\n", err)
+	// Optionally git commit
+	if s.git != nil {
+		commitMsg := fmt.Sprintf("archive %s → %s", truncate(e.Title, 50), dir)
+		if err := s.git.CommitFile(relPath, commitMsg); err != nil {
+			log.Printf("warning: git commit failed: %v", err)
+		}
 	}
 
 	return relPath, nil
 }
 
-// SaveAudit writes an audit log entry.
-func (s *Store) SaveAudit(record *AuditRecord) error {
-	now := record.Timestamp
-	dir := filepath.Join(s.dataDir, ".brain", "audit-log")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("creating audit dir: %w", err)
-	}
-
-	// One file per day
-	filename := fmt.Sprintf("%s.yaml", now.Format("2006-01-02"))
-	absPath := filepath.Join(dir, filename)
-
-	// Append to existing file or create new
-	var records []AuditRecord
-	if data, err := os.ReadFile(absPath); err == nil {
-		if err := yaml.Unmarshal(data, &records); err != nil {
-			// If corrupt, start fresh
-			records = nil
-		}
-	}
-
-	records = append(records, *record)
-
-	data, err := yaml.Marshal(records)
-	if err != nil {
-		return fmt.Errorf("marshaling audit: %w", err)
-	}
-
-	if err := os.WriteFile(absPath, data, 0644); err != nil {
-		return fmt.Errorf("writing audit: %w", err)
-	}
-
-	// Commit audit log
-	relPath := filepath.Join(".brain", "audit-log", filename)
-	_ = s.git.CommitFile(relPath, "audit log")
-
-	return nil
-}
-
-// Reclassify moves an entry from one category to another.
-func (s *Store) Reclassify(currentRelPath, newCategory string) (string, error) {
-	currentAbs := filepath.Join(s.dataDir, currentRelPath)
-	if _, err := os.Stat(currentAbs); os.IsNotExist(err) {
-		return "", fmt.Errorf("file not found: %s", currentRelPath)
-	}
-
-	// Read current content
-	content, err := os.ReadFile(currentAbs)
-	if err != nil {
-		return "", err
-	}
-
-	// Update the category in front matter (simple replacement)
-	updated := strings.Replace(string(content),
-		fmt.Sprintf("category: %s", filepath.Dir(currentRelPath)),
-		fmt.Sprintf("category: %s", newCategory),
-		1)
-	// Also clear needs_review
-	updated = strings.Replace(updated, "needs_review: true", "needs_review: false", 1)
-
-	// New path
-	newRelPath := filepath.Join(newCategory, filepath.Base(currentRelPath))
-	newAbs := filepath.Join(s.dataDir, newRelPath)
-
-	// Ensure target dir exists
-	if err := os.MkdirAll(filepath.Dir(newAbs), 0755); err != nil {
-		return "", err
-	}
-
-	// Write to new location
-	if err := os.WriteFile(newAbs, []byte(updated), 0644); err != nil {
-		return "", err
-	}
-
-	// Remove old file
-	if err := os.Remove(currentAbs); err != nil {
-		return "", err
-	}
-
-	// Commit the move
-	_ = s.git.CommitAll(fmt.Sprintf("reclassify %s → %s", filepath.Base(currentRelPath), newCategory))
-
-	return newRelPath, nil
-}
-
-// ListCategory returns all entries in a category directory.
-func (s *Store) ListCategory(category string) ([]string, error) {
-	dir := filepath.Join(s.dataDir, category)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var files []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-			files = append(files, filepath.Join(category, e.Name()))
-		}
-	}
-	return files, nil
-}
-
-// ReadEntry reads and parses an entry file.
-func (s *Store) ReadEntry(relPath string) (*Entry, error) {
-	absPath := filepath.Join(s.dataDir, relPath)
-	content, err := os.ReadFile(absPath)
-	if err != nil {
-		return nil, err
-	}
-	return parseEntry(content)
-}
-
 // renderEntry creates the markdown file content with YAML front matter.
 func renderEntry(e *Entry) (string, error) {
-	// Build front matter map to avoid empty fields
 	fm := make(map[string]any)
 	fm["title"] = e.Title
 	fm["category"] = e.Category
@@ -264,7 +256,7 @@ func renderEntry(e *Entry) (string, error) {
 	return sb.String(), nil
 }
 
-// parseEntry reads a markdown file with YAML front matter.
+// parseEntry reads a markdown file with YAML front matter (used by migration).
 func parseEntry(content []byte) (*Entry, error) {
 	s := string(content)
 	if !strings.HasPrefix(s, "---\n") {
@@ -290,24 +282,6 @@ func parseEntry(content []byte) (*Entry, error) {
 	}
 
 	return &entry, nil
-}
-
-func (s *Store) deduplicatePath(absPath, relPath string) (string, string) {
-	if _, err := os.Stat(absPath); os.IsNotExist(err) {
-		return absPath, relPath
-	}
-	// Add numeric suffix
-	ext := filepath.Ext(absPath)
-	base := strings.TrimSuffix(absPath, ext)
-	baseRel := strings.TrimSuffix(relPath, ext)
-	for i := 2; i < 100; i++ {
-		newAbs := fmt.Sprintf("%s-%d%s", base, i, ext)
-		newRel := fmt.Sprintf("%s-%d%s", baseRel, i, ext)
-		if _, err := os.Stat(newAbs); os.IsNotExist(err) {
-			return newAbs, newRel
-		}
-	}
-	return absPath, relPath
 }
 
 func setIfNotEmpty(m map[string]any, key, value string) {

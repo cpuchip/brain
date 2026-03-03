@@ -30,8 +30,22 @@ var AvailableModels = map[string]ModelPreset{
 // Config holds all brain configuration.
 type Config struct {
 	// Paths
-	BrainDataDir string // Path to private-brain repo
+	BrainDataDir string // Path to data directory (for DB, vec, and optional archive)
 	BrainCodeDir string // Path to this repo (scripts/brain)
+
+	// Storage
+	DBPath   string // SQLite database path (default: {BrainDataDir}/brain.db)
+	VecDir   string // chromem-go persistence dir (default: {BrainDataDir}/vec)
+	ArchiveDir string // optional private-brain repo for archive export
+
+	// Embedding
+	EmbeddingBackend string // "lmstudio", "ollama", "openai", or "none" (default: lmstudio)
+	EmbeddingModel   string // Model name for embeddings (default: nomic-embed-text)
+	OllamaURL        string // Ollama API base URL (if using Ollama)
+
+	// Web UI
+	WebEnabled bool   // Enable web UI (default: true)
+	WebPort    string // Web UI port (default: 8445)
 
 	// AI
 	AIBackend     string // "lmstudio" or "copilot" (default: lmstudio)
@@ -119,6 +133,10 @@ func Load() (*Config, error) {
 		AIModelPreset:       "gpt-mini",
 		LMStudioURL:         "http://localhost:1234/v1",
 		LMStudioModel:       "qwen3.5-9b",
+		EmbeddingBackend:    "lmstudio", // default: use LM Studio for embeddings too
+		EmbeddingModel:      "nomic-embed-text",
+		WebEnabled:          true,
+		WebPort:             "8445",
 		RelayEnabled:        true, // Relay on by default
 		RelayURL:            "wss://ibeco.me/ws/brain",
 		DiscordEnabled:      false, // Discord off by default
@@ -186,17 +204,59 @@ func Load() (*Config, error) {
 		cfg.BrainDataDir = v
 	}
 
-	// Resolve brain data dir — default to ../../private-brain relative to this binary,
-	// or check common locations
+	// Resolve brain data dir — default to ~/.brain-data or check common locations
 	if cfg.BrainDataDir == "" {
 		cfg.BrainDataDir = findBrainDataDir()
 	}
 
 	if cfg.BrainDataDir == "" {
-		return nil, fmt.Errorf("BRAIN_DATA_DIR not set and could not find private-brain directory")
+		// Default: create ~/.brain-data
+		home, _ := os.UserHomeDir()
+		if home != "" {
+			cfg.BrainDataDir = filepath.Join(home, ".brain-data")
+		} else {
+			cfg.BrainDataDir = ".brain-data"
+		}
 	}
 
-	// Load .brain/config.yaml from data dir
+	// Ensure data dir exists
+	if err := os.MkdirAll(cfg.BrainDataDir, 0755); err != nil {
+		return nil, fmt.Errorf("creating data dir: %w", err)
+	}
+
+	// Storage paths — derived from BrainDataDir if not explicitly set
+	if v := os.Getenv("BRAIN_DB_PATH"); v != "" {
+		cfg.DBPath = v
+	} else {
+		cfg.DBPath = filepath.Join(cfg.BrainDataDir, "brain.db")
+	}
+	if v := os.Getenv("BRAIN_VEC_DIR"); v != "" {
+		cfg.VecDir = v
+	} else {
+		cfg.VecDir = filepath.Join(cfg.BrainDataDir, "vec")
+	}
+	cfg.ArchiveDir = os.Getenv("BRAIN_ARCHIVE_DIR") // optional, no default
+
+	// Embedding config
+	if v := os.Getenv("EMBEDDING_BACKEND"); v != "" {
+		cfg.EmbeddingBackend = v
+	}
+	if v := os.Getenv("EMBEDDING_MODEL"); v != "" {
+		cfg.EmbeddingModel = v
+	}
+	if v := os.Getenv("OLLAMA_URL"); v != "" {
+		cfg.OllamaURL = v
+	}
+
+	// Web UI config
+	if v := os.Getenv("WEB_ENABLED"); v != "" {
+		cfg.WebEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("WEB_PORT"); v != "" {
+		cfg.WebPort = v
+	}
+
+	// Load .brain/config.yaml from data dir (optional)
 	brainCfgPath := filepath.Join(cfg.BrainDataDir, ".brain", "config.yaml")
 	if err := loadBrainConfig(brainCfgPath, cfg); err != nil {
 		// Not fatal — we have defaults
@@ -209,8 +269,8 @@ func Load() (*Config, error) {
 // Validate checks that required configuration is present.
 func (c *Config) Validate() error {
 	// At least one transport must be enabled
-	if !c.RelayEnabled && !c.DiscordEnabled {
-		return fmt.Errorf("at least one transport must be enabled (RELAY_ENABLED or DISCORD_ENABLED)")
+	if !c.RelayEnabled && !c.DiscordEnabled && !c.WebEnabled {
+		return fmt.Errorf("at least one interface must be enabled (RELAY_ENABLED, DISCORD_ENABLED, or WEB_ENABLED)")
 	}
 	if c.RelayEnabled && c.RelayToken == "" {
 		return fmt.Errorf("IBECOME_TOKEN (or RELAY_TOKEN) is required when relay is enabled")
@@ -218,11 +278,8 @@ func (c *Config) Validate() error {
 	if c.DiscordEnabled && c.DiscordToken == "" {
 		return fmt.Errorf("DISCORD_TOKEN is required when Discord is enabled")
 	}
-	if c.BrainDataDir == "" {
-		return fmt.Errorf("brain data directory not configured")
-	}
-	if _, err := os.Stat(c.BrainDataDir); os.IsNotExist(err) {
-		return fmt.Errorf("brain data directory does not exist: %s", c.BrainDataDir)
+	if c.DBPath == "" {
+		return fmt.Errorf("database path not configured")
 	}
 	return nil
 }

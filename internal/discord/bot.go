@@ -195,7 +195,7 @@ func (b *Bot) handleCapture(s *discordgo.Session, m *discordgo.MessageCreate, ra
 	needsReview := b.classify.NeedsReview(result)
 
 	// Store
-	relPath, err := b.store.Save(result, rawText, needsReview)
+	relPath, err := b.store.Save(result, rawText, needsReview, "discord")
 	if err != nil {
 		log.Printf("store error: %v", err)
 		s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Failed to save: %v", err))
@@ -215,6 +215,7 @@ func (b *Bot) handleCapture(s *discordgo.Session, m *discordgo.MessageCreate, ra
 		Title:       result.Title,
 		Confidence:  result.Confidence,
 		NeedsReview: needsReview,
+		Source:      "discord",
 		FilePath:    relPath,
 		Tags:        result.Tags,
 	}
