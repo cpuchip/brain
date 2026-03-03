@@ -12,6 +12,7 @@ import (
 	"github.com/cpuchip/brain/internal/classifier"
 	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/discord"
+	"github.com/cpuchip/brain/internal/lmstudio"
 	"github.com/cpuchip/brain/internal/relay"
 	"github.com/cpuchip/brain/internal/store"
 	"github.com/cpuchip/brain/internal/web"
@@ -74,17 +75,23 @@ func run() error {
 		completer = copilotClient
 
 	default: // "lmstudio"
-		lm := ai.NewLMStudioClient(cfg.LMStudioURL, cfg.LMStudioModel)
-		log.Printf("Checking LM Studio connectivity...")
-		if err := lm.Ping(ctx); err != nil {
-			return fmt.Errorf("LM Studio not reachable: %w", err)
+		// Auto-start LM Studio server if not running
+		if err := lmstudio.EnsureServer(ctx, cfg.LMStudioURL); err != nil {
+			return fmt.Errorf("ensuring LM Studio server: %w", err)
 		}
-		log.Printf("LM Studio connected (%s)", cfg.LMStudioURL)
+
+		// Auto-load the classification model
+		if err := lmstudio.EnsureModel(ctx, cfg.LMStudioURL, cfg.LMStudioModel); err != nil {
+			log.Printf("warning: could not auto-load classification model %q: %v", cfg.LMStudioModel, err)
+		}
+
+		lm := ai.NewLMStudioClient(cfg.LMStudioURL, cfg.LMStudioModel)
+		log.Printf("LM Studio connected (%s, model: %s)", cfg.LMStudioURL, cfg.LMStudioModel)
 		completer = lm
 	}
 
-	// Initialize embedding function
-	embedFunc := chooseEmbedder(cfg)
+	// Initialize embedding function (auto-loads model if needed)
+	embedFunc := chooseEmbedder(ctx, cfg)
 
 	// Initialize SQLite database
 	db, err := store.OpenDB(cfg.DBPath)
@@ -215,10 +222,17 @@ func run() error {
 }
 
 // chooseEmbedder selects an embedding function based on config.
-func chooseEmbedder(cfg *config.Config) chromem.EmbeddingFunc {
+// For LM Studio, it auto-loads the embedding model if not already loaded.
+func chooseEmbedder(ctx context.Context, cfg *config.Config) chromem.EmbeddingFunc {
 	switch cfg.EmbeddingBackend {
 	case "lmstudio":
 		if cfg.LMStudioURL == "" {
+			return nil
+		}
+		// Auto-load the embedding model (different from classification model)
+		if err := lmstudio.EnsureModel(ctx, cfg.LMStudioURL, cfg.EmbeddingModel); err != nil {
+			log.Printf("warning: could not auto-load embedding model %q: %v", cfg.EmbeddingModel, err)
+			log.Printf("Embedding will be disabled — semantic search unavailable")
 			return nil
 		}
 		log.Printf("Embedding: LM Studio (%s, model: %s)", cfg.LMStudioURL, cfg.EmbeddingModel)

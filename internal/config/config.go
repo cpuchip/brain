@@ -40,7 +40,7 @@ type Config struct {
 
 	// Embedding
 	EmbeddingBackend string // "lmstudio", "ollama", "openai", or "none" (default: lmstudio)
-	EmbeddingModel   string // Model name for embeddings (default: nomic-embed-text)
+	EmbeddingModel   string // Model name for embeddings (default: text-embedding-qwen3-embedding-4b)
 	OllamaURL        string // Ollama API base URL (if using Ollama)
 
 	// Web UI
@@ -134,7 +134,7 @@ func Load() (*Config, error) {
 		LMStudioURL:         "http://localhost:1234/v1",
 		LMStudioModel:       "qwen3.5-9b",
 		EmbeddingBackend:    "lmstudio", // default: use LM Studio for embeddings too
-		EmbeddingModel:      "nomic-embed-text",
+		EmbeddingModel:      "text-embedding-qwen3-embedding-4b",
 		WebEnabled:          true,
 		WebPort:             "8445",
 		RelayEnabled:        true, // Relay on by default

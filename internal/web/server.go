@@ -54,18 +54,25 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) routes() {
-	// API routes
-	s.mux.HandleFunc("GET /api/entries", s.handleListEntries)
-	s.mux.HandleFunc("GET /api/entries/{id}", s.handleGetEntry)
-	s.mux.HandleFunc("POST /api/entries", s.handleCreateEntry)
-	s.mux.HandleFunc("PUT /api/entries/{id}", s.handleUpdateEntry)
-	s.mux.HandleFunc("DELETE /api/entries/{id}", s.handleDeleteEntry)
-	s.mux.HandleFunc("POST /api/entries/{id}/reclassify", s.handleReclassify)
-	s.mux.HandleFunc("GET /api/search", s.handleSearch)
-	s.mux.HandleFunc("GET /api/search/semantic", s.handleSemanticSearch)
-	s.mux.HandleFunc("GET /api/stats", s.handleStats)
-	s.mux.HandleFunc("GET /api/tags", s.handleTags)
-	s.mux.HandleFunc("POST /api/archive", s.handleArchive)
+	// API routes (wrapped with CORS)
+	s.mux.HandleFunc("GET /api/entries", s.cors(s.handleListEntries))
+	s.mux.HandleFunc("GET /api/entries/{id}", s.cors(s.handleGetEntry))
+	s.mux.HandleFunc("POST /api/entries", s.cors(s.handleCreateEntry))
+	s.mux.HandleFunc("PUT /api/entries/{id}", s.cors(s.handleUpdateEntry))
+	s.mux.HandleFunc("DELETE /api/entries/{id}", s.cors(s.handleDeleteEntry))
+	s.mux.HandleFunc("POST /api/entries/{id}/reclassify", s.cors(s.handleReclassify))
+	s.mux.HandleFunc("GET /api/search", s.cors(s.handleSearch))
+	s.mux.HandleFunc("GET /api/search/semantic", s.cors(s.handleSemanticSearch))
+	s.mux.HandleFunc("GET /api/stats", s.cors(s.handleStats))
+	s.mux.HandleFunc("GET /api/tags", s.cors(s.handleTags))
+	s.mux.HandleFunc("POST /api/archive", s.cors(s.handleArchive))
+
+	// Flutter app compatibility endpoints
+	s.mux.HandleFunc("GET /api/brain/history", s.cors(s.handleBrainHistory))
+	s.mux.HandleFunc("GET /api/brain/status", s.cors(s.handleBrainStatus))
+
+	// CORS preflight
+	s.mux.HandleFunc("OPTIONS /", s.handleCORSPreflight)
 
 	// Frontend — serve embedded SPA (or a simple HTML page for now)
 	s.mux.HandleFunc("GET /", s.handleIndex)
@@ -417,6 +424,94 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]interface{}{
 		"exported": exported,
 		"count":    len(exported),
+	})
+}
+
+// --- CORS ---
+
+func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		next(w, r)
+	}
+}
+
+func (s *Server) handleCORSPreflight(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Max-Age", "86400")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Flutter App Compatibility ---
+
+// handleBrainHistory returns entries in the format the Flutter brain-app expects:
+// {"messages": [{"id": "...", "text": "...", "category": "...", "title": "...", "confidence": 0.9, "created_at": "...", "processed": true}]}
+func (s *Server) handleBrainHistory(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	limit := 50
+	if limitStr != "" {
+		if v, err := strconv.Atoi(limitStr); err == nil && v > 0 {
+			limit = v
+		}
+	}
+
+	entries, err := s.store.DB().ListAll(limit, 0)
+	if err != nil {
+		jsonError(w, "listing entries", err, http.StatusInternalServerError)
+		return
+	}
+
+	type historyMsg struct {
+		ID         string  `json:"id"`
+		Text       string  `json:"text"`
+		Category   string  `json:"category"`
+		Title      string  `json:"title"`
+		Confidence float64 `json:"confidence"`
+		CreatedAt  string  `json:"created_at"`
+		Processed  bool    `json:"processed"`
+	}
+
+	messages := make([]historyMsg, 0, len(entries))
+	for _, e := range entries {
+		messages = append(messages, historyMsg{
+			ID:         e.ID,
+			Text:       e.Body,
+			Category:   e.Category,
+			Title:      e.Title,
+			Confidence: e.Confidence,
+			CreatedAt:  e.Created.Format("2006-01-02T15:04:05Z"),
+			Processed:  !e.NeedsReview,
+		})
+	}
+
+	jsonResponse(w, map[string]interface{}{
+		"messages": messages,
+	})
+}
+
+// handleBrainStatus returns brain status in the format the Flutter brain-app expects.
+func (s *Server) handleBrainStatus(w http.ResponseWriter, r *http.Request) {
+	stats, err := s.store.DB().Stats()
+	if err != nil {
+		jsonError(w, "getting stats", err, http.StatusInternalServerError)
+		return
+	}
+
+	total := 0
+	for _, count := range stats {
+		total += count
+	}
+
+	jsonResponse(w, map[string]interface{}{
+		"agent_online": true,
+		"queued_count": 0,
+		"model":        s.cfg.LMStudioModel,
+		"total_entries": total,
+		"categories":    stats,
 	})
 }
 
