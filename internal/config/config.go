@@ -34,8 +34,8 @@ type Config struct {
 	BrainCodeDir string // Path to this repo (scripts/brain)
 
 	// Storage
-	DBPath   string // SQLite database path (default: {BrainDataDir}/brain.db)
-	VecDir   string // chromem-go persistence dir (default: {BrainDataDir}/vec)
+	DBPath     string // SQLite database path (default: {BrainDataDir}/brain.db)
+	VecDir     string // chromem-go persistence dir (default: {BrainDataDir}/vec)
 	ArchiveDir string // optional private-brain repo for archive export
 
 	// Embedding
