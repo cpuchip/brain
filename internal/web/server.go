@@ -507,9 +507,9 @@ func (s *Server) handleBrainStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, map[string]interface{}{
-		"agent_online": true,
-		"queued_count": 0,
-		"model":        s.cfg.LMStudioModel,
+		"agent_online":  true,
+		"queued_count":  0,
+		"model":         s.cfg.LMStudioModel,
 		"total_entries": total,
 		"categories":    stats,
 	})
