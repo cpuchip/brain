@@ -143,6 +143,20 @@ func (d *DB) SetIbecomeTaskID(entryID string, taskID int64) error {
 	return err
 }
 
+// UpdateEntryStatus updates the status and action_done fields of an entry.
+// Used when ibecome notifies that a linked task's status has changed.
+func (d *DB) UpdateEntryStatus(entryID, status string, actionDone bool) error {
+	done := 0
+	if actionDone {
+		done = 1
+	}
+	_, err := d.db.Exec(
+		"UPDATE entries SET status = ?, action_done = ?, updated_at = ? WHERE id = ?",
+		status, done, time.Now().UTC().Format(time.RFC3339), entryID,
+	)
+	return err
+}
+
 // InsertEntry inserts a new entry and its tags, returning the generated ID.
 func (d *DB) InsertEntry(e *Entry) (string, error) {
 	if e.ID == "" {

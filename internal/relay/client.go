@@ -19,17 +19,18 @@ import (
 
 // Message types (must match ibeco.me hub protocol).
 const (
-	TypeAuth    = "auth"
-	TypeAuthOK  = "auth_ok"
-	TypeAuthErr = "auth_error"
-	TypeThought = "thought"
-	TypeResult  = "result"
-	TypeFix     = "fix"
-	TypeFixOK   = "fix_ok"
-	TypeQueued  = "queued"
-	TypeStatus  = "status"
-	TypePing    = "ping"
-	TypePong    = "pong"
+	TypeAuth        = "auth"
+	TypeAuthOK      = "auth_ok"
+	TypeAuthErr     = "auth_error"
+	TypeThought     = "thought"
+	TypeResult      = "result"
+	TypeFix         = "fix"
+	TypeFixOK       = "fix_ok"
+	TypeQueued      = "queued"
+	TypeStatus      = "status"
+	TypePing        = "ping"
+	TypePong        = "pong"
+	TypeTaskUpdated = "task_updated"
 )
 
 // ThoughtMessage from the app.
@@ -66,6 +67,15 @@ type FixOKMessage struct {
 	Type      string `json:"type"`
 	ThoughtID string `json:"thought_id"`
 	NewPath   string `json:"new_path"`
+}
+
+// TaskUpdatedMessage from the relay hub when an ibecome task status changes.
+type TaskUpdatedMessage struct {
+	Type         string `json:"type"`           // "task_updated"
+	TaskID       int64  `json:"task_id"`        // ibecome task ID
+	BrainEntryID string `json:"brain_entry_id"` // brain entry UUID
+	Status       string `json:"status"`         // new ibecome status
+	Title        string `json:"title"`
 }
 
 // Client manages the WebSocket connection to the ibeco.me relay hub.
@@ -251,6 +261,8 @@ func (c *Client) connect(ctx context.Context) error {
 			go c.handleFix(ws, data)
 		case TypeQueued:
 			c.handleQueued(ctx, ws, data)
+		case TypeTaskUpdated:
+			go c.handleTaskUpdated(data)
 		case TypePing:
 			pong, _ := json.Marshal(map[string]string{"type": TypePong})
 			ws.WriteMessage(websocket.TextMessage, pong)
@@ -304,7 +316,7 @@ func (c *Client) handleThought(ctx context.Context, ws *websocket.Conn, data []b
 		go func() {
 			taskCtx, taskCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer taskCancel()
-			taskID, err := c.ibecome.CreateTaskFromResult(taskCtx, result, thought.Text)
+			taskID, err := c.ibecome.CreateTaskFromResult(taskCtx, relPath, result, thought.Text)
 			if err != nil {
 				log.Printf("[relay] ibecome task creation failed: %v", err)
 			} else if taskID > 0 {
@@ -392,6 +404,43 @@ func (c *Client) handleFix(ws *websocket.Conn, data []byte) {
 	log.Printf("[relay] reclassified %s -> %s: %s", fix.ThoughtID, fix.NewCategory, newPath)
 }
 
+// handleTaskUpdated processes a task status change from ibecome.
+func (c *Client) handleTaskUpdated(data []byte) {
+	var msg TaskUpdatedMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		log.Printf("[relay] invalid task_updated: %v", err)
+		return
+	}
+
+	if msg.BrainEntryID == "" {
+		log.Printf("[relay] task_updated has no brain_entry_id, skipping")
+		return
+	}
+
+	// Map ibecome status → brain entry fields
+	var status string
+	var actionDone bool
+	switch msg.Status {
+	case "completed":
+		status = "done"
+		actionDone = true
+	case "paused":
+		status = "waiting"
+	case "archived":
+		status = "archived"
+	default: // "active"
+		status = ""
+		actionDone = false
+	}
+
+	if err := c.store.UpdateEntryStatus(msg.BrainEntryID, status, actionDone); err != nil {
+		log.Printf("[relay] failed to update entry %s status: %v", msg.BrainEntryID, err)
+		return
+	}
+
+	log.Printf("[relay] synced task #%d → entry %s: status=%q done=%v", msg.TaskID, msg.BrainEntryID, status, actionDone)
+}
+
 // handleQueued processes a batch of queued messages that were waiting while we were offline.
 func (c *Client) handleQueued(ctx context.Context, ws *websocket.Conn, data []byte) {
 	var queued struct {
@@ -417,6 +466,8 @@ func (c *Client) handleQueued(ctx context.Context, ws *websocket.Conn, data []by
 			c.handleThought(ctx, ws, raw)
 		case TypeFix:
 			c.handleFix(ws, raw)
+		case TypeTaskUpdated:
+			c.handleTaskUpdated(raw)
 		}
 	}
 }

@@ -39,12 +39,13 @@ func NewClient(baseURL, token string) *Client {
 
 // taskRequest matches the JSON body expected by POST /api/tasks.
 type taskRequest struct {
-	Title       string `json:"title"`
-	Description string `json:"description,omitempty"`
-	SourceDoc   string `json:"source_doc,omitempty"`
-	Scripture   string `json:"scripture,omitempty"`
-	Type        string `json:"type"`   // once | daily | weekly | ongoing
-	Status      string `json:"status"` // active | completed | paused | archived
+	Title        string `json:"title"`
+	Description  string `json:"description,omitempty"`
+	SourceDoc    string `json:"source_doc,omitempty"`
+	Scripture    string `json:"scripture,omitempty"`
+	Type         string `json:"type"`   // once | daily | weekly | ongoing
+	Status       string `json:"status"` // active | completed | paused | archived
+	BrainEntryID string `json:"brain_entry_id,omitempty"`
 }
 
 // taskResponse is the JSON returned by POST /api/tasks.
@@ -55,11 +56,13 @@ type taskResponse struct {
 
 // CreateTaskFromResult creates a task in ibecome based on a classifier result.
 // It maps brain categories and fields to ibecome task fields.
+// entryID is the brain entry UUID so ibecome can link back.
 // Returns the created task ID, or 0 if creation was skipped or failed.
-func (c *Client) CreateTaskFromResult(ctx context.Context, result *classifier.Result, rawText string) (int64, error) {
+func (c *Client) CreateTaskFromResult(ctx context.Context, entryID string, result *classifier.Result, rawText string) (int64, error) {
 	req := taskRequest{
-		Title:  result.Title,
-		Status: "active",
+		Title:        result.Title,
+		Status:       "active",
+		BrainEntryID: entryID,
 	}
 
 	// Build description from raw text + extracted fields

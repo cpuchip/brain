@@ -126,6 +126,11 @@ func (s *Store) SetIbecomeTaskID(entryID string, taskID int64) error {
 	return s.db.SetIbecomeTaskID(entryID, taskID)
 }
 
+// UpdateEntryStatus updates the status and action_done fields from an ibecome task change.
+func (s *Store) UpdateEntryStatus(entryID, status string, actionDone bool) error {
+	return s.db.UpdateEntryStatus(entryID, status, actionDone)
+}
+
 // Reclassify moves an entry from one category to another.
 // The currentPath parameter is now an entry ID (for backward compat with relay/discord,
 // which pass the return value of Save()).
