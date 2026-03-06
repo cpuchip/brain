@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cpuchip/brain/internal/classifier"
+	"github.com/cpuchip/brain/internal/ibecome"
 	"github.com/cpuchip/brain/internal/store"
 	"github.com/gorilla/websocket"
 )
@@ -73,6 +74,7 @@ type Client struct {
 	token    string
 	classify *classifier.Classifier
 	store    *store.Store
+	ibecome  *ibecome.Client // optional: auto-create tasks in ibecome
 
 	mu        sync.Mutex
 	ws        *websocket.Conn
@@ -81,12 +83,14 @@ type Client struct {
 }
 
 // NewClient creates a new relay client.
-func NewClient(url, token string, classify *classifier.Classifier, st *store.Store) *Client {
+// If ibecomeClient is non-nil, tasks will be auto-created for actions/projects.
+func NewClient(url, token string, classify *classifier.Classifier, st *store.Store, ibecomeClient *ibecome.Client) *Client {
 	return &Client{
 		url:       url,
 		token:     token,
 		classify:  classify,
 		store:     st,
+		ibecome:   ibecomeClient,
 		lastPaths: make(map[string]string),
 		done:      make(chan struct{}),
 	}
@@ -294,6 +298,20 @@ func (c *Client) handleThought(ctx context.Context, ws *websocket.Conn, data []b
 	c.mu.Lock()
 	c.lastPaths[thought.ID] = relPath
 	c.mu.Unlock()
+
+	// Auto-create task in ibecome for actions/projects
+	if c.ibecome != nil && (result.Category == "actions" || result.Category == "projects") {
+		go func() {
+			taskCtx, taskCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer taskCancel()
+			taskID, err := c.ibecome.CreateTaskFromResult(taskCtx, result, thought.Text)
+			if err != nil {
+				log.Printf("[relay] ibecome task creation failed: %v", err)
+			} else if taskID > 0 {
+				log.Printf("[relay] created ibecome task #%d for %s: %s", taskID, result.Category, result.Title)
+			}
+		}()
+	}
 
 	// Audit
 	auditRecord := &store.AuditRecord{

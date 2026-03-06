@@ -62,6 +62,10 @@ type Config struct {
 	RelayURL     string // WebSocket endpoint (e.g. "wss://ibeco.me/ws/brain")
 	RelayToken   string // Bearer token (bec_...)
 
+	// ibecome task sync (creates tasks from actions/projects)
+	IbecomeURL      string // REST API base (e.g. "https://ibeco.me")
+	IbecomeTaskSync bool   // Auto-create tasks in ibecome for actions/projects
+
 	// Discord
 	DiscordEnabled   bool   // Enable Discord transport
 	DiscordToken     string // Discord bot token
@@ -139,6 +143,8 @@ func Load() (*Config, error) {
 		WebPort:             "8445",
 		RelayEnabled:        true, // Relay on by default
 		RelayURL:            "wss://ibeco.me/ws/brain",
+		IbecomeURL:          "https://ibeco.me",
+		IbecomeTaskSync:     true, // Create tasks in ibecome when brain classifies actions/projects
 		DiscordEnabled:      false, // Discord off by default
 		ConfidenceThreshold: 0.6,
 		RateLimits: RateLimitConfig{
@@ -168,6 +174,21 @@ func Load() (*Config, error) {
 	}
 	if v := envFirst("IBECOME_ENABLED", "RELAY_ENABLED"); v != "" {
 		cfg.RelayEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("IBECOME_TASK_SYNC"); v != "" {
+		cfg.IbecomeTaskSync = v == "true" || v == "1"
+	}
+	// Derive IbecomeURL from IBECOME_URL if not separately set
+	if v := os.Getenv("IBECOME_API_URL"); v != "" {
+		cfg.IbecomeURL = strings.TrimRight(v, "/")
+	} else if v := envFirst("IBECOME_URL", "RELAY_URL"); v != "" {
+		// Strip ws path to get the HTTP base
+		u := v
+		u = strings.Replace(u, "wss://", "https://", 1)
+		u = strings.Replace(u, "ws://", "http://", 1)
+		u = strings.TrimSuffix(u, "/ws/brain")
+		u = strings.TrimRight(u, "/")
+		cfg.IbecomeURL = u
 	}
 
 	// Discord config

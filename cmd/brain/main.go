@@ -12,6 +12,7 @@ import (
 	"github.com/cpuchip/brain/internal/classifier"
 	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/discord"
+	"github.com/cpuchip/brain/internal/ibecome"
 	"github.com/cpuchip/brain/internal/lmstudio"
 	"github.com/cpuchip/brain/internal/relay"
 	"github.com/cpuchip/brain/internal/store"
@@ -152,7 +153,14 @@ func run() error {
 	// Start relay transport (WebSocket to ibeco.me)
 	var relayClient *relay.Client
 	if cfg.RelayEnabled {
-		relayClient = relay.NewClient(cfg.RelayURL, cfg.RelayToken, classify, st)
+		// Create ibecome client for task sync (uses same token as relay)
+		var ibecomeClient *ibecome.Client
+		if cfg.IbecomeTaskSync && cfg.RelayToken != "" && cfg.IbecomeURL != "" {
+			ibecomeClient = ibecome.NewClient(cfg.IbecomeURL, cfg.RelayToken)
+			log.Printf("  Task sync: enabled → %s", cfg.IbecomeURL)
+		}
+
+		relayClient = relay.NewClient(cfg.RelayURL, cfg.RelayToken, classify, st, ibecomeClient)
 		go relayClient.Run(ctx)
 		log.Printf("Relay transport started → %s", cfg.RelayURL)
 	}
