@@ -309,6 +309,9 @@ func (c *Client) handleThought(ctx context.Context, ws *websocket.Conn, data []b
 				log.Printf("[relay] ibecome task creation failed: %v", err)
 			} else if taskID > 0 {
 				log.Printf("[relay] created ibecome task #%d for %s: %s", taskID, result.Category, result.Title)
+				if err := c.store.SetIbecomeTaskID(relPath, taskID); err != nil {
+					log.Printf("[relay] failed to save ibecome task link: %v", err)
+				}
 			}
 		}()
 	}

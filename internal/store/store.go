@@ -121,6 +121,11 @@ func (s *Store) SaveAudit(record *AuditRecord) error {
 	return s.db.InsertAudit(record.FilePath, record)
 }
 
+// SetIbecomeTaskID links a brain entry to its corresponding ibecome task.
+func (s *Store) SetIbecomeTaskID(entryID string, taskID int64) error {
+	return s.db.SetIbecomeTaskID(entryID, taskID)
+}
+
 // Reclassify moves an entry from one category to another.
 // The currentPath parameter is now an entry ID (for backward compat with relay/discord,
 // which pass the return value of Save()).

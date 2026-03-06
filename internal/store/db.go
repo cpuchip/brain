@@ -38,8 +38,10 @@ func (d *DB) Close() error {
 }
 
 func (d *DB) migrate() error {
-	_, err := d.db.Exec(schema)
-	return err
+	if _, err := d.db.Exec(schema); err != nil {
+		return err
+	}
+	return d.migrateIbecomeTaskID()
 }
 
 const schema = `
@@ -110,6 +112,36 @@ CREATE INDEX IF NOT EXISTS idx_entries_needs_review ON entries(needs_review) WHE
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 `
+
+// migrateIbecomeTaskID adds the ibecome_task_id column if it doesn't exist.
+func (d *DB) migrateIbecomeTaskID() error {
+	rows, err := d.db.Query("PRAGMA table_info(entries)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dfltValue *string
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if name == "ibecome_task_id" {
+			return nil // already exists
+		}
+	}
+	_, err = d.db.Exec("ALTER TABLE entries ADD COLUMN ibecome_task_id INTEGER")
+	return err
+}
+
+// SetIbecomeTaskID links a brain entry to an ibecome task.
+func (d *DB) SetIbecomeTaskID(entryID string, taskID int64) error {
+	_, err := d.db.Exec("UPDATE entries SET ibecome_task_id = ? WHERE id = ?", taskID, entryID)
+	return err
+}
 
 // InsertEntry inserts a new entry and its tags, returning the generated ID.
 func (d *DB) InsertEntry(e *Entry) (string, error) {
