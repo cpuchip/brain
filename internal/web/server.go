@@ -560,4 +560,3 @@ func jsonError(w http.ResponseWriter, msg string, err error, status int) {
 	}
 	json.NewEncoder(w).Encode(map[string]string{"error": detail})
 }
-
