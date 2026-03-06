@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/cpuchip/brain/internal/config"
@@ -16,18 +16,20 @@ import (
 
 // Server serves the brain web UI and REST API.
 type Server struct {
-	store *store.Store
-	cfg   *config.Config
-	mux   *http.ServeMux
-	srv   *http.Server
+	store      *store.Store
+	cfg        *config.Config
+	mux        *http.ServeMux
+	srv        *http.Server
+	frontendFS fs.FS
 }
 
 // NewServer creates a new web server.
-func NewServer(st *store.Store, cfg *config.Config) *Server {
+func NewServer(st *store.Store, cfg *config.Config, frontendFS fs.FS) *Server {
 	s := &Server{
-		store: st,
-		cfg:   cfg,
-		mux:   http.NewServeMux(),
+		store:      st,
+		cfg:        cfg,
+		mux:        http.NewServeMux(),
+		frontendFS: frontendFS,
 	}
 	s.routes()
 	return s
@@ -518,13 +520,26 @@ func (s *Server) handleBrainStatus(w http.ResponseWriter, r *http.Request) {
 // --- Frontend ---
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	// For now, serve a simple HTML page. Later this will be an embedded SPA.
-	if r.URL.Path != "/" && !strings.HasPrefix(r.URL.Path, "/api/") {
-		http.NotFound(w, r)
+	if s.frontendFS == nil {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("Brain server running. Frontend not embedded."))
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, indexHTML)
+
+	fileServer := http.FileServer(http.FS(s.frontendFS))
+
+	// Try serving the requested file; fall back to index.html for SPA routes
+	path := r.URL.Path
+	if path != "/" {
+		f, err := s.frontendFS.Open(path[1:]) // strip leading /
+		if err != nil {
+			// Serve index.html for SPA routes
+			r.URL.Path = "/"
+		} else {
+			f.Close()
+		}
+	}
+	fileServer.ServeHTTP(w, r)
 }
 
 // --- Helpers ---
@@ -546,274 +561,3 @@ func jsonError(w http.ResponseWriter, msg string, err error, status int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": detail})
 }
 
-const indexHTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Brain</title>
-<style>
-  :root { --bg: #0f172a; --card: #1e293b; --text: #e2e8f0; --accent: #38bdf8; --dim: #64748b; --border: #334155; }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-  .container { max-width: 900px; margin: 0 auto; padding: 2rem 1rem; }
-  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
-  .subtitle { color: var(--dim); margin-bottom: 2rem; }
-  .stats { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }
-  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem 1.25rem; min-width: 120px; }
-  .stat .number { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
-  .stat .label { font-size: 0.75rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
-  .search-bar { display: flex; gap: 0.5rem; margin-bottom: 2rem; }
-  .search-bar input { flex: 1; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 1rem; }
-  .search-bar input:focus { outline: none; border-color: var(--accent); }
-  .search-bar button { padding: 0.75rem 1.25rem; border-radius: 0.5rem; border: none; background: var(--accent); color: var(--bg); font-weight: 600; cursor: pointer; }
-  .search-bar button:hover { opacity: 0.9; }
-  .entries { display: flex; flex-direction: column; gap: 0.75rem; }
-  .entry { background: var(--card); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem 1.25rem; cursor: pointer; transition: border-color 0.15s; }
-  .entry:hover { border-color: var(--accent); }
-  .entry-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
-  .entry-title { font-weight: 600; }
-  .entry-category { font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 9999px; background: var(--bg); color: var(--accent); }
-  .entry-body { font-size: 0.875rem; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .entry-meta { font-size: 0.75rem; color: var(--dim); margin-top: 0.5rem; }
-  .tags { display: flex; gap: 0.25rem; margin-top: 0.5rem; }
-  .tag { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 9999px; background: var(--bg); color: var(--dim); border: 1px solid var(--border); }
-  .capture { margin-bottom: 2rem; }
-  .capture textarea { width: 100%; padding: 0.75rem 1rem; border-radius: 0.5rem; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 1rem; resize: vertical; min-height: 80px; }
-  .capture textarea:focus { outline: none; border-color: var(--accent); }
-  .capture button { margin-top: 0.5rem; padding: 0.5rem 1rem; border-radius: 0.5rem; border: none; background: var(--accent); color: var(--bg); font-weight: 600; cursor: pointer; }
-  .empty { text-align: center; padding: 3rem; color: var(--dim); }
-  .tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
-  .tab { padding: 0.5rem 1rem; border-radius: 0.5rem; border: 1px solid var(--border); background: transparent; color: var(--dim); cursor: pointer; font-size: 0.875rem; }
-  .tab.active { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
-  .tab:hover:not(.active) { border-color: var(--accent); color: var(--text); }
-
-  /* Modal */
-  .modal-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 40; align-items: center; justify-content: center; }
-  .modal-backdrop.open { display: flex; }
-  .modal { background: var(--card); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.5rem; width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto; }
-  .modal h2 { margin-bottom: 1rem; }
-  .modal label { display: block; font-size: 0.875rem; color: var(--dim); margin-bottom: 0.25rem; margin-top: 0.75rem; }
-  .modal input, .modal textarea, .modal select { width: 100%; padding: 0.5rem; border-radius: 0.375rem; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 0.875rem; }
-  .modal textarea { min-height: 120px; resize: vertical; }
-  .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
-  .modal-actions button { padding: 0.5rem 1rem; border-radius: 0.375rem; border: none; cursor: pointer; font-weight: 600; }
-  .btn-primary { background: var(--accent); color: var(--bg); }
-  .btn-danger { background: #ef4444; color: white; }
-  .btn-secondary { background: var(--border); color: var(--text); }
-</style>
-</head>
-<body>
-<div class="container">
-  <h1>🧠 Brain</h1>
-  <p class="subtitle">Your second brain — SQLite + semantic search</p>
-
-  <div id="stats" class="stats"></div>
-
-  <div class="capture">
-    <textarea id="captureText" placeholder="Capture a thought..."></textarea>
-    <button onclick="captureThought()">Save</button>
-  </div>
-
-  <div class="search-bar">
-    <input type="text" id="searchInput" placeholder="Search thoughts..." onkeydown="if(event.key==='Enter')search()">
-    <button onclick="search()">Search</button>
-    <button onclick="semanticSearch()" title="Semantic search">🔮</button>
-  </div>
-
-  <div class="tabs" id="tabs"></div>
-  <div class="entries" id="entries"></div>
-</div>
-
-<!-- Detail Modal -->
-<div class="modal-backdrop" id="detailModal">
-  <div class="modal">
-    <h2 id="modalTitle"></h2>
-    <label>Category</label>
-    <select id="modalCategory">
-      <option>people</option><option>projects</option><option>ideas</option>
-      <option>actions</option><option>study</option><option>journal</option><option>inbox</option>
-    </select>
-    <label>Body</label>
-    <textarea id="modalBody"></textarea>
-    <label>Tags (comma-separated)</label>
-    <input id="modalTags" type="text">
-    <div class="entry-meta" id="modalMeta"></div>
-    <div class="modal-actions">
-      <button class="btn-danger" onclick="deleteEntry()">Delete</button>
-      <button class="btn-secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn-primary" onclick="saveEntry()">Save</button>
-    </div>
-  </div>
-</div>
-
-<script>
-let currentEntryId = null;
-let currentFilter = '';
-
-async function loadStats() {
-  const res = await fetch('/api/stats');
-  const data = await res.json();
-  const el = document.getElementById('stats');
-  el.innerHTML = '<div class="stat"><div class="number">' + data.total + '</div><div class="label">Total</div></div>';
-  if (data.vec_enabled) {
-    el.innerHTML += '<div class="stat"><div class="number">' + data.vec_count + '</div><div class="label">Embedded</div></div>';
-  }
-  const cats = data.categories || {};
-  for (const [cat, count] of Object.entries(cats)) {
-    el.innerHTML += '<div class="stat"><div class="number">' + count + '</div><div class="label">' + cat + '</div></div>';
-  }
-
-  // Build tabs
-  const tabs = document.getElementById('tabs');
-  tabs.innerHTML = '<button class="tab' + (currentFilter === '' ? ' active' : '') + '" onclick="filterCategory(\'\')">All</button>';
-  for (const cat of Object.keys(cats).sort()) {
-    tabs.innerHTML += '<button class="tab' + (currentFilter === cat ? ' active' : '') + '" onclick="filterCategory(\'' + cat + '\')">' + cat + '</button>';
-  }
-  tabs.innerHTML += '<button class="tab' + (currentFilter === 'review' ? ' active' : '') + '" onclick="filterCategory(\'review\')">⚠ Review</button>';
-}
-
-async function loadEntries(params) {
-  const url = '/api/entries' + (params ? '?' + params : '');
-  const res = await fetch(url);
-  const entries = await res.json();
-  renderEntries(entries);
-}
-
-function renderEntries(entries) {
-  const el = document.getElementById('entries');
-  if (!entries || entries.length === 0) {
-    el.innerHTML = '<div class="empty">No thoughts yet. Capture one above.</div>';
-    return;
-  }
-  el.innerHTML = entries.map(e => {
-    const date = new Date(e.created_at).toLocaleDateString();
-    const tags = (e.tags || []).map(t => '<span class="tag">' + t + '</span>').join('');
-    const body = (e.body || '').substring(0, 120);
-    return '<div class="entry" onclick="openEntry(\'' + e.id + '\')">' +
-      '<div class="entry-header"><span class="entry-title">' + esc(e.title) + '</span>' +
-      '<span class="entry-category">' + e.category + '</span></div>' +
-      '<div class="entry-body">' + esc(body) + '</div>' +
-      (tags ? '<div class="tags">' + tags + '</div>' : '') +
-      '<div class="entry-meta">' + date + ' · ' + (e.source || 'unknown') + ' · ' + Math.round((e.confidence || 0) * 100) + '%</div>' +
-      '</div>';
-  }).join('');
-}
-
-function filterCategory(cat) {
-  currentFilter = cat;
-  if (cat === 'review') {
-    loadEntries('needs_review=true');
-  } else if (cat) {
-    loadEntries('category=' + cat);
-  } else {
-    loadEntries('');
-  }
-  loadStats();
-}
-
-async function search() {
-  const q = document.getElementById('searchInput').value.trim();
-  if (!q) { loadEntries(''); return; }
-  const res = await fetch('/api/search?q=' + encodeURIComponent(q));
-  const entries = await res.json();
-  renderEntries(entries);
-}
-
-async function semanticSearch() {
-  const q = document.getElementById('searchInput').value.trim();
-  if (!q) return;
-  const res = await fetch('/api/search/semantic?q=' + encodeURIComponent(q));
-  if (!res.ok) { alert('Semantic search unavailable'); return; }
-  const results = await res.json();
-  // Load full entries for results
-  const entries = [];
-  for (const r of results) {
-    const eres = await fetch('/api/entries/' + r.entry_id);
-    if (eres.ok) entries.push(await eres.json());
-  }
-  renderEntries(entries);
-}
-
-async function captureThought() {
-  const text = document.getElementById('captureText').value.trim();
-  if (!text) return;
-  await fetch('/api/entries', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title: text.substring(0, 60), body: text, category: 'inbox', source: 'web' })
-  });
-  document.getElementById('captureText').value = '';
-  loadStats();
-  loadEntries('');
-}
-
-async function openEntry(id) {
-  const res = await fetch('/api/entries/' + id);
-  if (!res.ok) return;
-  const e = await res.json();
-  currentEntryId = id;
-  document.getElementById('modalTitle').textContent = e.title;
-  document.getElementById('modalCategory').value = e.category;
-  document.getElementById('modalBody').value = e.body || '';
-  document.getElementById('modalTags').value = (e.tags || []).join(', ');
-  document.getElementById('modalMeta').textContent =
-    'Created: ' + new Date(e.created_at).toLocaleString() +
-    ' · Source: ' + (e.source || 'unknown') +
-    ' · Confidence: ' + Math.round((e.confidence || 0) * 100) + '%';
-  document.getElementById('detailModal').classList.add('open');
-}
-
-function closeModal() {
-  document.getElementById('detailModal').classList.remove('open');
-  currentEntryId = null;
-}
-
-async function saveEntry() {
-  if (!currentEntryId) return;
-  const tagsRaw = document.getElementById('modalTags').value;
-  const tags = tagsRaw ? tagsRaw.split(',').map(t => t.trim()).filter(Boolean) : [];
-  await fetch('/api/entries/' + currentEntryId, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      category: document.getElementById('modalCategory').value,
-      body: document.getElementById('modalBody').value,
-      tags: tags,
-    })
-  });
-  closeModal();
-  loadStats();
-  filterCategory(currentFilter);
-}
-
-async function deleteEntry() {
-  if (!currentEntryId || !confirm('Delete this entry?')) return;
-  await fetch('/api/entries/' + currentEntryId, { method: 'DELETE' });
-  closeModal();
-  loadStats();
-  filterCategory(currentFilter);
-}
-
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-// Close modal on backdrop click
-document.getElementById('detailModal').addEventListener('click', function(e) {
-  if (e.target === this) closeModal();
-});
-
-// Close modal on Escape
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') closeModal();
-});
-
-// Initial load
-loadStats();
-loadEntries('');
-</script>
-</body>
-</html>`

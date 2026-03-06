@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"embed"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
@@ -19,6 +21,9 @@ import (
 	"github.com/cpuchip/brain/internal/web"
 	"github.com/philippgille/chromem-go"
 )
+
+//go:embed all:dist
+var frontendFS embed.FS
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -140,7 +145,12 @@ func run() error {
 
 	// Start web UI
 	if cfg.WebEnabled {
-		srv := web.NewServer(st, cfg)
+		distFS, err := fs.Sub(frontendFS, "dist")
+		if err != nil {
+			log.Printf("warning: frontend not available: %v", err)
+			distFS = nil
+		}
+		srv := web.NewServer(st, cfg, distFS)
 		go func() {
 			addr := ":" + cfg.WebPort
 			log.Printf("Web UI starting on http://localhost%s", addr)

@@ -144,7 +144,7 @@ func Load() (*Config, error) {
 		RelayEnabled:        true, // Relay on by default
 		RelayURL:            "wss://ibeco.me/ws/brain",
 		IbecomeURL:          "https://ibeco.me",
-		IbecomeTaskSync:     true, // Create tasks in ibecome when brain classifies actions/projects
+		IbecomeTaskSync:     true,  // Create tasks in ibecome when brain classifies actions/projects
 		DiscordEnabled:      false, // Discord off by default
 		ConfidenceThreshold: 0.6,
 		RateLimits: RateLimitConfig{

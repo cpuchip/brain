@@ -30,6 +30,10 @@ go.work.sum
 # Runtime data (SQLite, vectors)
 *.db
 *.db-journal
+
+# Frontend build artifacts
+cmd/brain/dist/
+frontend/node_modules/
 *.db-wal
 *.db-shm
 vec/
