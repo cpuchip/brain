@@ -3,6 +3,7 @@
 package lmstudio
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -132,6 +133,75 @@ func ListModels(ctx context.Context, baseURL string) ([]Model, error) {
 	}
 
 	return result.Data, nil
+}
+
+// LoadModelAPI loads a model via the LM Studio REST API (POST /api/v1/models/load).
+// This is the HTTP-based alternative to the CLI 'lms load' approach —
+// useful when the lms CLI isn't available or for programmatic model switching.
+func LoadModelAPI(ctx context.Context, baseURL, modelID string) error {
+	// REST API uses a different base than the OpenAI-compat endpoint
+	apiBase := toRESTBase(baseURL)
+
+	reqBody, _ := json.Marshal(map[string]any{
+		"model": modelID,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiBase+"/api/v1/models/load", bytes.NewReader(reqBody))
+	if err != nil {
+		return fmt.Errorf("creating load request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 2 * time.Minute} // loading can be slow
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("loading model %q via API: %w", modelID, err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("load model %q returned %d: %s", modelID, resp.StatusCode, string(body[:min(len(body), 300)]))
+	}
+
+	log.Printf("Model %q loaded via REST API", modelID)
+	return nil
+}
+
+// UnloadModelAPI unloads a model via the LM Studio REST API (POST /api/v1/models/unload).
+func UnloadModelAPI(ctx context.Context, baseURL, instanceID string) error {
+	apiBase := toRESTBase(baseURL)
+
+	reqBody, _ := json.Marshal(map[string]string{
+		"instance_id": instanceID,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, "POST", apiBase+"/api/v1/models/unload", bytes.NewReader(reqBody))
+	if err != nil {
+		return fmt.Errorf("creating unload request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("unloading model %q via API: %w", instanceID, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unload model %q returned %d: %s", instanceID, resp.StatusCode, string(body[:min(len(body), 300)]))
+	}
+
+	log.Printf("Model %q unloaded via REST API", instanceID)
+	return nil
+}
+
+// toRESTBase converts an OpenAI-compat base URL (http://localhost:1234/v1)
+// to the REST API base (http://localhost:1234).
+func toRESTBase(baseURL string) string {
+	return strings.TrimSuffix(strings.TrimRight(baseURL, "/"), "/v1")
 }
 
 // isServerRunning checks if the LM Studio server responds to a simple request.

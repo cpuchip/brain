@@ -136,7 +136,7 @@ func Load() (*Config, error) {
 		AIModel:             AvailableModels["gpt-mini"].ID,
 		AIModelPreset:       "gpt-mini",
 		LMStudioURL:         "http://localhost:1234/v1",
-		LMStudioModel:       "qwen3.5-9b",
+		LMStudioModel:       "mistralai/ministral-3-3b",
 		EmbeddingBackend:    "lmstudio", // default: use LM Studio for embeddings too
 		EmbeddingModel:      "text-embedding-qwen3-embedding-4b",
 		WebEnabled:          true,

@@ -62,14 +62,32 @@ func New(client ai.Completer, confidenceThreshold float64) *Classifier {
 	}
 }
 
+// ActiveProfile returns the model profile for the current AI backend model.
+// Returns nil if no profile is registered for the active model.
+func (c *Classifier) ActiveProfile() *ModelProfile {
+	return LookupProfile(c.client.Model())
+}
+
 // Classify takes raw text and returns a classification result.
 func (c *Classifier) Classify(ctx context.Context, rawText string) (*Result, error) {
+	// Select prompt and temperature from the active model's profile
+	prompt := systemPrompt
+	temp := 0.1
+	if p := c.ActiveProfile(); p != nil {
+		if p.ClassifyPrompt != "" {
+			prompt = p.ClassifyPrompt
+		}
+		if p.Temperature > 0 {
+			temp = p.Temperature
+		}
+	}
+
 	messages := []ai.ChatMessage{
-		{Role: "system", Content: systemPrompt},
+		{Role: "system", Content: prompt},
 		{Role: "user", Content: rawText},
 	}
 
-	respBytes, err := c.client.CompleteJSON(ctx, messages, 0.1)
+	respBytes, err := c.client.CompleteJSON(ctx, messages, temp)
 	if err != nil {
 		return nil, fmt.Errorf("classification failed: %w", err)
 	}

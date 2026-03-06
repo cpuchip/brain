@@ -142,6 +142,11 @@ func run() error {
 
 	// Initialize classifier
 	classify := classifier.New(completer, cfg.ConfidenceThreshold)
+	if p := classify.ActiveProfile(); p != nil {
+		log.Printf("  Classification profile: %s (%s)", p.Name, p.ID)
+	} else {
+		log.Printf("  Classification profile: default (no profile for %s)", completer.Model())
+	}
 
 	// Start web UI
 	if cfg.WebEnabled {

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cpuchip/brain/internal/classifier"
 	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/store"
 )
@@ -72,6 +73,10 @@ func (s *Server) routes() {
 	// Flutter app compatibility endpoints
 	s.mux.HandleFunc("GET /api/brain/history", s.cors(s.handleBrainHistory))
 	s.mux.HandleFunc("GET /api/brain/status", s.cors(s.handleBrainStatus))
+
+	// Model profiles
+	s.mux.HandleFunc("GET /api/models", s.cors(s.handleListModels))
+	s.mux.HandleFunc("GET /api/models/active", s.cors(s.handleActiveModel))
 
 	// CORS preflight
 	s.mux.HandleFunc("OPTIONS /", s.handleCORSPreflight)
@@ -540,6 +545,58 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	fileServer.ServeHTTP(w, r)
+}
+
+// --- Model Profile Handlers ---
+
+func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
+	type profileJSON struct {
+		ID          string   `json:"id"`
+		Name        string   `json:"name"`
+		Tasks       []string `json:"tasks"`
+		Temperature float64  `json:"temperature"`
+		Active      bool     `json:"active"`
+	}
+
+	activeModel := s.cfg.LMStudioModel
+	profiles := classifier.ListProfiles()
+
+	result := make([]profileJSON, 0, len(profiles))
+	for _, p := range profiles {
+		tasks := make([]string, len(p.Tasks))
+		for i, t := range p.Tasks {
+			tasks[i] = string(t)
+		}
+		result = append(result, profileJSON{
+			ID:          p.ID,
+			Name:        p.Name,
+			Tasks:       tasks,
+			Temperature: p.Temperature,
+			Active:      p.ID == activeModel,
+		})
+	}
+
+	jsonResponse(w, result)
+}
+
+func (s *Server) handleActiveModel(w http.ResponseWriter, r *http.Request) {
+	active := s.cfg.LMStudioModel
+	profile := classifier.LookupProfile(active)
+
+	result := map[string]any{
+		"model_id": active,
+		"backend":  s.cfg.AIBackend,
+	}
+	if profile != nil {
+		result["profile"] = profile.Name
+		tasks := make([]string, len(profile.Tasks))
+		for i, t := range profile.Tasks {
+			tasks[i] = string(t)
+		}
+		result["tasks"] = tasks
+	}
+
+	jsonResponse(w, result)
 }
 
 // --- Helpers ---
