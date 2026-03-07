@@ -31,9 +31,12 @@ const (
 	TypePing        = "ping"
 	TypePong        = "pong"
 	TypeTaskUpdated = "task_updated"
-	TypeEntriesSync = "entries_sync"
-	TypeEntryUpdate = "entry_update"
-	TypeEntryDelete = "entry_delete"
+	TypeEntriesSync  = "entries_sync"
+	TypeEntryCreate  = "entry_create"
+	TypeEntryCreated = "entry_created"
+	TypeEntryUpdate  = "entry_update"
+	TypeEntryUpdated = "entry_updated"
+	TypeEntryDelete  = "entry_delete"
 )
 
 // ThoughtMessage from the app.
@@ -268,9 +271,11 @@ func (c *Client) connect(ctx context.Context) error {
 		case TypeQueued:
 			c.handleQueued(ctx, ws, data)
 		case TypeTaskUpdated:
-			go c.handleTaskUpdated(data)
+			go c.handleTaskUpdated(ws, data)
+		case TypeEntryCreate:
+			go c.handleEntryCreate(ws, data)
 		case TypeEntryUpdate:
-			go c.handleEntryUpdate(data)
+			go c.handleEntryUpdate(ws, data)
 		case TypeEntryDelete:
 			go c.handleEntryDelete(data)
 		case TypePing:
@@ -370,6 +375,9 @@ func (c *Client) handleThought(ctx context.Context, ws *websocket.Conn, data []b
 	ws.WriteMessage(websocket.TextMessage, resultMsg)
 	c.mu.Unlock()
 
+	// Push the new entry to ibeco.me cache
+	c.sendEntryCreated(ws, relPath)
+
 	log.Printf("[relay] classified %s -> %s (%s, %.0f%%)", thought.ID, result.Category, result.Title, result.Confidence*100)
 }
 
@@ -415,7 +423,7 @@ func (c *Client) handleFix(ws *websocket.Conn, data []byte) {
 }
 
 // handleTaskUpdated processes a task status change from ibecome.
-func (c *Client) handleTaskUpdated(data []byte) {
+func (c *Client) handleTaskUpdated(ws *websocket.Conn, data []byte) {
 	var msg TaskUpdatedMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
 		log.Printf("[relay] invalid task_updated: %v", err)
@@ -449,6 +457,9 @@ func (c *Client) handleTaskUpdated(data []byte) {
 	}
 
 	log.Printf("[relay] synced task #%d → entry %s: status=%q done=%v", msg.TaskID, msg.BrainEntryID, status, actionDone)
+
+	// Push the updated entry to ibeco.me cache
+	c.sendEntryUpdated(ws, msg.BrainEntryID)
 }
 
 // handleQueued processes a batch of queued messages that were waiting while we were offline.
@@ -477,9 +488,11 @@ func (c *Client) handleQueued(ctx context.Context, ws *websocket.Conn, data []by
 		case TypeFix:
 			c.handleFix(ws, raw)
 		case TypeTaskUpdated:
-			c.handleTaskUpdated(raw)
+			c.handleTaskUpdated(ws, raw)
+		case TypeEntryCreate:
+			c.handleEntryCreate(ws, raw)
 		case TypeEntryUpdate:
-			c.handleEntryUpdate(raw)
+			c.handleEntryUpdate(ws, raw)
 		case TypeEntryDelete:
 			c.handleEntryDelete(raw)
 		}
@@ -540,7 +553,7 @@ func (c *Client) sendEntriesSync(ws *websocket.Conn) {
 }
 
 // handleEntryUpdate processes an entry update request from ibeco.me.
-func (c *Client) handleEntryUpdate(data []byte) {
+func (c *Client) handleEntryUpdate(ws *websocket.Conn, data []byte) {
 	var msg struct {
 		EntryID string         `json:"entry_id"`
 		Updates map[string]any `json:"updates"`
@@ -584,6 +597,9 @@ func (c *Client) handleEntryUpdate(data []byte) {
 	}
 
 	log.Printf("[relay] updated entry %s from ibeco.me", msg.EntryID)
+
+	// Push the updated entry back to ibeco.me cache
+	c.sendEntryUpdated(ws, msg.EntryID)
 }
 
 // handleEntryDelete processes an entry delete request from ibeco.me.
@@ -602,6 +618,127 @@ func (c *Client) handleEntryDelete(data []byte) {
 	}
 
 	log.Printf("[relay] deleted entry %s from ibeco.me", msg.EntryID)
+}
+
+// handleEntryCreate processes a create request from ibeco.me and stores it locally.
+func (c *Client) handleEntryCreate(ws *websocket.Conn, data []byte) {
+	var msg struct {
+		EntryID string         `json:"entry_id"`
+		Fields  map[string]any `json:"fields"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		log.Printf("[relay] invalid entry_create: %v", err)
+		return
+	}
+
+	entry := &store.Entry{
+		ID:     msg.EntryID,
+		Source: "web",
+	}
+
+	if v, ok := msg.Fields["title"].(string); ok {
+		entry.Title = v
+	}
+	if v, ok := msg.Fields["category"].(string); ok && v != "" {
+		entry.Category = v
+	} else {
+		entry.Category = "inbox"
+	}
+	if v, ok := msg.Fields["body"].(string); ok {
+		entry.Body = v
+	}
+	if v, ok := msg.Fields["status"].(string); ok {
+		entry.Status = v
+	}
+	if v, ok := msg.Fields["due_date"].(string); ok {
+		entry.DueDate = v
+	}
+	if v, ok := msg.Fields["next_action"].(string); ok {
+		entry.NextAction = v
+	}
+	if v, ok := msg.Fields["source"].(string); ok && v != "" {
+		entry.Source = v
+	}
+	if tags, ok := msg.Fields["tags"].([]any); ok {
+		for _, t := range tags {
+			if s, ok := t.(string); ok {
+				entry.Tags = append(entry.Tags, s)
+			}
+		}
+	}
+
+	id, err := c.store.DB().InsertEntry(entry)
+	if err != nil {
+		log.Printf("[relay] entry_create failed: %v", err)
+		return
+	}
+
+	log.Printf("[relay] created entry %s from ibeco.me: %s/%s", id, entry.Category, entry.Title)
+
+	// Push confirmed entry back to ibeco.me cache
+	c.sendEntryCreated(ws, id)
+}
+
+// sendEntryCreated sends an entry_created message to the hub with the full entry data.
+func (c *Client) sendEntryCreated(ws *websocket.Conn, entryID string) {
+	entry, err := c.store.DB().GetEntry(entryID)
+	if err != nil {
+		log.Printf("[relay] sendEntryCreated: entry %s not found: %v", entryID, err)
+		return
+	}
+
+	msg, _ := json.Marshal(map[string]any{
+		"type": TypeEntryCreated,
+		"entry": map[string]any{
+			"id":          entry.ID,
+			"title":       entry.Title,
+			"category":    entry.Category,
+			"body":        entry.Body,
+			"status":      entry.Status,
+			"action_done": entry.ActionDone,
+			"due_date":    entry.DueDate,
+			"next_action": entry.NextAction,
+			"tags":        entry.Tags,
+			"source":      entry.Source,
+			"created_at":  entry.Created.Format("2006-01-02T15:04:05Z"),
+			"updated_at":  entry.Updated.Format("2006-01-02T15:04:05Z"),
+		},
+	})
+
+	c.mu.Lock()
+	ws.WriteMessage(websocket.TextMessage, msg)
+	c.mu.Unlock()
+}
+
+// sendEntryUpdated sends an entry_updated message to the hub with the full entry data.
+func (c *Client) sendEntryUpdated(ws *websocket.Conn, entryID string) {
+	entry, err := c.store.DB().GetEntry(entryID)
+	if err != nil {
+		log.Printf("[relay] sendEntryUpdated: entry %s not found: %v", entryID, err)
+		return
+	}
+
+	msg, _ := json.Marshal(map[string]any{
+		"type": TypeEntryUpdated,
+		"entry": map[string]any{
+			"id":          entry.ID,
+			"title":       entry.Title,
+			"category":    entry.Category,
+			"body":        entry.Body,
+			"status":      entry.Status,
+			"action_done": entry.ActionDone,
+			"due_date":    entry.DueDate,
+			"next_action": entry.NextAction,
+			"tags":        entry.Tags,
+			"source":      entry.Source,
+			"created_at":  entry.Created.Format("2006-01-02T15:04:05Z"),
+			"updated_at":  entry.Updated.Format("2006-01-02T15:04:05Z"),
+		},
+	})
+
+	c.mu.Lock()
+	ws.WriteMessage(websocket.TextMessage, msg)
+	c.mu.Unlock()
 }
 
 // sendStatus sends the brain's current status to the relay.
