@@ -677,6 +677,91 @@ func (c *Client) handleEntryCreate(ws *websocket.Conn, data []byte) {
 
 	// Push confirmed entry back to ibeco.me cache
 	c.sendEntryCreated(ws, id)
+
+	// Auto-classify inbox entries that arrived without AI classification
+	if entry.Category == "inbox" && c.classify != nil {
+		go c.autoClassifyEntry(ws, id, entry)
+	}
+}
+
+// autoClassifyEntry runs the AI classifier on a newly created entry and syncs results back.
+func (c *Client) autoClassifyEntry(ws *websocket.Conn, id string, entry *store.Entry) {
+	text := entry.Body
+	if text == "" {
+		text = entry.Title
+	}
+	if text == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	log.Printf("[relay] auto-classifying entry %s: %.50s...", id, text)
+
+	result, err := c.classify.Classify(ctx, text)
+	if err != nil {
+		log.Printf("[relay] auto-classify failed for %s: %v", id, err)
+		return
+	}
+
+	needsReview := c.classify.NeedsReview(result)
+
+	// Reclassify (move) if category changed
+	currentID := id
+	if result.Category != entry.Category {
+		newID, err := c.store.Reclassify(id, result.Category)
+		if err != nil {
+			log.Printf("[relay] auto-classify reclassify failed for %s: %v", id, err)
+			return
+		}
+		currentID = newID
+	}
+
+	// Re-fetch and update
+	updated, err := c.store.DB().GetEntry(currentID)
+	if err != nil {
+		log.Printf("[relay] auto-classify GetEntry failed for %s: %v", currentID, err)
+		return
+	}
+
+	updated.Title = result.Title
+	updated.Confidence = result.Confidence
+	updated.NeedsReview = needsReview
+	if len(result.Tags) > 0 {
+		updated.Tags = result.Tags
+	}
+	if result.Fields.DueDate != "" {
+		updated.DueDate = result.Fields.DueDate
+	}
+	if result.Fields.NextAction != "" {
+		updated.NextAction = result.Fields.NextAction
+	}
+
+	if err := c.store.DB().UpdateEntry(updated); err != nil {
+		log.Printf("[relay] auto-classify update failed for %s: %v", currentID, err)
+		return
+	}
+
+	log.Printf("[relay] auto-classified %s → %s/%s (%.0f%%)", currentID, result.Category, result.Title, result.Confidence*100)
+
+	// Sync classified entry back to ibeco.me
+	c.sendEntryUpdated(ws, currentID)
+
+	// Auto-create task in ibecome for actions/projects
+	if c.ibecome != nil && (result.Category == "actions" || result.Category == "projects") {
+		taskCtx, taskCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer taskCancel()
+		taskID, err := c.ibecome.CreateTaskFromResult(taskCtx, currentID, result, text)
+		if err != nil {
+			log.Printf("[relay] auto-classify ibecome task creation failed: %v", err)
+		} else if taskID > 0 {
+			log.Printf("[relay] auto-classify created ibecome task #%d for %s", taskID, currentID)
+			if err := c.store.SetIbecomeTaskID(currentID, taskID); err != nil {
+				log.Printf("[relay] auto-classify failed to save ibecome task link: %v", err)
+			}
+		}
+	}
 }
 
 // sendEntryCreated sends an entry_created message to the hub with the full entry data.
