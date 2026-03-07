@@ -34,9 +34,10 @@ const (
 	TypeEntriesSync  = "entries_sync"
 	TypeEntryCreate  = "entry_create"
 	TypeEntryCreated = "entry_created"
-	TypeEntryUpdate  = "entry_update"
-	TypeEntryUpdated = "entry_updated"
-	TypeEntryDelete  = "entry_delete"
+	TypeEntryUpdate   = "entry_update"
+	TypeEntryUpdated  = "entry_updated"
+	TypeEntryDelete   = "entry_delete"
+	TypeEntryClassify = "entry_classify"
 )
 
 // ThoughtMessage from the app.
@@ -278,6 +279,8 @@ func (c *Client) connect(ctx context.Context) error {
 			go c.handleEntryUpdate(ws, data)
 		case TypeEntryDelete:
 			go c.handleEntryDelete(data)
+		case TypeEntryClassify:
+			go c.handleEntryClassify(ws, data)
 		case TypePing:
 			pong, _ := json.Marshal(map[string]string{"type": TypePong})
 			ws.WriteMessage(websocket.TextMessage, pong)
@@ -495,6 +498,8 @@ func (c *Client) handleQueued(ctx context.Context, ws *websocket.Conn, data []by
 			c.handleEntryUpdate(ws, raw)
 		case TypeEntryDelete:
 			c.handleEntryDelete(raw)
+		case TypeEntryClassify:
+			c.handleEntryClassify(ws, raw)
 		}
 	}
 }
@@ -618,6 +623,26 @@ func (c *Client) handleEntryDelete(data []byte) {
 	}
 
 	log.Printf("[relay] deleted entry %s from ibeco.me", msg.EntryID)
+}
+
+// handleEntryClassify processes a classify request from ibeco.me for an existing entry.
+func (c *Client) handleEntryClassify(ws *websocket.Conn, data []byte) {
+	var msg struct {
+		EntryID string `json:"entry_id"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		log.Printf("[relay] invalid entry_classify: %v", err)
+		return
+	}
+
+	entry, err := c.store.DB().GetEntry(msg.EntryID)
+	if err != nil {
+		log.Printf("[relay] entry_classify: entry %s not found: %v", msg.EntryID, err)
+		return
+	}
+
+	log.Printf("[relay] classify request for %s: %s/%s", msg.EntryID, entry.Category, entry.Title)
+	c.autoClassifyEntry(ws, msg.EntryID, entry)
 }
 
 // handleEntryCreate processes a create request from ibeco.me and stores it locally.
