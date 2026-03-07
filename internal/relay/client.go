@@ -31,6 +31,9 @@ const (
 	TypePing        = "ping"
 	TypePong        = "pong"
 	TypeTaskUpdated = "task_updated"
+	TypeEntriesSync = "entries_sync"
+	TypeEntryUpdate = "entry_update"
+	TypeEntryDelete = "entry_delete"
 )
 
 // ThoughtMessage from the app.
@@ -191,6 +194,9 @@ func (c *Client) connect(ctx context.Context) error {
 	// Send initial status
 	c.sendStatus(ws)
 
+	// Send all entries for ibeco.me cache
+	c.sendEntriesSync(ws)
+
 	// When the hub sends a WS Ping, reset our read deadline and reply with Pong.
 	// (SetPongHandler would only fire if *we* sent pings — but we don't initiate them.)
 	ws.SetPingHandler(func(appData string) error {
@@ -263,6 +269,10 @@ func (c *Client) connect(ctx context.Context) error {
 			c.handleQueued(ctx, ws, data)
 		case TypeTaskUpdated:
 			go c.handleTaskUpdated(data)
+		case TypeEntryUpdate:
+			go c.handleEntryUpdate(data)
+		case TypeEntryDelete:
+			go c.handleEntryDelete(data)
 		case TypePing:
 			pong, _ := json.Marshal(map[string]string{"type": TypePong})
 			ws.WriteMessage(websocket.TextMessage, pong)
@@ -468,8 +478,130 @@ func (c *Client) handleQueued(ctx context.Context, ws *websocket.Conn, data []by
 			c.handleFix(ws, raw)
 		case TypeTaskUpdated:
 			c.handleTaskUpdated(raw)
+		case TypeEntryUpdate:
+			c.handleEntryUpdate(raw)
+		case TypeEntryDelete:
+			c.handleEntryDelete(raw)
 		}
 	}
+}
+
+// sendEntriesSync sends all brain entries to the relay for ibeco.me caching.
+func (c *Client) sendEntriesSync(ws *websocket.Conn) {
+	entries, err := c.store.DB().ListAllForSync()
+	if err != nil {
+		log.Printf("[relay] error listing entries for sync: %v", err)
+		return
+	}
+
+	type syncEntry struct {
+		ID         string   `json:"id"`
+		Title      string   `json:"title"`
+		Category   string   `json:"category"`
+		Body       string   `json:"body"`
+		Status     string   `json:"status,omitempty"`
+		ActionDone bool     `json:"action_done,omitempty"`
+		DueDate    string   `json:"due_date,omitempty"`
+		NextAction string   `json:"next_action,omitempty"`
+		Tags       []string `json:"tags,omitempty"`
+		Source     string   `json:"source,omitempty"`
+		CreatedAt  string   `json:"created_at"`
+		UpdatedAt  string   `json:"updated_at"`
+	}
+
+	payload := make([]syncEntry, len(entries))
+	for i, e := range entries {
+		payload[i] = syncEntry{
+			ID:         e.ID,
+			Title:      e.Title,
+			Category:   e.Category,
+			Body:       e.Body,
+			Status:     e.Status,
+			ActionDone: e.ActionDone,
+			DueDate:    e.DueDate,
+			NextAction: e.NextAction,
+			Tags:       e.Tags,
+			Source:     e.Source,
+			CreatedAt:  e.Created.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:  e.Updated.Format("2006-01-02T15:04:05Z"),
+		}
+	}
+
+	msg, _ := json.Marshal(map[string]any{
+		"type":    TypeEntriesSync,
+		"entries": payload,
+	})
+
+	c.mu.Lock()
+	ws.WriteMessage(websocket.TextMessage, msg)
+	c.mu.Unlock()
+
+	log.Printf("[relay] synced %d entries to ibeco.me", len(entries))
+}
+
+// handleEntryUpdate processes an entry update request from ibeco.me.
+func (c *Client) handleEntryUpdate(data []byte) {
+	var msg struct {
+		EntryID string         `json:"entry_id"`
+		Updates map[string]any `json:"updates"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		log.Printf("[relay] invalid entry_update: %v", err)
+		return
+	}
+
+	entry, err := c.store.DB().GetEntry(msg.EntryID)
+	if err != nil {
+		log.Printf("[relay] entry_update: entry %s not found: %v", msg.EntryID, err)
+		return
+	}
+
+	if v, ok := msg.Updates["title"].(string); ok {
+		entry.Title = v
+	}
+	if v, ok := msg.Updates["status"].(string); ok {
+		entry.Status = v
+	}
+	if v, ok := msg.Updates["action_done"].(bool); ok {
+		entry.ActionDone = v
+	}
+	if v, ok := msg.Updates["due_date"].(string); ok {
+		entry.DueDate = v
+	}
+	if v, ok := msg.Updates["category"].(string); ok {
+		entry.Category = v
+	}
+	if v, ok := msg.Updates["body"].(string); ok {
+		entry.Body = v
+	}
+	if v, ok := msg.Updates["next_action"].(string); ok {
+		entry.NextAction = v
+	}
+
+	if err := c.store.DB().UpdateEntry(entry); err != nil {
+		log.Printf("[relay] entry_update failed for %s: %v", msg.EntryID, err)
+		return
+	}
+
+	log.Printf("[relay] updated entry %s from ibeco.me", msg.EntryID)
+}
+
+// handleEntryDelete processes an entry delete request from ibeco.me.
+func (c *Client) handleEntryDelete(data []byte) {
+	var msg struct {
+		EntryID string `json:"entry_id"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		log.Printf("[relay] invalid entry_delete: %v", err)
+		return
+	}
+
+	if err := c.store.DB().DeleteEntry(msg.EntryID); err != nil {
+		log.Printf("[relay] entry_delete failed for %s: %v", msg.EntryID, err)
+		return
+	}
+
+	log.Printf("[relay] deleted entry %s from ibeco.me", msg.EntryID)
 }
 
 // sendStatus sends the brain's current status to the relay.

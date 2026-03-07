@@ -449,6 +449,49 @@ func (d *DB) ListAll(limit, offset int) ([]*Entry, error) {
 	return entries, nil
 }
 
+// ListAllForSync returns all entries with fields needed for relay sync.
+func (d *DB) ListAllForSync() ([]*Entry, error) {
+	rows, err := d.db.Query(`
+		SELECT id, title, category, body, status, action_done, due_date, next_action, source, created_at, updated_at
+		FROM entries ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []*Entry
+	for rows.Next() {
+		e := &Entry{}
+		var actionDone int
+		var status, dueDate, nextAction sql.NullString
+		var createdStr, updatedStr string
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &status, &actionDone, &dueDate, &nextAction, &e.Source, &createdStr, &updatedStr); err != nil {
+			return nil, err
+		}
+		e.ActionDone = actionDone != 0
+		e.Status = status.String
+		e.DueDate = dueDate.String
+		e.NextAction = nextAction.String
+		e.Created, _ = time.Parse(time.RFC3339, createdStr)
+		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
+
+		// Load tags
+		tagRows, err := d.db.Query(`SELECT tag FROM tags WHERE entry_id = ?`, e.ID)
+		if err == nil {
+			for tagRows.Next() {
+				var tag string
+				if tagRows.Scan(&tag) == nil {
+					e.Tags = append(e.Tags, tag)
+				}
+			}
+			tagRows.Close()
+		}
+
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
 // NeedsReviewEntries returns entries flagged for review.
 func (d *DB) NeedsReviewEntries() ([]*Entry, error) {
 	rows, err := d.db.Query(`
