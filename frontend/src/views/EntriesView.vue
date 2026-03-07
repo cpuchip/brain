@@ -86,11 +86,23 @@ onMounted(async () => {
         class="block bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 hover:border-sky-600 transition-colors"
       >
         <div class="flex items-center justify-between mb-1">
-          <span class="font-medium text-sm">{{ entry.title }}</span>
-          <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-sky-400">{{ entry.category }}</span>
+          <div class="flex items-center gap-2 min-w-0">
+            <span
+              v-if="(entry.category === 'actions' && entry.action_done) || (entry.category === 'projects' && entry.status === 'done')"
+              class="shrink-0 w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs"
+            >✓</span>
+            <span class="font-medium text-sm truncate"
+              :class="{ 'line-through text-gray-500': (entry.category === 'actions' && entry.action_done) || (entry.category === 'projects' && entry.status === 'done') }"
+            >{{ entry.title }}</span>
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <span v-if="entry.status" class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-amber-400">{{ entry.status }}</span>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-sky-400">{{ entry.category }}</span>
+          </div>
         </div>
         <div class="text-sm text-gray-500 truncate">{{ entry.body }}</div>
         <div class="flex items-center gap-2 mt-1">
+          <span v-if="entry.due_date" class="text-xs text-amber-400">📅 {{ entry.due_date }}</span>
           <span
             v-for="tag in (entry.tags || []).slice(0, 5)"
             :key="tag"

@@ -228,6 +228,15 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if v, ok := updates["status"].(string); ok {
+		existing.Status = v
+	}
+	if v, ok := updates["action_done"].(bool); ok {
+		existing.ActionDone = v
+	}
+	if v, ok := updates["due_date"].(string); ok {
+		existing.DueDate = v
+	}
 
 	if err := s.store.DB().UpdateEntry(existing); err != nil {
 		jsonError(w, "updating entry", err, http.StatusInternalServerError)

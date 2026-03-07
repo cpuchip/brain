@@ -10,6 +10,11 @@ export interface Entry {
   ibecome_task_id?: number
   created_at: string
   updated_at: string
+  // Category-specific fields
+  status?: string
+  action_done?: boolean
+  due_date?: string
+  next_action?: string
 }
 
 export interface Stats {
@@ -59,7 +64,7 @@ export const api = {
     })
   },
 
-  updateEntry(id: string, updates: Partial<Pick<Entry, 'title' | 'category' | 'body' | 'tags'>>) {
+  updateEntry(id: string, updates: Partial<Pick<Entry, 'title' | 'category' | 'body' | 'tags' | 'status' | 'action_done' | 'due_date'>>) {
     return request<Entry>(`/entries/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(updates),
