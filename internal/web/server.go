@@ -489,6 +489,9 @@ func (s *Server) handleBrainHistory(w http.ResponseWriter, r *http.Request) {
 		Confidence float64 `json:"confidence"`
 		CreatedAt  string  `json:"created_at"`
 		Processed  bool    `json:"processed"`
+		ActionDone bool    `json:"action_done,omitempty"`
+		Status     string  `json:"status,omitempty"`
+		DueDate    string  `json:"due_date,omitempty"`
 	}
 
 	messages := make([]historyMsg, 0, len(entries))
@@ -501,6 +504,9 @@ func (s *Server) handleBrainHistory(w http.ResponseWriter, r *http.Request) {
 			Confidence: e.Confidence,
 			CreatedAt:  e.Created.Format("2006-01-02T15:04:05Z"),
 			Processed:  !e.NeedsReview,
+			ActionDone: e.ActionDone,
+			Status:     e.Status,
+			DueDate:    e.DueDate,
 		})
 	}
 
