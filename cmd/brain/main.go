@@ -165,7 +165,7 @@ func run() error {
 			log.Printf("warning: frontend not available: %v", err)
 			distFS = nil
 		}
-		srv := web.NewServer(st, cfg, distFS)
+		srv := web.NewServer(st, cfg, classify, distFS)
 		go func() {
 			addr := ":" + cfg.WebPort
 			log.Printf("Web UI starting on http://localhost%s", addr)

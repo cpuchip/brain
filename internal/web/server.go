@@ -19,16 +19,18 @@ import (
 type Server struct {
 	store      *store.Store
 	cfg        *config.Config
+	classify   *classifier.Classifier
 	mux        *http.ServeMux
 	srv        *http.Server
 	frontendFS fs.FS
 }
 
 // NewServer creates a new web server.
-func NewServer(st *store.Store, cfg *config.Config, frontendFS fs.FS) *Server {
+func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, frontendFS fs.FS) *Server {
 	s := &Server{
 		store:      st,
 		cfg:        cfg,
+		classify:   cl,
 		mux:        http.NewServeMux(),
 		frontendFS: frontendFS,
 	}
@@ -64,6 +66,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/entries/{id}", s.cors(s.handleUpdateEntry))
 	s.mux.HandleFunc("DELETE /api/entries/{id}", s.cors(s.handleDeleteEntry))
 	s.mux.HandleFunc("POST /api/entries/{id}/reclassify", s.cors(s.handleReclassify))
+	s.mux.HandleFunc("POST /api/entries/{id}/classify", s.cors(s.handleClassify))
 	s.mux.HandleFunc("GET /api/search", s.cors(s.handleSearch))
 	s.mux.HandleFunc("GET /api/search/semantic", s.cors(s.handleSemanticSearch))
 	s.mux.HandleFunc("GET /api/stats", s.cors(s.handleStats))
@@ -301,6 +304,88 @@ func (s *Server) handleReclassify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, map[string]string{"id": newID, "category": req.Category})
+}
+
+// handleClassify runs AI classification on an existing entry's text.
+// Returns the updated entry with new category, title, tags, etc.
+func (s *Server) handleClassify(w http.ResponseWriter, r *http.Request) {
+	if s.classify == nil {
+		jsonError(w, "classifier not available", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	id := r.PathValue("id")
+	entry, err := s.store.DB().GetEntry(id)
+	if err != nil {
+		jsonError(w, "entry not found", err, http.StatusNotFound)
+		return
+	}
+
+	// Build text to classify from entry body (or title if body is empty)
+	text := entry.Body
+	if text == "" {
+		text = entry.Title
+	}
+
+	classifyCtx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+
+	result, err := s.classify.Classify(classifyCtx, text)
+	if err != nil {
+		jsonError(w, "classification failed", err, http.StatusInternalServerError)
+		return
+	}
+
+	// If category changed, reclassify (moves the file in the store)
+	if result.Category != entry.Category {
+		newID, err := s.store.Reclassify(id, result.Category)
+		if err != nil {
+			jsonError(w, "reclassifying after AI classify", err, http.StatusInternalServerError)
+			return
+		}
+		id = newID
+		// Re-fetch after reclassify since ID may change
+		entry, err = s.store.DB().GetEntry(id)
+		if err != nil {
+			jsonError(w, "entry not found after reclassify", err, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Apply classification results to the entry
+	entry.Title = result.Title
+	entry.Confidence = result.Confidence
+	entry.NeedsReview = s.classify.NeedsReview(result)
+	if len(result.Tags) > 0 {
+		entry.Tags = result.Tags
+	}
+	if result.Fields.DueDate != "" {
+		entry.DueDate = result.Fields.DueDate
+	}
+	if result.Fields.NextAction != "" {
+		entry.NextAction = result.Fields.NextAction
+	}
+	if result.Fields.Notes != "" && entry.Body == "" {
+		entry.Body = result.Fields.Notes
+	}
+
+	if err := s.store.DB().UpdateEntry(entry); err != nil {
+		jsonError(w, "updating entry after classify", err, http.StatusInternalServerError)
+		return
+	}
+
+	// Re-embed in vector store
+	if s.store.Vec() != nil && s.store.Vec().Enabled() {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := s.store.Vec().ReEmbed(ctx, entry); err != nil {
+				log.Printf("warning: re-embed after classify failed for %s: %v", id, err)
+			}
+		}()
+	}
+
+	jsonResponse(w, entry)
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
