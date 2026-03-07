@@ -16,6 +16,7 @@ import (
 	"github.com/cpuchip/brain/internal/discord"
 	"github.com/cpuchip/brain/internal/ibecome"
 	"github.com/cpuchip/brain/internal/lmstudio"
+	brainmcp "github.com/cpuchip/brain/internal/mcp"
 	"github.com/cpuchip/brain/internal/relay"
 	"github.com/cpuchip/brain/internal/store"
 	"github.com/cpuchip/brain/internal/web"
@@ -27,6 +28,15 @@ var frontendFS embed.FS
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	// Check for subcommands
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		if err := runMCP(); err != nil {
+			fmt.Fprintf(os.Stderr, "brain mcp: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -282,4 +292,44 @@ func chooseEmbedder(ctx context.Context, cfg *config.Config) chromem.EmbeddingFu
 		log.Printf("Embedding: disabled")
 		return nil
 	}
+}
+
+// runMCP starts brain in MCP server mode (stdio transport, read-only).
+// Only the database and vector store are needed — no AI backend, relay, or web UI.
+func runMCP() error {
+	// MCP server logs to stderr (stdout is the MCP protocol channel)
+	log.SetFlags(0)
+	log.SetOutput(os.Stderr)
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	log.Printf("brain mcp starting (data: %s)", cfg.BrainDataDir)
+
+	ctx := context.Background()
+
+	// Open SQLite (WAL mode allows concurrent reads with the daemon)
+	db, err := store.OpenDB(cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+
+	// Initialize embedding for semantic search (optional, non-fatal)
+	embedFunc := chooseEmbedder(ctx, cfg)
+
+	var vec *store.VecStore
+	if embedFunc != nil {
+		vec, err = store.NewVecStore(cfg.VecDir, embedFunc, cfg.EmbeddingModel)
+		if err != nil {
+			log.Printf("warning: vector store unavailable: %v", err)
+		}
+	}
+
+	st := store.New(db, vec, nil)
+
+	srv := brainmcp.New(st)
+	return srv.Serve()
 }
