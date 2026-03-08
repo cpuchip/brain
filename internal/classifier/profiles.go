@@ -25,6 +25,15 @@ type ModelProfile struct {
 	// ClassifyPrompt is the system prompt for classification.
 	// If empty, falls back to DefaultClassifyPrompt.
 	ClassifyPrompt string
+
+	// NoThink disables thinking/reasoning tokens for thinking models (e.g. Qwen 3.5).
+	// When true, the classifier appends "/no_think" to the system prompt.
+	NoThink bool
+
+	// StructuredOutput enables response_format JSON schema for this model.
+	// Uses grammar-based sampling to guarantee valid JSON output.
+	// Best for models >= 7B parameters.
+	StructuredOutput bool
 }
 
 // SupportsTask returns true if the profile lists the given task.
@@ -68,6 +77,7 @@ RULES:
 8. For study, note any scripture references.
 9. Generate 1-3 relevant tags.
 10. When the input mentions a person AND a task, prefer "people" if the main point is about the person. Prefer "actions" only if the person is incidental and the task is the focus.
+11. If the input contains a list (numbered 1. 2. 3., bulleted - • *, or comma-separated), extract EACH item into "sub_items" as separate strings. Do NOT put list items into "follow_ups". The "follow_ups" field is for prose about what to do next, NOT for listing items.
 
 JSON SCHEMA (return exactly this structure, nothing else):
 {
@@ -77,7 +87,7 @@ JSON SCHEMA (return exactly this structure, nothing else):
   "fields": {
     "name": "string or omit",
     "context": "string or omit",
-    "follow_ups": "string or omit",
+    "follow_ups": "string, prose only, NOT for list items",
     "status": "active|waiting|blocked|someday|done or omit",
     "next_action": "string or omit",
     "one_liner": "string or omit",
@@ -88,7 +98,8 @@ JSON SCHEMA (return exactly this structure, nothing else):
     "gratitude": "string or omit",
     "notes": "string or omit"
   },
-  "tags": ["string"]
+  "tags": ["string"],
+  "sub_items": ["REQUIRED for any list input — one string per item"]
 }`,
 	},
 
@@ -118,6 +129,10 @@ RULES:
 6. For study entries, note scripture references.
 7. Generate 1-3 tags.
 8. When the input mentions a person AND a task, prefer "people" if the main point is about the person.
+9. If the input contains a list (numbered 1. 2. 3., bulleted - • *, or comma-separated), extract EACH item into "sub_items" as separate strings. Do NOT put list items into "follow_ups". The "follow_ups" field is for prose about what to do next, NOT for listing items.
+
+EXAMPLE: Input "Shopping: 1. Milk 2. Bread 3. Eggs" → sub_items: ["Milk", "Bread", "Eggs"], NOT follow_ups.
+EXAMPLE: Input "Tasks:\n- Mow lawn\n- Fix fence" → sub_items: ["Mow lawn", "Fix fence"], NOT follow_ups.
 
 JSON SCHEMA:
 {
@@ -127,7 +142,7 @@ JSON SCHEMA:
   "fields": {
     "name": "string or omit",
     "context": "string or omit",
-    "follow_ups": "string or omit",
+    "follow_ups": "string, prose only, NOT for list items",
     "status": "active|waiting|blocked|someday|done or omit",
     "next_action": "string or omit",
     "one_liner": "string or omit",
@@ -138,15 +153,18 @@ JSON SCHEMA:
     "gratitude": "string or omit",
     "notes": "string or omit"
   },
-  "tags": ["string"]
+  "tags": ["string"],
+  "sub_items": ["REQUIRED for any list input — one string per item"]
 }`,
 	},
 
 	"qwen/qwen3.5-9b": {
-		ID:          "qwen/qwen3.5-9b",
-		Name:        "Qwen 3.5 9B",
-		Tasks:       []Task{TaskClassify, TaskChat},
-		Temperature: 0.1,
+		ID:               "qwen/qwen3.5-9b",
+		Name:             "Qwen 3.5 9B",
+		Tasks:            []Task{TaskClassify, TaskChat},
+		Temperature:      0.1,
+		NoThink:          true,
+		StructuredOutput: true,
 		// Uses default prompt — this was the original model, prompt was tuned for it
 	},
 }

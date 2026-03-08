@@ -217,6 +217,12 @@ func (c *Client) CompleteJSON(ctx context.Context, messages []ChatMessage, tempe
 	return []byte(cleaned), nil
 }
 
+// CompleteStructuredJSON falls back to CompleteJSON for the Copilot SDK client,
+// which does not support response_format schema-constrained generation.
+func (c *Client) CompleteStructuredJSON(ctx context.Context, messages []ChatMessage, temperature float64, schema map[string]any) ([]byte, error) {
+	return c.CompleteJSON(ctx, messages, temperature)
+}
+
 // stripJSONFences removes ```json ... ``` wrapping from model output.
 func stripJSONFences(s string) string {
 	trimmed := []byte(s)

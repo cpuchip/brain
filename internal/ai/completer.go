@@ -9,6 +9,11 @@ type Completer interface {
 	// It strips markdown fences and retries once if the model returns non-JSON.
 	CompleteJSON(ctx context.Context, messages []ChatMessage, temperature float64) ([]byte, error)
 
+	// CompleteStructuredJSON sends a request with a response_format JSON schema,
+	// using grammar-based sampling to guarantee valid JSON output.
+	// Falls back to CompleteJSON if not supported.
+	CompleteStructuredJSON(ctx context.Context, messages []ChatMessage, temperature float64, schema map[string]any) ([]byte, error)
+
 	// Model returns the current model identifier.
 	Model() string
 

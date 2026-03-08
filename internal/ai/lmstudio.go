@@ -60,10 +60,11 @@ type lmMessage struct {
 
 // lmRequest is the OpenAI chat completions request body.
 type lmRequest struct {
-	Model       string      `json:"model"`
-	Messages    []lmMessage `json:"messages"`
-	Temperature float64     `json:"temperature"`
-	MaxTokens   int         `json:"max_tokens,omitempty"`
+	Model          string         `json:"model"`
+	Messages       []lmMessage    `json:"messages"`
+	Temperature    float64        `json:"temperature"`
+	MaxTokens      int            `json:"max_tokens,omitempty"`
+	ResponseFormat map[string]any `json:"response_format,omitempty"`
 }
 
 // lmResponse is the OpenAI chat completions response body.
@@ -96,7 +97,7 @@ func (c *LMStudioClient) Complete(ctx context.Context, messages []ChatMessage, t
 		Model:       model,
 		Messages:    lmMsgs,
 		Temperature: temperature,
-		MaxTokens:   32768, // thinking models need headroom for CoT + response
+		MaxTokens:   2048, // classifier JSON is ~200 tokens; 32k let thinking models burn budget on <think>
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -168,6 +169,79 @@ func stripThinkingContent(s string) string {
 	}
 
 	return strings.TrimSpace(s)
+}
+
+// CompleteStructuredJSON sends a request with a response_format JSON schema.
+// LM Studio uses llama.cpp grammar-based sampling for GGUF models, which
+// guarantees the output conforms to the schema — no invalid JSON possible.
+func (c *LMStudioClient) CompleteStructuredJSON(ctx context.Context, messages []ChatMessage, temperature float64, schema map[string]any) ([]byte, error) {
+	c.mu.RLock()
+	model := c.model
+	c.mu.RUnlock()
+
+	lmMsgs := make([]lmMessage, len(messages))
+	for i, m := range messages {
+		lmMsgs[i] = lmMessage{Role: m.Role, Content: m.Content}
+	}
+
+	reqBody := lmRequest{
+		Model:          model,
+		Messages:       lmMsgs,
+		Temperature:    temperature,
+		MaxTokens:      2048,
+		ResponseFormat: schema,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request: %w", err)
+	}
+
+	url := c.baseURL + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("LM Studio request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("LM Studio returned %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 500)]))
+	}
+
+	var lmResp lmResponse
+	if err := json.Unmarshal(respBody, &lmResp); err != nil {
+		return nil, fmt.Errorf("parsing LM Studio response: %w", err)
+	}
+
+	if lmResp.Error != nil {
+		return nil, fmt.Errorf("LM Studio error: %s", lmResp.Error.Message)
+	}
+
+	if len(lmResp.Choices) == 0 || lmResp.Choices[0].Message.Content == "" {
+		return nil, fmt.Errorf("empty response from LM Studio (model: %s)", model)
+	}
+
+	content := lmResp.Choices[0].Message.Content
+	// Grammar sampling guarantees valid JSON, but strip thinking tokens just in case
+	content = stripThinkingContent(content)
+	content = stripJSONFences(content)
+
+	if !json.Valid([]byte(content)) {
+		return nil, fmt.Errorf("structured output returned invalid JSON: %s", content[:min(len(content), 200)])
+	}
+
+	return []byte(content), nil
 }
 
 // CompleteJSON sends a request expecting a JSON response. Strips markdown fences
