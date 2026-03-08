@@ -2,6 +2,18 @@
 
 A personal second brain agent written in Go. Captures thoughts from multiple sources (Discord, relay, web UI), classifies them using AI, and stores them in SQLite with semantic vector search via chromem-go.
 
+## Ecosystem
+
+Brain is part of a three-component system:
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| **brain.exe** (this repo) | `scripts/brain/` | Local brain — capture, classify, store, search |
+| **ibeco.me** | `scripts/becoming/` (in scripture-study) | Cloud hub — relay, web UI, practices, journaling. Deployed via Dokploy on VPS |
+| **brain-app** | `scripts/brain-app/` (separate git repo) | Flutter app — Android, Windows (iOS/Mac planned) |
+
+brain.exe is the authoritative data store. ibeco.me connects via WebSocket relay and caches entries for web access. brain-app connects to either brain.exe directly or through the ibeco.me relay.
+
 ## Architecture
 
 ```
