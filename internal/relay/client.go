@@ -19,25 +19,28 @@ import (
 
 // Message types (must match ibeco.me hub protocol).
 const (
-	TypeAuth         = "auth"
-	TypeAuthOK       = "auth_ok"
-	TypeAuthErr      = "auth_error"
-	TypeThought      = "thought"
-	TypeResult       = "result"
-	TypeFix          = "fix"
-	TypeFixOK        = "fix_ok"
-	TypeQueued       = "queued"
-	TypeStatus       = "status"
-	TypePing         = "ping"
-	TypePong         = "pong"
-	TypeTaskUpdated  = "task_updated"
-	TypeEntriesSync  = "entries_sync"
-	TypeEntryCreate  = "entry_create"
-	TypeEntryCreated = "entry_created"
+	TypeAuth          = "auth"
+	TypeAuthOK        = "auth_ok"
+	TypeAuthErr       = "auth_error"
+	TypeThought       = "thought"
+	TypeResult        = "result"
+	TypeFix           = "fix"
+	TypeFixOK         = "fix_ok"
+	TypeQueued        = "queued"
+	TypeStatus        = "status"
+	TypePing          = "ping"
+	TypePong          = "pong"
+	TypeTaskUpdated   = "task_updated"
+	TypeEntriesSync   = "entries_sync"
+	TypeEntryCreate   = "entry_create"
+	TypeEntryCreated  = "entry_created"
 	TypeEntryUpdate   = "entry_update"
 	TypeEntryUpdated  = "entry_updated"
 	TypeEntryDelete   = "entry_delete"
 	TypeEntryClassify = "entry_classify"
+	TypeSubTaskCreate = "subtask_create"
+	TypeSubTaskUpdate = "subtask_update"
+	TypeSubTaskDelete = "subtask_delete"
 )
 
 // ThoughtMessage from the app.
@@ -281,6 +284,12 @@ func (c *Client) connect(ctx context.Context) error {
 			go c.handleEntryDelete(data)
 		case TypeEntryClassify:
 			go c.handleEntryClassify(ws, data)
+		case TypeSubTaskCreate:
+			go c.handleSubTaskCreate(ws, data)
+		case TypeSubTaskUpdate:
+			go c.handleSubTaskUpdate(ws, data)
+		case TypeSubTaskDelete:
+			go c.handleSubTaskDelete(ws, data)
 		case TypePing:
 			pong, _ := json.Marshal(map[string]string{"type": TypePong})
 			ws.WriteMessage(websocket.TextMessage, pong)
@@ -500,6 +509,12 @@ func (c *Client) handleQueued(ctx context.Context, ws *websocket.Conn, data []by
 			c.handleEntryDelete(raw)
 		case TypeEntryClassify:
 			c.handleEntryClassify(ws, raw)
+		case TypeSubTaskCreate:
+			c.handleSubTaskCreate(ws, raw)
+		case TypeSubTaskUpdate:
+			c.handleSubTaskUpdate(ws, raw)
+		case TypeSubTaskDelete:
+			c.handleSubTaskDelete(ws, raw)
 		}
 	}
 }
@@ -513,22 +528,25 @@ func (c *Client) sendEntriesSync(ws *websocket.Conn) {
 	}
 
 	type syncEntry struct {
-		ID         string   `json:"id"`
-		Title      string   `json:"title"`
-		Category   string   `json:"category"`
-		Body       string   `json:"body"`
-		Status     string   `json:"status,omitempty"`
-		ActionDone bool     `json:"action_done,omitempty"`
-		DueDate    string   `json:"due_date,omitempty"`
-		NextAction string   `json:"next_action,omitempty"`
-		Tags       []string `json:"tags,omitempty"`
-		Source     string   `json:"source,omitempty"`
-		CreatedAt  string   `json:"created_at"`
-		UpdatedAt  string   `json:"updated_at"`
+		ID         string          `json:"id"`
+		Title      string          `json:"title"`
+		Category   string          `json:"category"`
+		Body       string          `json:"body"`
+		Status     string          `json:"status,omitempty"`
+		ActionDone bool            `json:"action_done,omitempty"`
+		DueDate    string          `json:"due_date,omitempty"`
+		NextAction string          `json:"next_action,omitempty"`
+		Tags       []string        `json:"tags,omitempty"`
+		SubTasks   []store.SubTask `json:"subtasks,omitempty"`
+		Source     string          `json:"source,omitempty"`
+		CreatedAt  string          `json:"created_at"`
+		UpdatedAt  string          `json:"updated_at"`
 	}
 
 	payload := make([]syncEntry, len(entries))
 	for i, e := range entries {
+		// Load subtasks for each entry
+		subtasks, _ := c.store.DB().ListSubTasks(e.ID)
 		payload[i] = syncEntry{
 			ID:         e.ID,
 			Title:      e.Title,
@@ -539,6 +557,7 @@ func (c *Client) sendEntriesSync(ws *websocket.Conn) {
 			DueDate:    e.DueDate,
 			NextAction: e.NextAction,
 			Tags:       e.Tags,
+			SubTasks:   subtasks,
 			Source:     e.Source,
 			CreatedAt:  e.Created.Format("2006-01-02T15:04:05Z"),
 			UpdatedAt:  e.Updated.Format("2006-01-02T15:04:05Z"),
@@ -770,6 +789,21 @@ func (c *Client) autoClassifyEntry(ws *websocket.Conn, id string, entry *store.E
 
 	log.Printf("[relay] auto-classified %s → %s/%s (%.0f%%)", currentID, result.Category, result.Title, result.Confidence*100)
 
+	// Create subtasks from extracted list items
+	if len(result.SubItems) > 0 {
+		for i, text := range result.SubItems {
+			st := &store.SubTask{
+				EntryID:   currentID,
+				Text:      text,
+				SortOrder: i,
+			}
+			if err := c.store.DB().InsertSubTask(st); err != nil {
+				log.Printf("[relay] auto-classify subtask creation failed for %s: %v", currentID, err)
+			}
+		}
+		log.Printf("[relay] auto-classify created %d subtasks for %s", len(result.SubItems), currentID)
+	}
+
 	// Sync classified entry back to ibeco.me
 	c.sendEntryUpdated(ws, currentID)
 
@@ -809,6 +843,7 @@ func (c *Client) sendEntryCreated(ws *websocket.Conn, entryID string) {
 			"due_date":    entry.DueDate,
 			"next_action": entry.NextAction,
 			"tags":        entry.Tags,
+			"subtasks":    entry.SubTasks,
 			"source":      entry.Source,
 			"created_at":  entry.Created.Format("2006-01-02T15:04:05Z"),
 			"updated_at":  entry.Updated.Format("2006-01-02T15:04:05Z"),
@@ -840,6 +875,7 @@ func (c *Client) sendEntryUpdated(ws *websocket.Conn, entryID string) {
 			"due_date":    entry.DueDate,
 			"next_action": entry.NextAction,
 			"tags":        entry.Tags,
+			"subtasks":    entry.SubTasks,
 			"source":      entry.Source,
 			"created_at":  entry.Created.Format("2006-01-02T15:04:05Z"),
 			"updated_at":  entry.Updated.Format("2006-01-02T15:04:05Z"),
@@ -849,6 +885,92 @@ func (c *Client) sendEntryUpdated(ws *websocket.Conn, entryID string) {
 	c.mu.Lock()
 	ws.WriteMessage(websocket.TextMessage, msg)
 	c.mu.Unlock()
+}
+
+// handleSubTaskCreate creates a subtask on a brain entry and syncs back.
+func (c *Client) handleSubTaskCreate(ws *websocket.Conn, data []byte) {
+	var msg struct {
+		EntryID   string `json:"entry_id"`
+		SubTaskID string `json:"subtask_id"`
+		Text      string `json:"text"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		log.Printf("[relay] invalid subtask_create: %v", err)
+		return
+	}
+
+	st := &store.SubTask{
+		ID:      msg.SubTaskID,
+		EntryID: msg.EntryID,
+		Text:    msg.Text,
+	}
+	if err := c.store.DB().InsertSubTask(st); err != nil {
+		log.Printf("[relay] subtask_create failed for entry %s: %v", msg.EntryID, err)
+		return
+	}
+
+	log.Printf("[relay] created subtask %s on entry %s", msg.SubTaskID, msg.EntryID)
+	c.sendEntryUpdated(ws, msg.EntryID)
+}
+
+// handleSubTaskUpdate updates a subtask (toggle done, edit text) and syncs back.
+func (c *Client) handleSubTaskUpdate(ws *websocket.Conn, data []byte) {
+	var msg struct {
+		EntryID   string         `json:"entry_id"`
+		SubTaskID string         `json:"subtask_id"`
+		Updates   map[string]any `json:"updates"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		log.Printf("[relay] invalid subtask_update: %v", err)
+		return
+	}
+
+	st := &store.SubTask{ID: msg.SubTaskID, EntryID: msg.EntryID}
+	// Load current values
+	subtasks, _ := c.store.DB().ListSubTasks(msg.EntryID)
+	for _, s := range subtasks {
+		if s.ID == msg.SubTaskID {
+			st.Text = s.Text
+			st.Done = s.Done
+			st.SortOrder = s.SortOrder
+			break
+		}
+	}
+
+	if v, ok := msg.Updates["text"].(string); ok {
+		st.Text = v
+	}
+	if v, ok := msg.Updates["done"].(bool); ok {
+		st.Done = v
+	}
+
+	if err := c.store.DB().UpdateSubTask(st); err != nil {
+		log.Printf("[relay] subtask_update failed for %s: %v", msg.SubTaskID, err)
+		return
+	}
+
+	log.Printf("[relay] updated subtask %s on entry %s", msg.SubTaskID, msg.EntryID)
+	c.sendEntryUpdated(ws, msg.EntryID)
+}
+
+// handleSubTaskDelete deletes a subtask and syncs back.
+func (c *Client) handleSubTaskDelete(ws *websocket.Conn, data []byte) {
+	var msg struct {
+		EntryID   string `json:"entry_id"`
+		SubTaskID string `json:"subtask_id"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		log.Printf("[relay] invalid subtask_delete: %v", err)
+		return
+	}
+
+	if err := c.store.DB().DeleteSubTask(msg.EntryID, msg.SubTaskID); err != nil {
+		log.Printf("[relay] subtask_delete failed for %s: %v", msg.SubTaskID, err)
+		return
+	}
+
+	log.Printf("[relay] deleted subtask %s from entry %s", msg.SubTaskID, msg.EntryID)
+	c.sendEntryUpdated(ws, msg.EntryID)
 }
 
 // sendStatus sends the brain's current status to the relay.

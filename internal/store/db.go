@@ -106,11 +106,22 @@ CREATE TABLE IF NOT EXISTS embedding_status (
     error       TEXT
 );
 
+CREATE TABLE IF NOT EXISTS subtasks (
+    id         TEXT PRIMARY KEY,
+    entry_id   TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+    text       TEXT NOT NULL,
+    done       INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_entries_category ON entries(category);
 CREATE INDEX IF NOT EXISTS idx_entries_created ON entries(created_at);
 CREATE INDEX IF NOT EXISTS idx_entries_needs_review ON entries(needs_review) WHERE needs_review = 1;
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_subtasks_entry ON subtasks(entry_id);
 `
 
 // migrateIbecomeTaskID adds the ibecome_task_id column if it doesn't exist.
@@ -288,6 +299,13 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		}
 		e.Tags = append(e.Tags, tag)
 	}
+
+	// Load sub-tasks
+	subtasks, err := d.ListSubTasks(id)
+	if err != nil {
+		return nil, fmt.Errorf("loading subtasks: %w", err)
+	}
+	e.SubTasks = subtasks
 
 	return e, nil
 }
@@ -622,4 +640,89 @@ func (d *DB) EntryCount() (int, error) {
 	var count int
 	err := d.db.QueryRow(`SELECT COUNT(*) FROM entries`).Scan(&count)
 	return count, err
+}
+
+// --- Sub-task CRUD ---
+
+// ListSubTasks returns all sub-tasks for an entry, ordered by sort_order.
+func (d *DB) ListSubTasks(entryID string) ([]SubTask, error) {
+	rows, err := d.db.Query(`
+		SELECT id, entry_id, text, done, sort_order, created_at, updated_at
+		FROM subtasks WHERE entry_id = ? ORDER BY sort_order, created_at`, entryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []SubTask
+	for rows.Next() {
+		var st SubTask
+		var done int
+		var createdStr, updatedStr string
+		if err := rows.Scan(&st.ID, &st.EntryID, &st.Text, &done, &st.SortOrder, &createdStr, &updatedStr); err != nil {
+			return nil, err
+		}
+		st.Done = done != 0
+		st.Created, _ = time.Parse(time.RFC3339, createdStr)
+		st.Updated, _ = time.Parse(time.RFC3339, updatedStr)
+		tasks = append(tasks, st)
+	}
+	return tasks, nil
+}
+
+// InsertSubTask creates a new sub-task under an entry.
+func (d *DB) InsertSubTask(st *SubTask) error {
+	if st.ID == "" {
+		st.ID = uuid.New().String()
+	}
+	now := time.Now().UTC()
+	if st.Created.IsZero() {
+		st.Created = now
+	}
+	st.Updated = now
+
+	_, err := d.db.Exec(`
+		INSERT INTO subtasks (id, entry_id, text, done, sort_order, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		st.ID, st.EntryID, st.Text, boolToInt(st.Done), st.SortOrder,
+		st.Created.UTC().Format(time.RFC3339), st.Updated.UTC().Format(time.RFC3339),
+	)
+	return err
+}
+
+// UpdateSubTask updates a sub-task's text, done state, and sort order.
+func (d *DB) UpdateSubTask(st *SubTask) error {
+	st.Updated = time.Now().UTC()
+	_, err := d.db.Exec(`
+		UPDATE subtasks SET text = ?, done = ?, sort_order = ?, updated_at = ?
+		WHERE id = ? AND entry_id = ?`,
+		st.Text, boolToInt(st.Done), st.SortOrder,
+		st.Updated.UTC().Format(time.RFC3339),
+		st.ID, st.EntryID,
+	)
+	return err
+}
+
+// DeleteSubTask removes a sub-task by ID.
+func (d *DB) DeleteSubTask(entryID, subtaskID string) error {
+	_, err := d.db.Exec(`DELETE FROM subtasks WHERE id = ? AND entry_id = ?`, subtaskID, entryID)
+	return err
+}
+
+// ReorderSubTasks sets sort_order for each sub-task by its position in the ids slice.
+func (d *DB) ReorderSubTasks(entryID string, ids []string) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i, id := range ids {
+		if _, err := tx.Exec(`UPDATE subtasks SET sort_order = ?, updated_at = ? WHERE id = ? AND entry_id = ?`,
+			i, now, id, entryID); err != nil {
+			return fmt.Errorf("reordering subtask %s: %w", id, err)
+		}
+	}
+	return tx.Commit()
 }

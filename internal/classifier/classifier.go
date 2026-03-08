@@ -12,11 +12,12 @@ import (
 
 // Result is the structured output from classification.
 type Result struct {
-	Category   string   `json:"category"`   // people, projects, ideas, actions, study, journal
-	Confidence float64  `json:"confidence"` // 0.0 - 1.0
-	Title      string   `json:"title"`      // Generated title for the entry
-	Fields     Fields   `json:"fields"`     // Category-specific extracted fields
-	Tags       []string `json:"tags"`       // Auto-generated tags
+	Category   string   `json:"category"`            // people, projects, ideas, actions, study, journal
+	Confidence float64  `json:"confidence"`          // 0.0 - 1.0
+	Title      string   `json:"title"`               // Generated title for the entry
+	Fields     Fields   `json:"fields"`              // Category-specific extracted fields
+	Tags       []string `json:"tags"`                // Auto-generated tags
+	SubItems   []string `json:"sub_items,omitempty"` // extracted list items for subtask creation
 }
 
 // Fields holds the category-specific extracted data.
@@ -182,6 +183,7 @@ RULES:
 7. For people, extract the person's name if mentioned.
 8. For study, note any scripture references.
 9. Generate 1-3 relevant tags.
+10. If the input contains a numbered or bulleted list, extract each item as a string in sub_items. This applies to any category — shopping lists, todo lists, steps, goals, etc.
 
 JSON SCHEMA (return exactly this structure, nothing else):
 {
@@ -202,5 +204,6 @@ JSON SCHEMA (return exactly this structure, nothing else):
     "gratitude": "string or omit",
     "notes": "string or omit"
   },
-  "tags": ["string"]
+  "tags": ["string"],
+  "sub_items": ["string or omit"]
 }`

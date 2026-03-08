@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, type Entry } from '../api'
+import { api, type Entry, type SubTask } from '../api'
 
 const route = useRoute()
 const router = useRouter()
@@ -115,6 +115,61 @@ async function reclassify(category: string) {
   router.push(`/entries/${result.id}`)
 }
 
+// AI Classify
+const classifying = ref(false)
+async function classify() {
+  if (!entry.value || classifying.value) return
+  classifying.value = true
+  try {
+    await api.classify(entry.value.id)
+    showToast('Classified!')
+    await load()
+  } catch {
+    showToast('Classification failed')
+  } finally {
+    classifying.value = false
+  }
+}
+
+// Subtasks
+const showSubTasks = ref(false)
+const newSubTaskText = ref('')
+const addingSubTask = ref(false)
+
+async function addSubTask() {
+  if (!entry.value || !newSubTaskText.value.trim() || addingSubTask.value) return
+  addingSubTask.value = true
+  try {
+    await api.createSubTask(entry.value.id, newSubTaskText.value.trim())
+    newSubTaskText.value = ''
+    await load()
+  } catch {
+    showToast('Failed to add sub-task')
+  } finally {
+    addingSubTask.value = false
+  }
+}
+
+async function toggleSubTask(st: SubTask) {
+  if (!entry.value) return
+  try {
+    await api.updateSubTask(entry.value.id, st.id, { done: !st.done })
+    await load()
+  } catch {
+    showToast('Failed to update sub-task')
+  }
+}
+
+async function deleteSubTask(st: SubTask) {
+  if (!entry.value) return
+  try {
+    await api.deleteSubTask(entry.value.id, st.id)
+    await load()
+  } catch {
+    showToast('Failed to delete sub-task')
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -165,6 +220,14 @@ onMounted(load)
         <div class="flex gap-2 shrink-0">
           <button
             v-if="!editing"
+            @click="classify"
+            :disabled="classifying"
+            class="text-sm bg-violet-600 text-white px-3 py-1.5 rounded-lg hover:bg-violet-500 disabled:opacity-40"
+          >
+            {{ classifying ? 'Classifying...' : '✦ Classify' }}
+          </button>
+          <button
+            v-if="!editing"
             @click="startEdit"
             class="text-sm bg-gray-800 text-gray-300 px-3 py-1.5 rounded-lg hover:bg-gray-700"
           >
@@ -190,6 +253,49 @@ onMounted(load)
           >
             {{ tag }}
           </span>
+        </div>
+
+        <!-- Subtasks -->
+        <div class="mt-4">
+          <button
+            @click="showSubTasks = !showSubTasks"
+            class="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1"
+          >
+            <span>{{ showSubTasks ? '▾' : '▸' }}</span>
+            Sub-tasks
+            <span v-if="entry.subtasks?.length" class="text-gray-600">({{ entry.subtasks.filter(s => s.done).length }}/{{ entry.subtasks.length }})</span>
+            <span v-else class="text-gray-600">(0)</span>
+          </button>
+          <div v-if="showSubTasks" class="mt-2 space-y-1">
+            <div v-for="st in entry.subtasks" :key="st.id" class="flex items-center gap-2 group">
+              <button
+                @click="toggleSubTask(st)"
+                class="w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 transition-colors"
+                :class="st.done ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-gray-600 hover:border-sky-500'"
+              >
+                <span v-if="st.done" class="text-[10px]">✓</span>
+              </button>
+              <span class="text-sm flex-1" :class="st.done ? 'line-through text-gray-600' : 'text-gray-300'">{{ st.text }}</span>
+              <button
+                @click="deleteSubTask(st)"
+                class="text-xs text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+              >✕</button>
+            </div>
+            <!-- Add sub-task -->
+            <div class="flex gap-2 mt-2">
+              <input
+                v-model="newSubTaskText"
+                @keydown.enter="addSubTask"
+                placeholder="Add item..."
+                class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-sky-500"
+              />
+              <button
+                @click="addSubTask"
+                :disabled="!newSubTaskText.trim() || addingSubTask"
+                class="text-sm text-sky-400 hover:text-sky-300 disabled:opacity-40 px-2"
+              >+</button>
+            </div>
+          </div>
         </div>
 
         <!-- Quick reclassify -->

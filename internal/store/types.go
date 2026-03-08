@@ -46,6 +46,20 @@ type Entry struct {
 
 	// Body (not in front matter — stored as markdown body for archive export)
 	Body string `json:"body" yaml:"-"`
+
+	// Sub-tasks (loaded separately from subtasks table)
+	SubTasks []SubTask `json:"subtasks,omitempty" yaml:"subtasks,omitempty"`
+}
+
+// SubTask is a checkable item within an entry.
+type SubTask struct {
+	ID        string    `json:"id"`
+	EntryID   string    `json:"entry_id"`
+	Text      string    `json:"text"`
+	Done      bool      `json:"done"`
+	SortOrder int       `json:"sort_order"`
+	Created   time.Time `json:"created_at"`
+	Updated   time.Time `json:"updated_at"`
 }
 
 // AuditRecord logs what the brain did with a capture.

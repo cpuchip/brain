@@ -67,6 +67,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/entries/{id}", s.cors(s.handleDeleteEntry))
 	s.mux.HandleFunc("POST /api/entries/{id}/reclassify", s.cors(s.handleReclassify))
 	s.mux.HandleFunc("POST /api/entries/{id}/classify", s.cors(s.handleClassify))
+	s.mux.HandleFunc("POST /api/entries/{id}/subtasks", s.cors(s.handleCreateSubTask))
+	s.mux.HandleFunc("PUT /api/entries/{id}/subtasks/{sid}", s.cors(s.handleUpdateSubTask))
+	s.mux.HandleFunc("DELETE /api/entries/{id}/subtasks/{sid}", s.cors(s.handleDeleteSubTask))
+	s.mux.HandleFunc("POST /api/entries/{id}/subtasks/reorder", s.cors(s.handleReorderSubTasks))
 	s.mux.HandleFunc("GET /api/search", s.cors(s.handleSearch))
 	s.mux.HandleFunc("GET /api/search/semantic", s.cors(s.handleSemanticSearch))
 	s.mux.HandleFunc("GET /api/stats", s.cors(s.handleStats))
@@ -374,6 +378,20 @@ func (s *Server) handleClassify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create subtasks from extracted list items
+	if len(result.SubItems) > 0 {
+		for i, itemText := range result.SubItems {
+			st := &store.SubTask{
+				EntryID:   id,
+				Text:      itemText,
+				SortOrder: i,
+			}
+			if err := s.store.DB().InsertSubTask(st); err != nil {
+				log.Printf("warning: subtask creation failed for %s: %v", id, err)
+			}
+		}
+	}
+
 	// Re-embed in vector store
 	if s.store.Vec() != nil && s.store.Vec().Enabled() {
 		go func() {
@@ -567,21 +585,27 @@ func (s *Server) handleBrainHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type historyMsg struct {
-		ID         string  `json:"id"`
-		Text       string  `json:"text"`
-		Category   string  `json:"category"`
-		Title      string  `json:"title"`
-		Confidence float64 `json:"confidence"`
-		CreatedAt  string  `json:"created_at"`
-		Processed  bool    `json:"processed"`
-		ActionDone bool    `json:"action_done,omitempty"`
-		Status     string  `json:"status,omitempty"`
-		DueDate    string  `json:"due_date,omitempty"`
+		ID         string          `json:"id"`
+		Text       string          `json:"text"`
+		Category   string          `json:"category"`
+		Title      string          `json:"title"`
+		Confidence float64         `json:"confidence"`
+		CreatedAt  string          `json:"created_at"`
+		Processed  bool            `json:"processed"`
+		ActionDone bool            `json:"action_done,omitempty"`
+		Status     string          `json:"status,omitempty"`
+		DueDate    string          `json:"due_date,omitempty"`
+		NextAction string          `json:"next_action,omitempty"`
+		Tags       []string        `json:"tags,omitempty"`
+		SubTasks   []store.SubTask `json:"subtasks,omitempty"`
 	}
 
 	messages := make([]historyMsg, 0, len(entries))
 	for _, e := range entries {
-		messages = append(messages, historyMsg{
+		// Load sub-tasks for each entry
+		subtasks, _ := s.store.DB().ListSubTasks(e.ID)
+
+		msg := historyMsg{
 			ID:         e.ID,
 			Text:       e.Body,
 			Category:   e.Category,
@@ -592,7 +616,9 @@ func (s *Server) handleBrainHistory(w http.ResponseWriter, r *http.Request) {
 			ActionDone: e.ActionDone,
 			Status:     e.Status,
 			DueDate:    e.DueDate,
-		})
+			SubTasks:   subtasks,
+		}
+		messages = append(messages, msg)
 	}
 
 	jsonResponse(w, map[string]interface{}{
@@ -620,6 +646,132 @@ func (s *Server) handleBrainStatus(w http.ResponseWriter, r *http.Request) {
 		"total_entries": total,
 		"categories":    stats,
 	})
+}
+
+// --- Sub-task Handlers ---
+
+func (s *Server) handleCreateSubTask(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+
+	// Verify the entry exists
+	if _, err := s.store.DB().GetEntry(entryID); err != nil {
+		jsonError(w, "entry not found", err, http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		Text      string `json:"text"`
+		SortOrder int    `json:"sort_order"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+	if req.Text == "" {
+		jsonError(w, "text is required", nil, http.StatusBadRequest)
+		return
+	}
+
+	st := &store.SubTask{
+		EntryID:   entryID,
+		Text:      req.Text,
+		SortOrder: req.SortOrder,
+	}
+	if err := s.store.DB().InsertSubTask(st); err != nil {
+		jsonError(w, "creating subtask", err, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	jsonResponse(w, st)
+}
+
+func (s *Server) handleUpdateSubTask(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+	subtaskID := r.PathValue("sid")
+
+	var updates map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+
+	// Load existing subtask list to find this one
+	subtasks, err := s.store.DB().ListSubTasks(entryID)
+	if err != nil {
+		jsonError(w, "loading subtasks", err, http.StatusInternalServerError)
+		return
+	}
+	var existing *store.SubTask
+	for i := range subtasks {
+		if subtasks[i].ID == subtaskID {
+			existing = &subtasks[i]
+			break
+		}
+	}
+	if existing == nil {
+		jsonError(w, "subtask not found", nil, http.StatusNotFound)
+		return
+	}
+
+	// Apply partial updates
+	if v, ok := updates["text"].(string); ok {
+		existing.Text = v
+	}
+	if v, ok := updates["done"].(bool); ok {
+		existing.Done = v
+	}
+	if v, ok := updates["sort_order"].(float64); ok {
+		existing.SortOrder = int(v)
+	}
+
+	if err := s.store.DB().UpdateSubTask(existing); err != nil {
+		jsonError(w, "updating subtask", err, http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, existing)
+}
+
+func (s *Server) handleDeleteSubTask(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+	subtaskID := r.PathValue("sid")
+
+	if err := s.store.DB().DeleteSubTask(entryID, subtaskID); err != nil {
+		jsonError(w, "deleting subtask", err, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleReorderSubTasks(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+	if len(req.IDs) == 0 {
+		jsonError(w, "ids array is required", nil, http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.DB().ReorderSubTasks(entryID, req.IDs); err != nil {
+		jsonError(w, "reordering subtasks", err, http.StatusInternalServerError)
+		return
+	}
+
+	// Return updated list
+	subtasks, err := s.store.DB().ListSubTasks(entryID)
+	if err != nil {
+		jsonError(w, "loading subtasks", err, http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, subtasks)
 }
 
 // --- Frontend ---

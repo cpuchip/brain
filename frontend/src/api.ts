@@ -1,3 +1,13 @@
+export interface SubTask {
+  id: string
+  entry_id: string
+  text: string
+  done: boolean
+  sort_order: number
+  created_at?: string
+  updated_at?: string
+}
+
 export interface Entry {
   id: string
   title: string
@@ -10,6 +20,7 @@ export interface Entry {
   ibecome_task_id?: number
   created_at: string
   updated_at: string
+  subtasks?: SubTask[]
   // Category-specific fields
   status?: string
   action_done?: boolean
@@ -101,5 +112,30 @@ export const api = {
 
   tags() {
     return request<string[]>('/tags')
+  },
+
+  classify(id: string) {
+    return request<Entry>(`/entries/${encodeURIComponent(id)}/classify`, { method: 'POST' })
+  },
+
+  // Subtask CRUD
+  createSubTask(entryId: string, text: string) {
+    return request<SubTask>(`/entries/${encodeURIComponent(entryId)}/subtasks`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    })
+  },
+
+  updateSubTask(entryId: string, subtaskId: string, updates: Partial<Pick<SubTask, 'text' | 'done'>>) {
+    return request<SubTask>(`/entries/${encodeURIComponent(entryId)}/subtasks/${encodeURIComponent(subtaskId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    })
+  },
+
+  deleteSubTask(entryId: string, subtaskId: string) {
+    return request<void>(`/entries/${encodeURIComponent(entryId)}/subtasks/${encodeURIComponent(subtaskId)}`, {
+      method: 'DELETE',
+    })
   },
 }

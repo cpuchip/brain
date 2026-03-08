@@ -12,12 +12,14 @@ async function capture() {
   if (!body || submitting.value) return
   submitting.value = true
   try {
-    await api.createEntry({
+    const entry = await api.createEntry({
       title: body.substring(0, 60),
       body,
       source: 'web',
     })
     text.value = ''
+    // Auto-classify in background
+    api.classify(entry.id).catch(() => {})
     await load()
   } finally {
     submitting.value = false
