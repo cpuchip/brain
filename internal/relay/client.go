@@ -100,7 +100,7 @@ type Client struct {
 	ws          *websocket.Conn
 	lastPaths   map[string]string // thoughtID -> file relPath
 	done        chan struct{}
-	classifySem chan struct{} // serializes LM Studio classify calls (capacity 1)
+	classifySem chan struct{} // serializes concurrent classify calls (capacity 1)
 }
 
 // NewClient creates a new relay client.
@@ -741,9 +741,14 @@ func (c *Client) autoClassifyEntry(ws *websocket.Conn, id string, entry *store.E
 		return
 	}
 
-	// Serialize: only one classify call at a time (LM Studio can't handle concurrent requests)
-	c.classifySem <- struct{}{}
-	defer func() { <-c.classifySem }()
+	// Serialize: only one classify call at a time (LM Studio can't handle concurrent requests).
+	select {
+	case c.classifySem <- struct{}{}:
+		defer func() { <-c.classifySem }()
+	case <-time.After(5 * time.Minute):
+		log.Printf("[relay] auto-classify timed out waiting for semaphore for %s", id)
+		return
+	}
 
 	log.Printf("[relay] auto-classifying entry %s: %.50s...", id, text)
 
