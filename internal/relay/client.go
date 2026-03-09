@@ -96,23 +96,25 @@ type Client struct {
 	store    *store.Store
 	ibecome  *ibecome.Client // optional: auto-create tasks in ibecome
 
-	mu        sync.Mutex
-	ws        *websocket.Conn
-	lastPaths map[string]string // thoughtID -> file relPath
-	done      chan struct{}
+	mu          sync.Mutex
+	ws          *websocket.Conn
+	lastPaths   map[string]string // thoughtID -> file relPath
+	done        chan struct{}
+	classifySem chan struct{} // serializes LM Studio classify calls (capacity 1)
 }
 
 // NewClient creates a new relay client.
 // If ibecomeClient is non-nil, tasks will be auto-created for actions/projects.
 func NewClient(url, token string, classify *classifier.Classifier, st *store.Store, ibecomeClient *ibecome.Client) *Client {
 	return &Client{
-		url:       url,
-		token:     token,
-		classify:  classify,
-		store:     st,
-		ibecome:   ibecomeClient,
-		lastPaths: make(map[string]string),
-		done:      make(chan struct{}),
+		url:         url,
+		token:       token,
+		classify:    classify,
+		store:       st,
+		ibecome:     ibecomeClient,
+		lastPaths:   make(map[string]string),
+		done:        make(chan struct{}),
+		classifySem: make(chan struct{}, 1),
 	}
 }
 
@@ -729,6 +731,7 @@ func (c *Client) handleEntryCreate(ws *websocket.Conn, data []byte) {
 }
 
 // autoClassifyEntry runs the AI classifier on a newly created entry and syncs results back.
+// Uses a semaphore to serialize LM Studio calls and retries transient failures.
 func (c *Client) autoClassifyEntry(ws *websocket.Conn, id string, entry *store.Entry) {
 	text := entry.Body
 	if text == "" {
@@ -738,14 +741,30 @@ func (c *Client) autoClassifyEntry(ws *websocket.Conn, id string, entry *store.E
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	// Serialize: only one classify call at a time (LM Studio can't handle concurrent requests)
+	c.classifySem <- struct{}{}
+	defer func() { <-c.classifySem }()
 
 	log.Printf("[relay] auto-classifying entry %s: %.50s...", id, text)
 
-	result, err := c.classify.Classify(ctx, text)
+	var result *classifier.Result
+	var err error
+	const maxRetries = 3
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		result, err = c.classify.Classify(ctx, text)
+		cancel()
+		if err == nil {
+			break
+		}
+		if attempt < maxRetries {
+			delay := time.Duration(attempt*2) * time.Second
+			log.Printf("[relay] auto-classify attempt %d/%d failed for %s, retrying in %v: %v", attempt, maxRetries, id, delay, err)
+			time.Sleep(delay)
+		}
+	}
 	if err != nil {
-		log.Printf("[relay] auto-classify failed for %s: %v", id, err)
+		log.Printf("[relay] auto-classify failed for %s after %d attempts: %v", id, maxRetries, err)
 		return
 	}
 
