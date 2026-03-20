@@ -15,6 +15,7 @@ type AgentConfig struct {
 	SystemMessage string            // System prompt for the agent
 	MCPServers    map[string]MCPDef // External MCP servers to connect
 	WorkingDir    string            // Working directory for file operations
+	AllowedRoots  []string          // Directories the agent can read/write (for dev tools)
 }
 
 // MCPDef describes an MCP server that should be available to agent sessions.
@@ -115,6 +116,12 @@ func (a *Agent) createSession(ctx context.Context) (*copilot.Session, error) {
 
 	if a.config.WorkingDir != "" {
 		cfg.WorkingDirectory = a.config.WorkingDir
+	}
+
+	// Register Go-implemented filesystem tools for spec execution
+	if len(a.config.AllowedRoots) > 0 {
+		cfg.Tools = devTools(a.config.AllowedRoots)
+		log.Printf("Agent dev tools registered (%d tools, %d allowed roots)", len(cfg.Tools), len(a.config.AllowedRoots))
 	}
 
 	// Register MCP servers

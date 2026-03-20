@@ -4,7 +4,7 @@ go 1.25.6
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
-	github.com/github/copilot-sdk/go v0.1.29
+	github.com/github/copilot-sdk/go v0.1.32
 	gopkg.in/yaml.v3 v3.0.1
 )
 

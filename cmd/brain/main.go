@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/cpuchip/brain/internal/ai"
@@ -20,6 +22,7 @@ import (
 	"github.com/cpuchip/brain/internal/relay"
 	"github.com/cpuchip/brain/internal/store"
 	"github.com/cpuchip/brain/internal/web"
+	"github.com/joho/godotenv"
 	"github.com/philippgille/chromem-go"
 )
 
@@ -33,6 +36,14 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "mcp" {
 		if err := runMCP(); err != nil {
 			fmt.Fprintf(os.Stderr, "brain mcp: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "exec" {
+		if err := runExec(); err != nil {
+			fmt.Fprintf(os.Stderr, "brain exec: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -170,13 +181,41 @@ func run() error {
 				Cwd:     def.Cwd,
 			}
 		}
+		// Compute allowed roots for dev tools: brain.exe repo + scripture-study workspace
+		var allowedRoots []string
+		if cfg.BrainCodeDir != "" {
+			allowedRoots = append(allowedRoots, cfg.BrainCodeDir)
+			// Also allow the scripture-study workspace (parent of scripts/)
+			scriptsDir := filepath.Dir(cfg.BrainCodeDir)
+			workspaceDir := filepath.Dir(scriptsDir)
+			if _, err := os.Stat(filepath.Join(workspaceDir, "go.work")); err == nil {
+				allowedRoots = append(allowedRoots, workspaceDir)
+			}
+		}
+
 		agent = ai.NewAgent(copilotClient.CopilotClient(), ai.AgentConfig{
-			Model:         cfg.AgentModel,
-			SystemMessage: "You are a scripture study assistant. You have access to gospel library search tools. Use them to find scriptures, talks, and other resources when answering questions. Always cite your sources with specific references.",
-			MCPServers:    mcpDefs,
-			WorkingDir:    cfg.BrainCodeDir,
+			Model: cfg.AgentModel,
+			SystemMessage: `You are a development agent for the scripture-study project. You have two sets of capabilities:
+
+1. SCRIPTURE TOOLS (MCP): gospel_search, gospel_get, gospel_list, search_scriptures, search_talks, webster_define — use these to look up scriptures, conference talks, and word definitions.
+
+2. FILESYSTEM TOOLS: read_file, write_file, list_directory, search_text — use these to read source code, make changes, and explore the codebase.
+
+When given a spec or task:
+- Read and understand the relevant source code first
+- Make precise, minimal changes that implement the spec
+- After making changes, verify by reading the modified files
+- Report what you changed and why
+
+When answering scripture questions:
+- Use the search tools to find relevant passages
+- Always cite specific references
+- Read the full source to verify quotes before citing them`,
+			MCPServers:   mcpDefs,
+			WorkingDir:   cfg.BrainCodeDir,
+			AllowedRoots: allowedRoots,
 		})
-		log.Printf("  Agent: enabled (model: %s, %d MCP servers)", cfg.AgentModel, len(mcpDefs))
+		log.Printf("  Agent: enabled (model: %s, %d MCP servers, %d allowed roots)", cfg.AgentModel, len(mcpDefs), len(allowedRoots))
 	} else {
 		log.Printf("  Agent: disabled (requires copilot backend + MCP servers)")
 	}
@@ -355,4 +394,99 @@ func runMCP() error {
 
 	srv := brainmcp.New(st)
 	return srv.Serve()
+}
+
+// runExec handles "brain exec" — reads a spec (from file or stdin) and has the
+// agent execute it. Prints the agent's response to stdout.
+//
+// Usage:
+//
+//	brain exec <spec-file>         # Read spec from file
+//	brain exec --prompt "do X"     # Inline prompt
+func runExec() error {
+	_ = godotenv.Load()
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// Parse args after "exec"
+	args := os.Args[2:]
+	var prompt string
+
+	switch {
+	case len(args) >= 2 && args[0] == "--prompt":
+		prompt = strings.Join(args[1:], " ")
+	case len(args) == 1:
+		specPath := args[0]
+		data, err := os.ReadFile(specPath)
+		if err != nil {
+			return fmt.Errorf("reading spec file: %w", err)
+		}
+		prompt = fmt.Sprintf("Execute this spec. Read the relevant source code, make the changes described, and report what you changed.\n\n---\n\n%s", string(data))
+	default:
+		return fmt.Errorf("usage: brain exec <spec-file> | brain exec --prompt \"...\"")
+	}
+
+	ctx := context.Background()
+
+	// Start Copilot SDK
+	copilotClient := ai.NewClient(cfg.AgentModel, cfg.GitHubToken)
+	log.Printf("Starting Copilot SDK (model: %s)...", cfg.AgentModel)
+	if err := copilotClient.Start(ctx); err != nil {
+		return fmt.Errorf("starting Copilot SDK: %w", err)
+	}
+	defer copilotClient.Stop()
+
+	// Build MCP server defs
+	mcpDefs := make(map[string]ai.MCPDef, len(cfg.MCPServers))
+	for name, def := range cfg.MCPServers {
+		mcpDefs[name] = ai.MCPDef{
+			Command: def.Command,
+			Args:    def.Args,
+			Env:     def.Env,
+			Cwd:     def.Cwd,
+		}
+	}
+
+	// Compute allowed roots
+	var allowedRoots []string
+	if cfg.BrainCodeDir != "" {
+		allowedRoots = append(allowedRoots, cfg.BrainCodeDir)
+		scriptsDir := filepath.Dir(cfg.BrainCodeDir)
+		workspaceDir := filepath.Dir(scriptsDir)
+		if _, err := os.Stat(filepath.Join(workspaceDir, "go.work")); err == nil {
+			allowedRoots = append(allowedRoots, workspaceDir)
+		}
+	}
+
+	agent := ai.NewAgent(copilotClient.CopilotClient(), ai.AgentConfig{
+		Model: cfg.AgentModel,
+		SystemMessage: `You are a development agent for the scripture-study project. You have two sets of capabilities:
+
+1. SCRIPTURE TOOLS (MCP): gospel_search, gospel_get, gospel_list, search_scriptures, search_talks, webster_define — use these to look up scriptures, conference talks, and word definitions.
+
+2. FILESYSTEM TOOLS: read_file, write_file, list_directory, search_text — use these to read source code, make changes, and explore the codebase.
+
+When given a spec or task:
+- Read and understand the relevant source code first
+- Make precise, minimal changes that implement the spec
+- After making changes, verify by reading the modified files
+- Report what you changed and why`,
+		MCPServers:   mcpDefs,
+		WorkingDir:   cfg.BrainCodeDir,
+		AllowedRoots: allowedRoots,
+	})
+
+	log.Printf("Agent ready (%d MCP servers, %d allowed roots)", len(mcpDefs), len(allowedRoots))
+	log.Printf("Sending spec to agent...")
+
+	response, err := agent.Ask(ctx, prompt)
+	if err != nil {
+		return fmt.Errorf("agent execution: %w", err)
+	}
+
+	fmt.Println(response)
+	return nil
 }
