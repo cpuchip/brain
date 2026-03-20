@@ -74,6 +74,10 @@ type Config struct {
 	// Classification
 	ConfidenceThreshold float64
 
+	// Agent (Copilot SDK sessions with MCP tools)
+	AgentModel string                  // Model for agent sessions (default: claude-sonnet-4.6)
+	MCPServers map[string]MCPServerDef // External MCP servers available to agent sessions
+
 	// Digest schedule
 	Digest DigestConfig
 
@@ -101,6 +105,14 @@ type RateLimitConfig struct {
 	MaxAPICallsPerHour     int `yaml:"max_api_calls_per_hour"`
 	MaxGitCommitsPerDay    int `yaml:"max_git_commits_per_day"`
 	MaxNotificationsPerDay int `yaml:"max_notifications_per_day"`
+}
+
+// MCPServerDef configures an external MCP server that agent sessions can use as tools.
+type MCPServerDef struct {
+	Command string            `yaml:"command"` // Executable path
+	Args    []string          `yaml:"args"`    // Command arguments
+	Env     map[string]string `yaml:"env"`     // Environment variables
+	Cwd     string            `yaml:"cwd"`     // Working directory
 }
 
 // BrainConfig is the structure of .brain/config.yaml in the data repo.
@@ -135,6 +147,7 @@ func Load() (*Config, error) {
 		AIBackend:           "lmstudio", // default to local LM Studio
 		AIModel:             AvailableModels["gpt-mini"].ID,
 		AIModelPreset:       "gpt-mini",
+		AgentModel:          "claude-sonnet-4.6",
 		LMStudioURL:         "http://localhost:1234/v1",
 		LMStudioModel:       "qwen/qwen3.5-9b",
 		EmbeddingBackend:    "lmstudio", // default: use LM Studio for embeddings too
@@ -221,6 +234,9 @@ func Load() (*Config, error) {
 			cfg.AIModelPreset = ""
 		}
 	}
+	if v := os.Getenv("AGENT_MODEL"); v != "" {
+		cfg.AgentModel = v
+	}
 	if v := os.Getenv("BRAIN_DATA_DIR"); v != "" {
 		cfg.BrainDataDir = v
 	}
@@ -228,6 +244,11 @@ func Load() (*Config, error) {
 	// Resolve brain data dir — default to ~/.brain-data or check common locations
 	if cfg.BrainDataDir == "" {
 		cfg.BrainDataDir = findBrainDataDir()
+	}
+
+	// Resolve brain code directory (for MCP server discovery)
+	if cfg.BrainCodeDir == "" {
+		cfg.BrainCodeDir = findBrainCodeDir()
 	}
 
 	if cfg.BrainDataDir == "" {
@@ -282,6 +303,11 @@ func Load() (*Config, error) {
 	if err := loadBrainConfig(brainCfgPath, cfg); err != nil {
 		// Not fatal — we have defaults
 		fmt.Fprintf(os.Stderr, "warning: could not load %s: %v\n", brainCfgPath, err)
+	}
+
+	// Auto-discover MCP servers from env or sibling directories
+	if cfg.MCPServers == nil {
+		cfg.MCPServers = discoverMCPServers(cfg.BrainCodeDir)
 	}
 
 	return cfg, nil
@@ -365,6 +391,79 @@ func envFirst(names ...string) string {
 	for _, name := range names {
 		if v := os.Getenv(name); v != "" {
 			return v
+		}
+	}
+	return ""
+}
+
+// discoverMCPServers looks for known MCP server executables as siblings of
+// brain.exe (under ../gospel-mcp, ../gospel-vec, etc.). Returns nil if
+// brainCodeDir is empty or no servers are found.
+func discoverMCPServers(brainCodeDir string) map[string]MCPServerDef {
+	if brainCodeDir == "" {
+		return nil
+	}
+
+	scriptsDir := filepath.Dir(brainCodeDir) // scripts/
+	servers := make(map[string]MCPServerDef)
+
+	// Known MCP servers and their serve commands
+	type serverSpec struct {
+		dir  string   // directory name under scripts/
+		exe  string   // binary name (without .exe)
+		args []string // arguments to start MCP stdio mode
+	}
+
+	specs := []serverSpec{
+		{"gospel-mcp", "gospel-mcp", []string{"serve"}},
+		{"gospel-vec", "gospel-vec", []string{"mcp"}},
+		{"webster-mcp", "webster-mcp", []string{"serve"}},
+	}
+
+	for _, spec := range specs {
+		dir := filepath.Join(scriptsDir, spec.dir)
+		// Try platform-specific binary name
+		exe := filepath.Join(dir, spec.exe+".exe")
+		if _, err := os.Stat(exe); err != nil {
+			exe = filepath.Join(dir, spec.exe)
+			if _, err := os.Stat(exe); err != nil {
+				continue
+			}
+		}
+		servers[spec.exe] = MCPServerDef{
+			Command: exe,
+			Args:    spec.args,
+			Cwd:     dir,
+		}
+	}
+
+	if len(servers) == 0 {
+		return nil
+	}
+	return servers
+}
+
+// findBrainCodeDir attempts to locate the brain source directory by looking
+// for the go.mod adjacent to the running executable or relative to cwd.
+func findBrainCodeDir() string {
+	// Try relative to executable
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		// Check if go.mod exists in parent (cmd/brain -> scripts/brain)
+		for _, candidate := range []string{dir, filepath.Dir(dir), filepath.Join(filepath.Dir(dir), "..")} {
+			if _, err := os.Stat(filepath.Join(candidate, "go.mod")); err == nil {
+				abs, _ := filepath.Abs(candidate)
+				return abs
+			}
+		}
+	}
+
+	// Try relative to cwd
+	cwd, _ := os.Getwd()
+	for _, candidate := range []string{cwd, filepath.Dir(cwd), filepath.Join(filepath.Dir(cwd), "..")} {
+		if _, err := os.Stat(filepath.Join(candidate, "go.mod")); err == nil {
+			abs, _ := filepath.Abs(candidate)
+			return abs
 		}
 	}
 	return ""

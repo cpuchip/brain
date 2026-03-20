@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cpuchip/brain/internal/ai"
 	"github.com/cpuchip/brain/internal/classifier"
 	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/store"
@@ -20,17 +21,19 @@ type Server struct {
 	store      *store.Store
 	cfg        *config.Config
 	classify   *classifier.Classifier
+	agent      *ai.Agent
 	mux        *http.ServeMux
 	srv        *http.Server
 	frontendFS fs.FS
 }
 
 // NewServer creates a new web server.
-func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, frontendFS fs.FS) *Server {
+func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, agent *ai.Agent, frontendFS fs.FS) *Server {
 	s := &Server{
 		store:      st,
 		cfg:        cfg,
 		classify:   cl,
+		agent:      agent,
 		mux:        http.NewServeMux(),
 		frontendFS: frontendFS,
 	}
@@ -84,6 +87,10 @@ func (s *Server) routes() {
 	// Model profiles
 	s.mux.HandleFunc("GET /api/models", s.cors(s.handleListModels))
 	s.mux.HandleFunc("GET /api/models/active", s.cors(s.handleActiveModel))
+
+	// Agent (Copilot SDK + MCP tools)
+	s.mux.HandleFunc("POST /api/agent/ask", s.cors(s.handleAgentAsk))
+	s.mux.HandleFunc("POST /api/agent/reset", s.cors(s.handleAgentReset))
 
 	// CORS preflight
 	s.mux.HandleFunc("OPTIONS /", s.handleCORSPreflight)
@@ -849,6 +856,45 @@ func (s *Server) handleActiveModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, result)
+}
+
+// --- Agent Handlers ---
+
+func (s *Server) handleAgentAsk(w http.ResponseWriter, r *http.Request) {
+	if s.agent == nil {
+		jsonError(w, "agent not available", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", err, http.StatusBadRequest)
+		return
+	}
+	if req.Prompt == "" {
+		jsonError(w, "prompt is required", nil, http.StatusBadRequest)
+		return
+	}
+
+	response, err := s.agent.Ask(r.Context(), req.Prompt)
+	if err != nil {
+		jsonError(w, "agent error", err, http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, map[string]string{"response": response})
+}
+
+func (s *Server) handleAgentReset(w http.ResponseWriter, r *http.Request) {
+	if s.agent == nil {
+		jsonError(w, "agent not available", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	s.agent.Reset()
+	jsonResponse(w, map[string]string{"status": "ok"})
 }
 
 // --- Helpers ---

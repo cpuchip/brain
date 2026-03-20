@@ -81,6 +81,11 @@ func (c *Client) Model() string {
 	return c.model
 }
 
+// CopilotClient returns the underlying Copilot SDK client for use by Agent sessions.
+func (c *Client) CopilotClient() *copilot.Client {
+	return c.copilotClient
+}
+
 // SetModel hot-swaps the active model. Destroys any cached session so the next
 // call picks up the new model.
 func (c *Client) SetModel(model string) {

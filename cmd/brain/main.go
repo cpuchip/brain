@@ -158,6 +158,29 @@ func run() error {
 		log.Printf("  Classification profile: default (no profile for %s)", completer.Model())
 	}
 
+	// Initialize agent (Copilot SDK sessions with MCP tools)
+	var agent *ai.Agent
+	if copilotClient != nil && len(cfg.MCPServers) > 0 {
+		mcpDefs := make(map[string]ai.MCPDef, len(cfg.MCPServers))
+		for name, def := range cfg.MCPServers {
+			mcpDefs[name] = ai.MCPDef{
+				Command: def.Command,
+				Args:    def.Args,
+				Env:     def.Env,
+				Cwd:     def.Cwd,
+			}
+		}
+		agent = ai.NewAgent(copilotClient.CopilotClient(), ai.AgentConfig{
+			Model:         cfg.AgentModel,
+			SystemMessage: "You are a scripture study assistant. You have access to gospel library search tools. Use them to find scriptures, talks, and other resources when answering questions. Always cite your sources with specific references.",
+			MCPServers:    mcpDefs,
+			WorkingDir:    cfg.BrainCodeDir,
+		})
+		log.Printf("  Agent: enabled (model: %s, %d MCP servers)", cfg.AgentModel, len(mcpDefs))
+	} else {
+		log.Printf("  Agent: disabled (requires copilot backend + MCP servers)")
+	}
+
 	// Start web UI
 	if cfg.WebEnabled {
 		distFS, err := fs.Sub(frontendFS, "dist")
@@ -165,7 +188,7 @@ func run() error {
 			log.Printf("warning: frontend not available: %v", err)
 			distFS = nil
 		}
-		srv := web.NewServer(st, cfg, classify, distFS)
+		srv := web.NewServer(st, cfg, classify, agent, distFS)
 		go func() {
 			addr := ":" + cfg.WebPort
 			log.Printf("Web UI starting on http://localhost%s", addr)
