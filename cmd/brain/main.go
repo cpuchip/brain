@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/cpuchip/brain/internal/ai"
 	"github.com/cpuchip/brain/internal/classifier"
@@ -181,25 +182,25 @@ func run() error {
 				Cwd:     def.Cwd,
 			}
 		}
-		// Compute allowed roots for dev tools: brain.exe repo + scripture-study workspace
-		var allowedRoots []string
+		// Compute workspace root for working directory
+		var workingDir string
 		if cfg.BrainCodeDir != "" {
-			allowedRoots = append(allowedRoots, cfg.BrainCodeDir)
-			// Also allow the scripture-study workspace (parent of scripts/)
 			scriptsDir := filepath.Dir(cfg.BrainCodeDir)
 			workspaceDir := filepath.Dir(scriptsDir)
 			if _, err := os.Stat(filepath.Join(workspaceDir, "go.work")); err == nil {
-				allowedRoots = append(allowedRoots, workspaceDir)
+				workingDir = workspaceDir
+			} else {
+				workingDir = cfg.BrainCodeDir
 			}
 		}
 
 		agent = ai.NewAgent(copilotClient.CopilotClient(), ai.AgentConfig{
 			Model: cfg.AgentModel,
-			SystemMessage: `You are a development agent for the scripture-study project. You have two sets of capabilities:
+			SystemMessage: `You are a development agent for the scripture-study project. You have access to:
 
 1. SCRIPTURE TOOLS (MCP): gospel_search, gospel_get, gospel_list, search_scriptures, search_talks, webster_define — use these to look up scriptures, conference talks, and word definitions.
 
-2. FILESYSTEM TOOLS: read_file, write_file, list_directory, search_text — use these to read source code, make changes, and explore the codebase.
+2. BUILT-IN FILE TOOLS: You can read, search, and edit files in the workspace.
 
 When given a spec or task:
 - Read and understand the relevant source code first
@@ -211,11 +212,10 @@ When answering scripture questions:
 - Use the search tools to find relevant passages
 - Always cite specific references
 - Read the full source to verify quotes before citing them`,
-			MCPServers:   mcpDefs,
-			WorkingDir:   cfg.BrainCodeDir,
-			AllowedRoots: allowedRoots,
+			MCPServers: mcpDefs,
+			WorkingDir: workingDir,
 		})
-		log.Printf("  Agent: enabled (model: %s, %d MCP servers, %d allowed roots)", cfg.AgentModel, len(mcpDefs), len(allowedRoots))
+		log.Printf("  Agent: enabled (model: %s, %d MCP servers)", cfg.AgentModel, len(mcpDefs))
 	} else {
 		log.Printf("  Agent: disabled (requires copilot backend + MCP servers)")
 	}
@@ -450,43 +450,49 @@ func runExec() error {
 		}
 	}
 
-	// Compute allowed roots
-	var allowedRoots []string
+	// Compute workspace root for working directory
+	var workingDir string
 	if cfg.BrainCodeDir != "" {
-		allowedRoots = append(allowedRoots, cfg.BrainCodeDir)
 		scriptsDir := filepath.Dir(cfg.BrainCodeDir)
 		workspaceDir := filepath.Dir(scriptsDir)
 		if _, err := os.Stat(filepath.Join(workspaceDir, "go.work")); err == nil {
-			allowedRoots = append(allowedRoots, workspaceDir)
+			workingDir = workspaceDir
+		} else {
+			workingDir = cfg.BrainCodeDir
 		}
 	}
 
 	agent := ai.NewAgent(copilotClient.CopilotClient(), ai.AgentConfig{
 		Model: cfg.AgentModel,
-		SystemMessage: `You are a development agent for the scripture-study project. You have two sets of capabilities:
+		SystemMessage: `You are a development agent for the scripture-study project. You have access to:
 
 1. SCRIPTURE TOOLS (MCP): gospel_search, gospel_get, gospel_list, search_scriptures, search_talks, webster_define — use these to look up scriptures, conference talks, and word definitions.
 
-2. FILESYSTEM TOOLS: read_file, write_file, list_directory, search_text — use these to read source code, make changes, and explore the codebase.
+2. BUILT-IN FILE TOOLS: You can read, search, and edit files in the workspace.
 
 When given a spec or task:
 - Read and understand the relevant source code first
 - Make precise, minimal changes that implement the spec
 - After making changes, verify by reading the modified files
 - Report what you changed and why`,
-		MCPServers:   mcpDefs,
-		WorkingDir:   cfg.BrainCodeDir,
-		AllowedRoots: allowedRoots,
+		MCPServers: mcpDefs,
+		WorkingDir: workingDir,
 	})
 
-	log.Printf("Agent ready (%d MCP servers, %d allowed roots)", len(mcpDefs), len(allowedRoots))
+	log.Printf("Agent ready (%d MCP servers, working dir: %s)", len(mcpDefs), workingDir)
 	log.Printf("Sending spec to agent...")
 
-	response, err := agent.Ask(ctx, prompt)
+	// Use a 10-minute timeout for spec execution — streaming shows progress
+	execCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	response, err := agent.AskStreaming(execCtx, prompt, os.Stdout)
 	if err != nil {
 		return fmt.Errorf("agent execution: %w", err)
 	}
 
-	fmt.Println(response)
+	// Print final newline after streaming output
+	fmt.Println()
+	_ = response // full response was already streamed to stdout
 	return nil
 }
