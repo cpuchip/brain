@@ -41,3 +41,6 @@ vec/
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Trash (files pending manual deletion)
+.trash/

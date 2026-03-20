@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"sync"
+	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
 )
@@ -108,24 +109,48 @@ func (a *Agent) AskStreaming(ctx context.Context, prompt string, w io.Writer) (s
 	errCh := make(chan error, 1)
 	var fullResponse string
 	var mu sync.Mutex
+	var streamedChars int64
+
+	// Track last event time for inactivity watchdog
+	lastEvent := time.Now()
+	var lastEventMu sync.Mutex
+
+	touchEvent := func() {
+		lastEventMu.Lock()
+		lastEvent = time.Now()
+		lastEventMu.Unlock()
+	}
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
+		touchEvent()
+
 		switch event.Type {
-		case copilot.AssistantMessageDelta:
-			if event.Data.Content != nil {
-				fmt.Fprint(w, *event.Data.Content)
+		case copilot.AssistantMessageDelta, copilot.AssistantStreamingDelta:
+			// Streaming deltas use DeltaContent; message deltas may use Content
+			delta := event.Data.DeltaContent
+			if delta == nil {
+				delta = event.Data.Content
+			}
+			if delta != nil {
+				n, _ := fmt.Fprint(w, *delta)
+				mu.Lock()
+				streamedChars += int64(n)
+				mu.Unlock()
 			}
 		case copilot.AssistantMessage:
 			if event.Data.Content != nil {
 				mu.Lock()
 				fullResponse = *event.Data.Content
+				chars := streamedChars
 				mu.Unlock()
+				log.Printf("Response complete (%d chars streamed, %d chars final)", chars, len(*event.Data.Content))
 			}
 		case copilot.ToolExecutionStart:
 			if event.Data.ToolName != nil {
-				log.Printf("Tool: %s", *event.Data.ToolName)
+				log.Printf("Tool start: %s", *event.Data.ToolName)
 			}
 		case copilot.SessionIdle:
+			log.Printf("Session idle")
 			select {
 			case idleCh <- struct{}{}:
 			default:
@@ -135,32 +160,86 @@ func (a *Agent) AskStreaming(ctx context.Context, prompt string, w io.Writer) (s
 			if event.Data.Message != nil {
 				errMsg = *event.Data.Message
 			}
+			log.Printf("Session error: %s", errMsg)
 			select {
 			case errCh <- fmt.Errorf("session error: %s", errMsg):
 			default:
 			}
+
+		// Noisy events we expect but don't need to log
+		case copilot.AssistantReasoningDelta, copilot.AssistantReasoning,
+			copilot.HookStart, copilot.HookEnd,
+			copilot.ToolExecutionComplete,
+			copilot.AssistantTurnStart, copilot.AssistantTurnEnd:
+			// ignore
+
+		default:
+			// Log truly unexpected events
+			log.Printf("Event: %s", event.Type)
 		}
 	})
 	defer unsubscribe()
+
+	// Inactivity watchdog — warns if no events for 30s
+	watchdogCtx, cancelWatchdog := context.WithCancel(ctx)
+	watchdogDone := make(chan struct{})
+	go func() {
+		defer close(watchdogDone)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				lastEventMu.Lock()
+				idle := time.Since(lastEvent)
+				lastEventMu.Unlock()
+				if idle >= 30*time.Second {
+					mu.Lock()
+					chars := streamedChars
+					mu.Unlock()
+					log.Printf("WARNING: no events for %s (streamed %d chars so far)", idle.Round(time.Second), chars)
+				}
+			case <-watchdogCtx.Done():
+				return
+			}
+		}
+	}()
 
 	_, err := session.Send(ctx, copilot.MessageOptions{
 		Prompt: prompt,
 	})
 	if err != nil {
+		cancelWatchdog()
 		return "", fmt.Errorf("agent send: %w", err)
 	}
 
+	var result string
 	select {
 	case <-idleCh:
 		mu.Lock()
-		result := fullResponse
+		result = fullResponse
+		chars := streamedChars
 		mu.Unlock()
-		return result, nil
+		// If nothing was streamed but we have a final response, write it now
+		if chars == 0 && result != "" {
+			log.Printf("No streaming deltas received; writing final response (%d chars)", len(result))
+			fmt.Fprint(w, result)
+		}
 	case err := <-errCh:
+		cancelWatchdog()
+		<-watchdogDone
 		return "", err
 	case <-ctx.Done():
+		cancelWatchdog()
+		<-watchdogDone
 		return "", fmt.Errorf("waiting for agent: %w", ctx.Err())
 	}
+
+	// Stop watchdog
+	cancelWatchdog()
+	<-watchdogDone
+
+	return result, nil
 }
 
 // Reset destroys the current session so the next Ask creates a fresh one.
@@ -181,7 +260,7 @@ func (a *Agent) createSession(ctx context.Context) (*copilot.Session, error) {
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		Hooks: &copilot.SessionHooks{
 			OnPostToolUse: func(input copilot.PostToolUseHookInput, _ copilot.HookInvocation) (*copilot.PostToolUseHookOutput, error) {
-				log.Printf("Agent tool call: %s", input.ToolName)
+				log.Printf("Tool done: %s", input.ToolName)
 				return nil, nil
 			},
 		},

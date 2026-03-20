@@ -491,8 +491,10 @@ When given a spec or task:
 		return fmt.Errorf("agent execution: %w", err)
 	}
 
-	// Print final newline after streaming output
-	fmt.Println()
-	_ = response // full response was already streamed to stdout
+	// If streaming didn't produce output (e.g. content was in final message only),
+	// print the full response as fallback
+	if response != "" {
+		fmt.Println()
+	}
 	return nil
 }
