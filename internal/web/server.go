@@ -21,19 +21,21 @@ type Server struct {
 	store      *store.Store
 	cfg        *config.Config
 	classify   *classifier.Classifier
-	agent      *ai.Agent
+	pool       *ai.AgentPool
+	wc         config.WorkspaceConfig
 	mux        *http.ServeMux
 	srv        *http.Server
 	frontendFS fs.FS
 }
 
 // NewServer creates a new web server.
-func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, agent *ai.Agent, frontendFS fs.FS) *Server {
+func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, pool *ai.AgentPool, wc config.WorkspaceConfig, frontendFS fs.FS) *Server {
 	s := &Server{
 		store:      st,
 		cfg:        cfg,
 		classify:   cl,
-		agent:      agent,
+		pool:       pool,
+		wc:         wc,
 		mux:        http.NewServeMux(),
 		frontendFS: frontendFS,
 	}
@@ -91,6 +93,9 @@ func (s *Server) routes() {
 	// Agent (Copilot SDK + MCP tools)
 	s.mux.HandleFunc("POST /api/agent/ask", s.cors(s.handleAgentAsk))
 	s.mux.HandleFunc("POST /api/agent/reset", s.cors(s.handleAgentReset))
+	s.mux.HandleFunc("GET /api/agent/sessions", s.cors(s.handleAgentSessions))
+	s.mux.HandleFunc("POST /api/agent/route", s.cors(s.handleAgentRoute))
+	s.mux.HandleFunc("GET /api/agent/routable", s.cors(s.handleAgentRoutable))
 
 	// CORS preflight
 	s.mux.HandleFunc("OPTIONS /", s.handleCORSPreflight)
@@ -861,13 +866,14 @@ func (s *Server) handleActiveModel(w http.ResponseWriter, r *http.Request) {
 // --- Agent Handlers ---
 
 func (s *Server) handleAgentAsk(w http.ResponseWriter, r *http.Request) {
-	if s.agent == nil {
+	if s.pool == nil {
 		jsonError(w, "agent not available", nil, http.StatusServiceUnavailable)
 		return
 	}
 
 	var req struct {
 		Prompt string `json:"prompt"`
+		Agent  string `json:"agent"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid request", err, http.StatusBadRequest)
@@ -878,7 +884,8 @@ func (s *Server) handleAgentAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := s.agent.Ask(r.Context(), req.Prompt)
+	agent := s.pool.GetOrCreate(req.Agent, s.wc)
+	response, err := agent.Ask(r.Context(), req.Prompt)
 	if err != nil {
 		jsonError(w, "agent error", err, http.StatusInternalServerError)
 		return
@@ -888,13 +895,134 @@ func (s *Server) handleAgentAsk(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentReset(w http.ResponseWriter, r *http.Request) {
-	if s.agent == nil {
+	if s.pool == nil {
 		jsonError(w, "agent not available", nil, http.StatusServiceUnavailable)
 		return
 	}
 
-	s.agent.Reset()
-	jsonResponse(w, map[string]string{"status": "ok"})
+	var req struct {
+		Agent string `json:"agent"`
+	}
+	// Body is optional — if empty, reset all
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	if req.Agent != "" {
+		s.pool.Reset(req.Agent)
+		jsonResponse(w, map[string]string{"status": "ok", "reset": req.Agent})
+	} else {
+		s.pool.ResetAll()
+		jsonResponse(w, map[string]string{"status": "ok", "reset": "all"})
+	}
+}
+
+func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request) {
+	if s.pool == nil {
+		jsonResponse(w, map[string]any{"sessions": []string{}})
+		return
+	}
+
+	sessions := s.pool.ActiveSessions()
+	jsonResponse(w, map[string]any{"sessions": sessions})
+}
+
+func (s *Server) handleAgentRoute(w http.ResponseWriter, r *http.Request) {
+	if s.pool == nil {
+		jsonError(w, "agent not available", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		EntryID string `json:"entry_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", err, http.StatusBadRequest)
+		return
+	}
+	if req.EntryID == "" {
+		jsonError(w, "entry_id is required", nil, http.StatusBadRequest)
+		return
+	}
+
+	// Load the entry
+	entry, err := s.store.DB().GetEntry(req.EntryID)
+	if err != nil {
+		jsonError(w, "entry not found", err, http.StatusNotFound)
+		return
+	}
+
+	// Check if there's a route for this entry
+	route := ai.LookupRoute(entry.Category)
+	if route.AgentName == "" || route.Mode == ai.RouteModeNone {
+		jsonError(w, "no agent route for category: "+entry.Category, nil, http.StatusBadRequest)
+		return
+	}
+
+	// Mark as pending
+	if err := s.store.UpdateRouteStatus(req.EntryID, ai.RouteStatusPending); err != nil {
+		jsonError(w, "updating route status", err, http.StatusInternalServerError)
+		return
+	}
+
+	// Route to agent in background
+	go func() {
+		agent := s.pool.GetOrCreate(route.AgentName, s.wc)
+		prompt := route.RenderPrompt(ai.RoutePromptData{
+			Title: entry.Title,
+			Body:  entry.Body,
+		})
+
+		_ = s.store.UpdateRouteStatus(req.EntryID, ai.RouteStatusRunning)
+
+		response, err := agent.Ask(context.Background(), prompt)
+		if err != nil {
+			log.Printf("Agent route failed for entry %s: %v", req.EntryID, err)
+			_ = s.store.UpdateRouteStatus(req.EntryID, ai.RouteStatusFailed)
+			return
+		}
+
+		_ = s.store.SetAgentOutput(req.EntryID, response, 0)
+		log.Printf("Agent route complete for entry %s (agent: %s, %d chars)", req.EntryID, route.AgentName, len(response))
+	}()
+
+	jsonResponse(w, map[string]string{
+		"status":     "routed",
+		"agent":      route.AgentName,
+		"entry_id":   req.EntryID,
+	})
+}
+
+func (s *Server) handleAgentRoutable(w http.ResponseWriter, r *http.Request) {
+	type routableEntry struct {
+		ID        string `json:"id"`
+		Title     string `json:"title"`
+		Category  string `json:"category"`
+		AgentName string `json:"agent_name"`
+	}
+
+	var result []routableEntry
+	for category, route := range ai.DefaultRoutes {
+		if route.AgentName == "" || route.Mode == ai.RouteModeNone {
+			continue
+		}
+		entries, err := s.store.DB().ListCategory(category)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			// Skip entries already routed
+			if e.RouteStatus == ai.RouteStatusComplete || e.RouteStatus == ai.RouteStatusRunning || e.RouteStatus == ai.RouteStatusPending {
+				continue
+			}
+			result = append(result, routableEntry{
+				ID:        e.ID,
+				Title:     e.Title,
+				Category:  e.Category,
+				AgentName: route.AgentName,
+			})
+		}
+	}
+
+	jsonResponse(w, map[string]any{"entries": result})
 }
 
 // --- Helpers ---

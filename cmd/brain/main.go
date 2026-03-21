@@ -170,8 +170,9 @@ func run() error {
 		log.Printf("  Classification profile: default (no profile for %s)", completer.Model())
 	}
 
-	// Initialize agent (Copilot SDK sessions with MCP tools)
-	var agent *ai.Agent
+	// Initialize agent pool (Copilot SDK sessions with MCP tools)
+	var pool *ai.AgentPool
+	var wc config.WorkspaceConfig
 	if copilotClient != nil && len(cfg.MCPServers) > 0 {
 		mcpDefs := make(map[string]ai.MCPDef, len(cfg.MCPServers))
 		for name, def := range cfg.MCPServers {
@@ -195,24 +196,22 @@ func run() error {
 		}
 
 		// Load workspace configuration (.github/ agents, skills, instructions)
-		wc := config.LoadWorkspace(workingDir)
-		systemMessage := buildSystemMessage(wc, "") // no agent selected — base instructions only
+		wc = config.LoadWorkspace(workingDir)
 
-		agentCfg := ai.AgentConfig{
+		baseCfg := ai.AgentConfig{
 			Model:            cfg.AgentModel,
-			SystemMessage:    systemMessage,
 			MCPServers:       mcpDefs,
 			WorkingDir:       workingDir,
 			InfiniteSessions: true,
 		}
 		if wc.SkillsDir != "" {
-			agentCfg.SkillDirectories = []string{wc.SkillsDir}
+			baseCfg.SkillDirectories = []string{wc.SkillsDir}
 		}
 
-		agent = ai.NewAgent(copilotClient.CopilotClient(), agentCfg)
-		log.Printf("  Agent: enabled (model: %s, %d MCP servers)", cfg.AgentModel, len(mcpDefs))
+		pool = ai.NewAgentPool(copilotClient.CopilotClient(), baseCfg)
+		log.Printf("  Agent pool: enabled (model: %s, %d MCP servers)", cfg.AgentModel, len(mcpDefs))
 	} else {
-		log.Printf("  Agent: disabled (requires copilot backend + MCP servers)")
+		log.Printf("  Agent pool: disabled (requires copilot backend + MCP servers)")
 	}
 
 	// Start web UI
@@ -222,7 +221,7 @@ func run() error {
 			log.Printf("warning: frontend not available: %v", err)
 			distFS = nil
 		}
-		srv := web.NewServer(st, cfg, classify, agent, distFS)
+		srv := web.NewServer(st, cfg, classify, pool, wc, distFS)
 		go func() {
 			addr := ":" + cfg.WebPort
 			log.Printf("Web UI starting on http://localhost%s", addr)
@@ -473,7 +472,7 @@ func runExec() error {
 	wc := config.LoadWorkspace(workingDir)
 
 	// Build system message
-	systemMessage := buildSystemMessage(wc, agentName)
+	systemMessage := ai.BuildSystemMessage(wc, agentName)
 
 	agentCfg := ai.AgentConfig{
 		Model:            cfg.AgentModel,
@@ -512,47 +511,4 @@ func runExec() error {
 		fmt.Println()
 	}
 	return nil
-}
-
-// buildSystemMessage composes the system message from workspace config and optional agent.
-func buildSystemMessage(wc config.WorkspaceConfig, agentName string) string {
-	var parts []string
-
-	// If a specific agent is requested, use its prompt as the primary content
-	if agentName != "" {
-		if agent, ok := wc.Agents[agentName]; ok {
-			parts = append(parts, agent.Prompt)
-			log.Printf("Using agent: %s (%s)", agentName, agent.Description)
-		} else {
-			// List available agents
-			available := make([]string, 0, len(wc.Agents))
-			for name := range wc.Agents {
-				available = append(available, name)
-			}
-			log.Printf("WARNING: agent %q not found. Available: %v", agentName, available)
-			log.Printf("Falling back to base instructions")
-		}
-	}
-
-	// Always include base instructions (as supplement if agent specified, as primary if not)
-	if wc.BaseInstructions != "" {
-		parts = append(parts, wc.BaseInstructions)
-	}
-
-	if len(parts) == 0 {
-		// Fallback if no workspace config found
-		return `You are a development agent for the scripture-study project. You have access to:
-
-1. SCRIPTURE TOOLS (MCP): gospel_search, gospel_get, gospel_list, search_scriptures, search_talks, webster_define — use these to look up scriptures, conference talks, and word definitions.
-
-2. BUILT-IN FILE TOOLS: You can read, search, and edit files in the workspace.
-
-When given a spec or task:
-- Read and understand the relevant source code first
-- Make precise, minimal changes that implement the spec
-- After making changes, verify by reading the modified files
-- Report what you changed and why`
-	}
-
-	return strings.Join(parts, "\n\n---\n\n")
 }

@@ -131,6 +131,21 @@ func (s *Store) UpdateEntryStatus(entryID, status string, actionDone bool) error
 	return s.db.UpdateEntryStatus(entryID, status, actionDone)
 }
 
+// SetAgentRoute sets the agent routing info on an entry after classification.
+func (s *Store) SetAgentRoute(entryID, agentRoute, routeStatus string) error {
+	return s.db.SetAgentRoute(entryID, agentRoute, routeStatus)
+}
+
+// UpdateRouteStatus updates just the route status of an entry.
+func (s *Store) UpdateRouteStatus(entryID, routeStatus string) error {
+	return s.db.UpdateRouteStatus(entryID, routeStatus)
+}
+
+// SetAgentOutput records the agent's output path and token usage on an entry.
+func (s *Store) SetAgentOutput(entryID, agentOutput string, tokensUsed int64) error {
+	return s.db.SetAgentOutput(entryID, agentOutput, tokensUsed)
+}
+
 // Reclassify moves an entry from one category to another.
 // The currentPath parameter is now an entry ID (for backward compat with relay/discord,
 // which pass the return value of Save()).

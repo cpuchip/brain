@@ -47,6 +47,12 @@ type Entry struct {
 	// Body (not in front matter — stored as markdown body for archive export)
 	Body string `json:"body" yaml:"-"`
 
+	// Agent routing (populated post-classification)
+	AgentRoute  string `json:"agent_route,omitempty" yaml:"agent_route,omitempty"`
+	RouteStatus string `json:"route_status,omitempty" yaml:"route_status,omitempty"`
+	AgentOutput string `json:"agent_output,omitempty" yaml:"agent_output,omitempty"`
+	TokensUsed  int64  `json:"tokens_used,omitempty" yaml:"tokens_used,omitempty"`
+
 	// Sub-tasks (loaded separately from subtasks table)
 	SubTasks []SubTask `json:"subtasks,omitempty" yaml:"subtasks,omitempty"`
 }

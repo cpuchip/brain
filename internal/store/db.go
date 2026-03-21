@@ -41,7 +41,10 @@ func (d *DB) migrate() error {
 	if _, err := d.db.Exec(schema); err != nil {
 		return err
 	}
-	return d.migrateIbecomeTaskID()
+	if err := d.migrateIbecomeTaskID(); err != nil {
+		return err
+	}
+	return d.migrateAgentRouting()
 }
 
 const schema = `
@@ -148,6 +151,77 @@ func (d *DB) migrateIbecomeTaskID() error {
 	return err
 }
 
+// migrateAgentRouting adds agent routing columns if they don't exist.
+func (d *DB) migrateAgentRouting() error {
+	cols, err := d.columnNames("entries")
+	if err != nil {
+		return err
+	}
+	if cols["agent_route"] {
+		return nil // already migrated
+	}
+	for _, stmt := range []string{
+		"ALTER TABLE entries ADD COLUMN agent_route TEXT",
+		"ALTER TABLE entries ADD COLUMN route_status TEXT",
+		"ALTER TABLE entries ADD COLUMN agent_output TEXT",
+		"ALTER TABLE entries ADD COLUMN tokens_used INTEGER DEFAULT 0",
+	} {
+		if _, err := d.db.Exec(stmt); err != nil {
+			return fmt.Errorf("agent routing migration: %w", err)
+		}
+	}
+	return nil
+}
+
+// columnNames returns a set of column names for the given table.
+func (d *DB) columnNames(table string) (map[string]bool, error) {
+	rows, err := d.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cols := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dfltValue *string
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return nil, err
+		}
+		cols[name] = true
+	}
+	return cols, nil
+}
+
+// SetAgentRoute sets the agent routing info on an entry after classification.
+func (d *DB) SetAgentRoute(entryID, agentRoute, routeStatus string) error {
+	_, err := d.db.Exec(
+		"UPDATE entries SET agent_route = ?, route_status = ?, updated_at = ? WHERE id = ?",
+		agentRoute, routeStatus, time.Now().UTC().Format(time.RFC3339), entryID,
+	)
+	return err
+}
+
+// UpdateRouteStatus updates just the route status of an entry.
+func (d *DB) UpdateRouteStatus(entryID, routeStatus string) error {
+	_, err := d.db.Exec(
+		"UPDATE entries SET route_status = ?, updated_at = ? WHERE id = ?",
+		routeStatus, time.Now().UTC().Format(time.RFC3339), entryID,
+	)
+	return err
+}
+
+// SetAgentOutput records the agent's output path and token usage on an entry.
+func (d *DB) SetAgentOutput(entryID, agentOutput string, tokensUsed int64) error {
+	_, err := d.db.Exec(
+		"UPDATE entries SET agent_output = ?, tokens_used = ?, route_status = 'complete', updated_at = ? WHERE id = ?",
+		agentOutput, tokensUsed, time.Now().UTC().Format(time.RFC3339), entryID,
+	)
+	return err
+}
+
 // SetIbecomeTaskID links a brain entry to an ibecome task.
 func (d *DB) SetIbecomeTaskID(entryID string, taskID int64) error {
 	_, err := d.db.Exec("UPDATE entries SET ibecome_task_id = ? WHERE id = ?", taskID, entryID)
@@ -250,6 +324,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	var status, nextAction, oneLiner sql.NullString
 	var dueDate, scriptureRefs, insight sql.NullString
 	var mood, gratitude sql.NullString
+	var agentRoute, routeStatus, agentOutput sql.NullString
+	var tokensUsed sql.NullInt64
 
 	err := d.db.QueryRow(`
 		SELECT id, title, category, body, confidence, needs_review, source,
@@ -257,7 +333,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 			person_name, person_context, follow_ups,
 			status, next_action, one_liner,
 			due_date, action_done, scripture_refs, insight,
-			mood, gratitude
+			mood, gratitude,
+			agent_route, route_status, agent_output, tokens_used
 		FROM entries WHERE id = ?`, id).Scan(
 		&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
 		&createdStr, &updatedStr,
@@ -265,6 +342,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		&status, &nextAction, &oneLiner,
 		&dueDate, &actionDone, &scriptureRefs, &insight,
 		&mood, &gratitude,
+		&agentRoute, &routeStatus, &agentOutput, &tokensUsed,
 	)
 	if err != nil {
 		return nil, err
@@ -285,6 +363,10 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	e.Insight = insight.String
 	e.Mood = mood.String
 	e.Gratitude = gratitude.String
+	e.AgentRoute = agentRoute.String
+	e.RouteStatus = routeStatus.String
+	e.AgentOutput = agentOutput.String
+	e.TokensUsed = tokensUsed.Int64
 
 	// Load tags
 	rows, err := d.db.Query(`SELECT tag FROM tags WHERE entry_id = ?`, id)
@@ -418,7 +500,8 @@ func (d *DB) Reclassify(id, newCategory string) error {
 // ListCategory returns entries in a given category, newest first.
 func (d *DB) ListCategory(category string) ([]*Entry, error) {
 	rows, err := d.db.Query(`
-		SELECT id, title, category, confidence, needs_review, source, created_at, updated_at
+		SELECT id, title, category, confidence, needs_review, source, created_at, updated_at,
+			agent_route, route_status
 		FROM entries WHERE category = ? ORDER BY created_at DESC`, category)
 	if err != nil {
 		return nil, err
@@ -430,12 +513,16 @@ func (d *DB) ListCategory(category string) ([]*Entry, error) {
 		e := &Entry{}
 		var needsReview int
 		var createdStr, updatedStr string
-		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr); err != nil {
+		var agentRoute, routeStatus sql.NullString
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr,
+			&agentRoute, &routeStatus); err != nil {
 			return nil, err
 		}
 		e.NeedsReview = needsReview != 0
 		e.Created, _ = time.Parse(time.RFC3339, createdStr)
 		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
+		e.AgentRoute = agentRoute.String
+		e.RouteStatus = routeStatus.String
 		entries = append(entries, e)
 	}
 	return entries, nil
