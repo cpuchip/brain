@@ -7,6 +7,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', component: () => import('./views/CaptureView.vue') },
+    { path: '/dashboard', component: () => import('./views/DashboardView.vue') },
     { path: '/entries', component: () => import('./views/EntriesView.vue') },
     { path: '/entries/:id', component: () => import('./views/EntryDetailView.vue') },
     { path: '/search', component: () => import('./views/SearchView.vue') },

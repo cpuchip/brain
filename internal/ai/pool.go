@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"context"
 	"log"
 	"sync"
 
@@ -9,6 +10,13 @@ import (
 	"github.com/cpuchip/brain/internal/config"
 )
 
+// runningTask tracks an in-progress agent task with a cancellable context.
+type runningTask struct {
+	EntryID   string
+	AgentName string
+	cancel    context.CancelFunc
+}
+
 // AgentPool manages multiple named Agent instances with lazy creation.
 // Each agent name gets its own session with a system message composed
 // from workspace configuration.
@@ -16,6 +24,7 @@ type AgentPool struct {
 	client     *copilot.Client
 	baseConfig AgentConfig
 	agents     map[string]*Agent
+	tasks      map[string]*runningTask // keyed by entry ID
 	mu         sync.RWMutex
 }
 
@@ -26,6 +35,7 @@ func NewAgentPool(client *copilot.Client, baseCfg AgentConfig) *AgentPool {
 		client:     client,
 		baseConfig: baseCfg,
 		agents:     make(map[string]*Agent),
+		tasks:      make(map[string]*runningTask),
 	}
 }
 
@@ -113,6 +123,74 @@ func (p *AgentPool) ResetAll() {
 		delete(p.agents, name)
 	}
 	log.Printf("Agent pool: reset all agents")
+}
+
+// StartTask registers a running task for an entry and returns a cancellable context.
+// The caller should use the returned context for the agent work and call the
+// cancel function (or CancelTask) when done.
+func (p *AgentPool) StartTask(entryID, agentName string) context.Context {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Cancel any existing task for this entry
+	if existing, ok := p.tasks[entryID]; ok {
+		existing.cancel()
+		delete(p.tasks, entryID)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p.tasks[entryID] = &runningTask{
+		EntryID:   entryID,
+		AgentName: agentName,
+		cancel:    cancel,
+	}
+	return ctx
+}
+
+// FinishTask removes a task from tracking (called when agent work completes).
+func (p *AgentPool) FinishTask(entryID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.tasks, entryID)
+}
+
+// CancelTask cancels a specific running task.
+func (p *AgentPool) CancelTask(entryID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if task, ok := p.tasks[entryID]; ok {
+		task.cancel()
+		delete(p.tasks, entryID)
+		log.Printf("Agent pool: cancelled task for entry %s", entryID)
+	}
+}
+
+// CancelAll cancels all running tasks.
+func (p *AgentPool) CancelAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for id, task := range p.tasks {
+		task.cancel()
+		delete(p.tasks, id)
+	}
+	log.Printf("Agent pool: cancelled all tasks")
+}
+
+// RunningTasks returns info about currently running tasks.
+func (p *AgentPool) RunningTasks() []runningTask {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	result := make([]runningTask, 0, len(p.tasks))
+	for _, t := range p.tasks {
+		result = append(result, runningTask{
+			EntryID:   t.EntryID,
+			AgentName: t.AgentName,
+		})
+	}
+	return result
 }
 
 // BuildSystemMessage composes the system message from workspace config and optional agent.

@@ -26,6 +26,11 @@ export interface Entry {
   action_done?: boolean
   due_date?: string
   next_action?: string
+  // Agent routing
+  agent_route?: string
+  route_status?: string
+  agent_output?: string
+  tokens_used?: number
 }
 
 export interface Stats {
@@ -38,6 +43,26 @@ export interface Stats {
 export interface SearchResult {
   entry_id: string
   similarity: number
+}
+
+export interface RoutableEntry {
+  id: string
+  title: string
+  category: string
+  agent_name: string
+}
+
+export interface RunningEntry {
+  entry_id: string
+  agent_name: string
+}
+
+export interface BrainStatus {
+  agent_online: boolean
+  queued_count: number
+  model: string
+  total_entries: number
+  categories: Record<string, number>
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -137,5 +162,39 @@ export const api = {
     return request<void>(`/entries/${encodeURIComponent(entryId)}/subtasks/${encodeURIComponent(subtaskId)}`, {
       method: 'DELETE',
     })
+  },
+
+  // Agent & Dashboard
+  agentSessions() {
+    return request<{ sessions: string[] }>('/agent/sessions')
+  },
+
+  agentRoutable() {
+    return request<{ entries: RoutableEntry[] }>('/agent/routable')
+  },
+
+  agentRoute(entryId: string) {
+    return request<{ status: string; agent: string; entry_id: string }>('/agent/route', {
+      method: 'POST',
+      body: JSON.stringify({ entry_id: entryId }),
+    })
+  },
+
+  agentRunning() {
+    return request<{ entries: RunningEntry[] }>('/agent/running')
+  },
+
+  dismissRoute(entryId: string) {
+    return request<{ status: string; entry_id: string }>(`/entries/${encodeURIComponent(entryId)}/dismiss-route`, {
+      method: 'POST',
+    })
+  },
+
+  brainStatus() {
+    return request<BrainStatus>('/brain/status')
+  },
+
+  shutdown() {
+    return request<{ status: string }>('/shutdown', { method: 'POST' })
   },
 }

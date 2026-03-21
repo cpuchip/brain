@@ -37,6 +37,7 @@ const (
 	RouteStatusRunning   = "running"
 	RouteStatusComplete  = "complete"
 	RouteStatusFailed    = "failed"
+	RouteStatusDismissed = "dismissed"
 )
 
 // DefaultRoutes maps classifier categories to agents.

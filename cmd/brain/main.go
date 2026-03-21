@@ -215,13 +215,16 @@ func run() error {
 	}
 
 	// Start web UI
+	// Create shutdown channel for programmatic shutdown (e.g. from web UI)
+	shutdownCh := make(chan struct{}, 1)
+
 	if cfg.WebEnabled {
 		distFS, err := fs.Sub(frontendFS, "dist")
 		if err != nil {
 			log.Printf("warning: frontend not available: %v", err)
 			distFS = nil
 		}
-		srv := web.NewServer(st, cfg, classify, pool, wc, distFS)
+		srv := web.NewServer(st, cfg, classify, pool, wc, distFS, shutdownCh)
 		go func() {
 			addr := ":" + cfg.WebPort
 			log.Printf("Web UI starting on http://localhost%s", addr)
@@ -287,10 +290,13 @@ func run() error {
 		log.Printf("  Web: http://localhost:%s", cfg.WebPort)
 	}
 
-	// Wait for interrupt
+	// Wait for interrupt or programmatic shutdown
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
+	select {
+	case <-sig:
+	case <-shutdownCh:
+	}
 
 	log.Printf("Shutting down...")
 	cancel()

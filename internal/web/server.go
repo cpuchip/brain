@@ -26,10 +26,11 @@ type Server struct {
 	mux        *http.ServeMux
 	srv        *http.Server
 	frontendFS fs.FS
+	shutdownCh chan<- struct{}
 }
 
 // NewServer creates a new web server.
-func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, pool *ai.AgentPool, wc config.WorkspaceConfig, frontendFS fs.FS) *Server {
+func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, pool *ai.AgentPool, wc config.WorkspaceConfig, frontendFS fs.FS, shutdownCh chan<- struct{}) *Server {
 	s := &Server{
 		store:      st,
 		cfg:        cfg,
@@ -38,6 +39,7 @@ func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, p
 		wc:         wc,
 		mux:        http.NewServeMux(),
 		frontendFS: frontendFS,
+		shutdownCh: shutdownCh,
 	}
 	s.routes()
 	return s
@@ -96,6 +98,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/agent/sessions", s.cors(s.handleAgentSessions))
 	s.mux.HandleFunc("POST /api/agent/route", s.cors(s.handleAgentRoute))
 	s.mux.HandleFunc("GET /api/agent/routable", s.cors(s.handleAgentRoutable))
+	s.mux.HandleFunc("GET /api/agent/running", s.cors(s.handleAgentRunning))
+
+	// Dashboard operations
+	s.mux.HandleFunc("POST /api/entries/{id}/dismiss-route", s.cors(s.handleDismissRoute))
+	s.mux.HandleFunc("POST /api/shutdown", s.cors(s.handleShutdown))
 
 	// CORS preflight
 	s.mux.HandleFunc("OPTIONS /", s.handleCORSPreflight)
@@ -388,6 +395,14 @@ func (s *Server) handleClassify(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DB().UpdateEntry(entry); err != nil {
 		jsonError(w, "updating entry after classify", err, http.StatusInternalServerError)
 		return
+	}
+
+	// Auto-annotate routing: if this category has an agent route, mark as suggested
+	route := ai.LookupRoute(entry.Category)
+	if route.AgentName != "" && route.Mode != ai.RouteModeNone {
+		_ = s.store.SetAgentRoute(entry.ID, route.AgentName, ai.RouteStatusSuggested)
+		entry.AgentRoute = route.AgentName
+		entry.RouteStatus = ai.RouteStatusSuggested
 	}
 
 	// Create subtasks from extracted list items
@@ -965,6 +980,9 @@ func (s *Server) handleAgentRoute(w http.ResponseWriter, r *http.Request) {
 
 	// Route to agent in background
 	go func() {
+		ctx := s.pool.StartTask(req.EntryID, route.AgentName)
+		defer s.pool.FinishTask(req.EntryID)
+
 		agent := s.pool.GetOrCreate(route.AgentName, s.wc)
 		prompt := route.RenderPrompt(ai.RoutePromptData{
 			Title: entry.Title,
@@ -973,7 +991,7 @@ func (s *Server) handleAgentRoute(w http.ResponseWriter, r *http.Request) {
 
 		_ = s.store.UpdateRouteStatus(req.EntryID, ai.RouteStatusRunning)
 
-		response, err := agent.Ask(context.Background(), prompt)
+		response, err := agent.Ask(ctx, prompt)
 		if err != nil {
 			log.Printf("Agent route failed for entry %s: %v", req.EntryID, err)
 			_ = s.store.UpdateRouteStatus(req.EntryID, ai.RouteStatusFailed)
@@ -985,9 +1003,9 @@ func (s *Server) handleAgentRoute(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	jsonResponse(w, map[string]string{
-		"status":     "routed",
-		"agent":      route.AgentName,
-		"entry_id":   req.EntryID,
+		"status":   "routed",
+		"agent":    route.AgentName,
+		"entry_id": req.EntryID,
 	})
 }
 
@@ -1009,8 +1027,8 @@ func (s *Server) handleAgentRoutable(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, e := range entries {
-			// Skip entries already routed
-			if e.RouteStatus == ai.RouteStatusComplete || e.RouteStatus == ai.RouteStatusRunning || e.RouteStatus == ai.RouteStatusPending {
+			// Skip entries already routed or dismissed
+			if e.RouteStatus == ai.RouteStatusComplete || e.RouteStatus == ai.RouteStatusRunning || e.RouteStatus == ai.RouteStatusPending || e.RouteStatus == ai.RouteStatusDismissed {
 				continue
 			}
 			result = append(result, routableEntry{
@@ -1023,6 +1041,50 @@ func (s *Server) handleAgentRoutable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, map[string]any{"entries": result})
+}
+
+func (s *Server) handleAgentRunning(w http.ResponseWriter, r *http.Request) {
+	type runningEntry struct {
+		EntryID   string `json:"entry_id"`
+		AgentName string `json:"agent_name"`
+	}
+
+	var result []runningEntry
+	if s.pool != nil {
+		for _, t := range s.pool.RunningTasks() {
+			result = append(result, runningEntry{
+				EntryID:   t.EntryID,
+				AgentName: t.AgentName,
+			})
+		}
+	}
+	if result == nil {
+		result = []runningEntry{}
+	}
+	jsonResponse(w, map[string]any{"entries": result})
+}
+
+func (s *Server) handleDismissRoute(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.store.UpdateRouteStatus(id, ai.RouteStatusDismissed); err != nil {
+		jsonError(w, "dismissing route", err, http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]string{"status": "dismissed", "entry_id": id})
+}
+
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if s.pool != nil {
+		s.pool.CancelAll()
+	}
+
+	jsonResponse(w, map[string]string{"status": "shutting_down"})
+
+	// Signal the main goroutine to shut down after response flushes
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		s.shutdownCh <- struct{}{}
+	}()
 }
 
 // --- Helpers ---
