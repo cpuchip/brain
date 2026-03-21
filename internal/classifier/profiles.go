@@ -164,7 +164,7 @@ JSON SCHEMA:
 		Tasks:            []Task{TaskClassify, TaskChat},
 		Temperature:      0.1,
 		NoThink:          true,
-		StructuredOutput: true,
+		StructuredOutput: false,
 		// Uses default prompt — this was the original model, prompt was tuned for it
 	},
 }

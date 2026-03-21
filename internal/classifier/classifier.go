@@ -76,7 +76,7 @@ func ClassificationSchema() map[string]any {
 		"type": "json_schema",
 		"json_schema": map[string]any{
 			"name":   "classification",
-			"strict": "true",
+			"strict": true,
 			"schema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
