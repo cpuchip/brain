@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,6 +78,9 @@ type Config struct {
 	// Agent (Copilot SDK sessions with MCP tools)
 	AgentModel string                  // Model for agent sessions (default: claude-sonnet-4.6)
 	MCPServers map[string]MCPServerDef // External MCP servers available to agent sessions
+	// Agent token governance
+	AgentTokenWarning int64 // Warn when per-agent session token usage crosses this threshold
+	AgentTokenHardCap int64 // Stop new/active agent work when this threshold is reached
 
 	// Digest schedule
 	Digest DigestConfig
@@ -148,6 +152,8 @@ func Load() (*Config, error) {
 		AIModel:             AvailableModels["gpt-mini"].ID,
 		AIModelPreset:       "gpt-mini",
 		AgentModel:          "claude-sonnet-4.6",
+		AgentTokenWarning:   500000,
+		AgentTokenHardCap:   800000,
 		LMStudioURL:         "http://localhost:1234/v1",
 		LMStudioModel:       "qwen/qwen3.5-9b",
 		EmbeddingBackend:    "lmstudio", // default: use LM Studio for embeddings too
@@ -236,6 +242,16 @@ func Load() (*Config, error) {
 	}
 	if v := os.Getenv("AGENT_MODEL"); v != "" {
 		cfg.AgentModel = v
+	}
+	if v := os.Getenv("AGENT_TOKEN_WARNING"); v != "" {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.AgentTokenWarning = parsed
+		}
+	}
+	if v := os.Getenv("AGENT_TOKEN_HARD_CAP"); v != "" {
+		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.AgentTokenHardCap = parsed
+		}
 	}
 	if v := os.Getenv("BRAIN_DATA_DIR"); v != "" {
 		cfg.BrainDataDir = v
@@ -327,6 +343,12 @@ func (c *Config) Validate() error {
 	}
 	if c.DBPath == "" {
 		return fmt.Errorf("database path not configured")
+	}
+	if c.AgentTokenWarning < 0 || c.AgentTokenHardCap < 0 {
+		return fmt.Errorf("AGENT_TOKEN_WARNING and AGENT_TOKEN_HARD_CAP must be non-negative")
+	}
+	if c.AgentTokenWarning > 0 && c.AgentTokenHardCap > 0 && c.AgentTokenWarning > c.AgentTokenHardCap {
+		return fmt.Errorf("AGENT_TOKEN_WARNING (%d) cannot exceed AGENT_TOKEN_HARD_CAP (%d)", c.AgentTokenWarning, c.AgentTokenHardCap)
 	}
 	return nil
 }

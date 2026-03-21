@@ -199,10 +199,12 @@ func run() error {
 		wc = config.LoadWorkspace(workingDir)
 
 		baseCfg := ai.AgentConfig{
-			Model:            cfg.AgentModel,
-			MCPServers:       mcpDefs,
-			WorkingDir:       workingDir,
-			InfiniteSessions: true,
+			Model:                 cfg.AgentModel,
+			MCPServers:            mcpDefs,
+			WorkingDir:            workingDir,
+			InfiniteSessions:      true,
+			TokenWarningThreshold: cfg.AgentTokenWarning,
+			TokenHardCap:          cfg.AgentTokenHardCap,
 		}
 		if wc.SkillsDir != "" {
 			baseCfg.SkillDirectories = []string{wc.SkillsDir}
@@ -481,11 +483,14 @@ func runExec() error {
 	systemMessage := ai.BuildSystemMessage(wc, agentName)
 
 	agentCfg := ai.AgentConfig{
-		Model:            cfg.AgentModel,
-		SystemMessage:    systemMessage,
-		MCPServers:       mcpDefs,
-		WorkingDir:       workingDir,
-		InfiniteSessions: true,
+		Model:                 cfg.AgentModel,
+		SystemMessage:         systemMessage,
+		MCPServers:            mcpDefs,
+		WorkingDir:            workingDir,
+		AgentName:             agentName,
+		InfiniteSessions:      true,
+		TokenWarningThreshold: cfg.AgentTokenWarning,
+		TokenHardCap:          cfg.AgentTokenHardCap,
 	}
 
 	// Add skills directory if available

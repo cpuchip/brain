@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"sync"
 	"time"
 
@@ -17,6 +18,12 @@ type AgentConfig struct {
 	SystemMessage string            // System prompt for the agent
 	MCPServers    map[string]MCPDef // External MCP servers to connect
 	WorkingDir    string            // Working directory for file operations
+	AgentName     string            // Optional named agent (study, journal, plan, ...)
+
+	// Governance / budgets
+	AllowedWritePaths      map[string][]string // Optional per-agent write path overrides (relative to WorkingDir)
+	TokenWarningThreshold  int64               // Warn when total tokens crosses this threshold
+	TokenHardCap           int64               // Deny/abort work once this threshold is reached
 
 	// Workspace-aware fields
 	SkillDirectories []string // Directories to load skills from (e.g. .github/skills/)
@@ -40,6 +47,18 @@ type Agent struct {
 	mu      sync.Mutex
 	session *copilot.Session
 	started bool
+	usage   SessionUsage
+}
+
+// SessionUsage tracks usage and governance state for one agent session.
+type SessionUsage struct {
+	InputTokens   int64  `json:"input_tokens"`
+	OutputTokens  int64  `json:"output_tokens"`
+	TotalTokens   int64  `json:"total_tokens"`
+	ToolCalls     int64  `json:"tool_calls"`
+	BudgetWarning bool   `json:"budget_warning"`
+	HardCapHit    bool   `json:"hard_cap_hit"`
+	LastTool      string `json:"last_tool,omitempty"`
 }
 
 // NewAgent creates an agent backed by the given Copilot client.
@@ -54,46 +73,17 @@ func NewAgent(client *copilot.Client, cfg AgentConfig) *Agent {
 // (gospel-mcp, etc.) to look up information before responding.
 // Creates a new session on first call; reuses it for subsequent calls.
 func (a *Agent) Ask(ctx context.Context, prompt string) (string, error) {
-	a.mu.Lock()
-	session := a.session
-	a.mu.Unlock()
-
-	if session == nil {
-		var err error
-		session, err = a.createSession(ctx)
-		if err != nil {
-			return "", fmt.Errorf("creating agent session: %w", err)
-		}
-		a.mu.Lock()
-		a.session = session
-		a.mu.Unlock()
-	}
-
-	response, err := session.SendAndWait(ctx, copilot.MessageOptions{
-		Prompt: prompt,
-	})
-	if err != nil {
-		// Session may be broken — destroy so next call creates fresh
-		a.mu.Lock()
-		if a.session == session {
-			a.session.Destroy()
-			a.session = nil
-		}
-		a.mu.Unlock()
-		return "", fmt.Errorf("agent send: %w", err)
-	}
-
-	if response == nil || response.Data.Content == nil || *response.Data.Content == "" {
-		return "", fmt.Errorf("empty response from agent (model=%s)", a.config.Model)
-	}
-
-	return *response.Data.Content, nil
+	return a.AskStreaming(ctx, prompt, io.Discard)
 }
 
 // AskStreaming sends a prompt and streams the response to w as it arrives.
 // Tool calls are logged. Blocks until session is idle or context is cancelled.
 // Returns the final assembled response text.
 func (a *Agent) AskStreaming(ctx context.Context, prompt string, w io.Writer) (string, error) {
+	if err := a.checkBudgetBeforePrompt(); err != nil {
+		return "", err
+	}
+
 	a.mu.Lock()
 	session := a.session
 	a.mu.Unlock()
@@ -114,6 +104,9 @@ func (a *Agent) AskStreaming(ctx context.Context, prompt string, w io.Writer) (s
 	var fullResponse string
 	var mu sync.Mutex
 	var streamedChars int64
+
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 
 	// Track last event time for inactivity watchdog
 	lastEvent := time.Now()
@@ -169,6 +162,17 @@ func (a *Agent) AskStreaming(ctx context.Context, prompt string, w io.Writer) (s
 			case errCh <- fmt.Errorf("session error: %s", errMsg):
 			default:
 			}
+		case copilot.SessionUsageInfo, copilot.AssistantUsage:
+			in := toInt64(event.Data.InputTokens)
+			out := toInt64(event.Data.OutputTokens)
+			hardCapHit := a.recordUsage(in, out)
+			if hardCapHit {
+				cancelRun()
+				select {
+				case errCh <- fmt.Errorf("token hard cap reached for agent %q", a.displayName()):
+				default:
+				}
+			}
 
 		// Noisy events we expect but don't need to log
 		case copilot.AssistantReasoningDelta, copilot.AssistantReasoning,
@@ -209,7 +213,7 @@ func (a *Agent) AskStreaming(ctx context.Context, prompt string, w io.Writer) (s
 		}
 	}()
 
-	_, err := session.Send(ctx, copilot.MessageOptions{
+	_, err := session.Send(runCtx, copilot.MessageOptions{
 		Prompt: prompt,
 	})
 	if err != nil {
@@ -246,6 +250,13 @@ func (a *Agent) AskStreaming(ctx context.Context, prompt string, w io.Writer) (s
 	return result, nil
 }
 
+// Usage returns a snapshot of session usage counters.
+func (a *Agent) Usage() SessionUsage {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.usage
+}
+
 // Reset destroys the current session so the next Ask creates a fresh one.
 func (a *Agent) Reset() {
 	a.mu.Lock()
@@ -258,13 +269,19 @@ func (a *Agent) Reset() {
 }
 
 func (a *Agent) createSession(ctx context.Context) (*copilot.Session, error) {
+	gov := buildGovernance(a.config)
+
 	cfg := &copilot.SessionConfig{
 		Model:               a.config.Model,
 		Streaming:           true,
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		Hooks: &copilot.SessionHooks{
+			OnPreToolUse: func(input copilot.PreToolUseHookInput, _ copilot.HookInvocation) (*copilot.PreToolUseHookOutput, error) {
+				return gov.PreToolDecision(input), nil
+			},
 			OnPostToolUse: func(input copilot.PostToolUseHookInput, _ copilot.HookInvocation) (*copilot.PostToolUseHookOutput, error) {
-				log.Printf("Tool done: %s", input.ToolName)
+				a.recordToolCall(input.ToolName)
+				log.Printf("AUDIT: agent=%s tool=%s args=%v ts=%d", a.displayName(), input.ToolName, input.ToolArgs, input.Timestamp)
 				return nil, nil
 			},
 		},
@@ -323,6 +340,67 @@ func (a *Agent) createSession(ctx context.Context) (*copilot.Session, error) {
 
 	log.Printf("Agent session created (model: %s, mcp_servers: %d)", a.config.Model, len(a.config.MCPServers))
 	return session, nil
+}
+
+func (a *Agent) displayName() string {
+	if a.config.AgentName != "" {
+		return a.config.AgentName
+	}
+	return "_default"
+}
+
+func (a *Agent) checkBudgetBeforePrompt() error {
+	if a.config.TokenHardCap <= 0 {
+		return nil
+	}
+	usage := a.Usage()
+	if usage.TotalTokens >= a.config.TokenHardCap {
+		a.mu.Lock()
+		a.usage.HardCapHit = true
+		a.mu.Unlock()
+		return fmt.Errorf("token hard cap reached for agent %q (%d/%d)", a.displayName(), usage.TotalTokens, a.config.TokenHardCap)
+	}
+	return nil
+}
+
+func (a *Agent) recordToolCall(toolName string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.usage.ToolCalls++
+	a.usage.LastTool = toolName
+}
+
+// recordUsage returns true when hard cap is reached and execution should stop.
+func (a *Agent) recordUsage(inputTokens, outputTokens int64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.usage.InputTokens += inputTokens
+	a.usage.OutputTokens += outputTokens
+	a.usage.TotalTokens = a.usage.InputTokens + a.usage.OutputTokens
+
+	if a.config.TokenWarningThreshold > 0 && !a.usage.BudgetWarning && a.usage.TotalTokens >= a.config.TokenWarningThreshold {
+		a.usage.BudgetWarning = true
+		log.Printf("TOKEN WARNING: agent=%s total=%d warning_threshold=%d", a.displayName(), a.usage.TotalTokens, a.config.TokenWarningThreshold)
+	}
+
+	if a.config.TokenHardCap > 0 && a.usage.TotalTokens >= a.config.TokenHardCap {
+		a.usage.HardCapHit = true
+		log.Printf("TOKEN HARD CAP: agent=%s total=%d hard_cap=%d", a.displayName(), a.usage.TotalTokens, a.config.TokenHardCap)
+		return true
+	}
+
+	return false
+}
+
+func toInt64(v *float64) int64 {
+	if v == nil {
+		return 0
+	}
+	if *v <= 0 {
+		return 0
+	}
+	return int64(math.Round(*v))
 }
 
 func boolPtr(b bool) *bool { return &b }

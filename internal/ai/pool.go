@@ -28,6 +28,12 @@ type AgentPool struct {
 	mu         sync.RWMutex
 }
 
+// SessionSummary represents current usage and state for one named agent session.
+type SessionSummary struct {
+	Name  string       `json:"name"`
+	Usage SessionUsage `json:"usage"`
+}
+
 // NewAgentPool creates a pool backed by the given Copilot client and base config.
 // Individual agents are created lazily on first access via GetOrCreate.
 func NewAgentPool(client *copilot.Client, baseCfg AgentConfig) *AgentPool {
@@ -66,6 +72,7 @@ func (p *AgentPool) GetOrCreate(agentName string, wc config.WorkspaceConfig) *Ag
 	// Build agent-specific config
 	cfg := p.baseConfig
 	cfg.SystemMessage = BuildSystemMessage(wc, agentName)
+	cfg.AgentName = agentName
 
 	a := NewAgent(p.client, cfg)
 	p.agents[key] = a
@@ -94,6 +101,21 @@ func (p *AgentPool) ActiveSessions() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// SessionSummaries returns usage snapshots for all created agent sessions.
+func (p *AgentPool) SessionSummaries() []SessionSummary {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	result := make([]SessionSummary, 0, len(p.agents))
+	for name, a := range p.agents {
+		result = append(result, SessionSummary{
+			Name:  name,
+			Usage: a.Usage(),
+		})
+	}
+	return result
 }
 
 // Reset destroys a specific agent's session and removes it from the pool.

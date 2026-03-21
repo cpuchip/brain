@@ -932,12 +932,20 @@ func (s *Server) handleAgentReset(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request) {
 	if s.pool == nil {
-		jsonResponse(w, map[string]any{"sessions": []string{}})
+		jsonResponse(w, map[string]any{"sessions": []string{}, "details": []any{}})
 		return
 	}
 
 	sessions := s.pool.ActiveSessions()
-	jsonResponse(w, map[string]any{"sessions": sessions})
+	details := s.pool.SessionSummaries()
+	jsonResponse(w, map[string]any{
+		"sessions": sessions,
+		"details":  details,
+		"budgets": map[string]int64{
+			"warning": s.cfg.AgentTokenWarning,
+			"hard_cap": s.cfg.AgentTokenHardCap,
+		},
+	})
 }
 
 func (s *Server) handleAgentRoute(w http.ResponseWriter, r *http.Request) {
