@@ -417,7 +417,11 @@ func discoverMCPServers(brainCodeDir string) map[string]MCPServerDef {
 	specs := []serverSpec{
 		{"gospel-mcp", "gospel-mcp", []string{"serve"}},
 		{"gospel-vec", "gospel-vec", []string{"mcp"}},
-		{"webster-mcp", "webster-mcp", []string{"serve"}},
+		{"webster-mcp", "webster-mcp", nil},
+		{"becoming", "mcp", nil},
+		{"byu-citations", "byu-citations", nil},
+		{"search-mcp", "search-mcp", []string{"serve"}},
+		{"yt-mcp", "yt-mcp", []string{"serve"}},
 	}
 
 	for _, spec := range specs {

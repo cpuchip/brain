@@ -17,6 +17,10 @@ type AgentConfig struct {
 	SystemMessage string            // System prompt for the agent
 	MCPServers    map[string]MCPDef // External MCP servers to connect
 	WorkingDir    string            // Working directory for file operations
+
+	// Workspace-aware fields
+	SkillDirectories []string // Directories to load skills from (e.g. .github/skills/)
+	InfiniteSessions bool     // Enable context compaction for long sessions
 }
 
 // MCPDef describes an MCP server that should be available to agent sessions.
@@ -276,6 +280,20 @@ func (a *Agent) createSession(ctx context.Context) (*copilot.Session, error) {
 		cfg.WorkingDirectory = a.config.WorkingDir
 	}
 
+	// Register skill directories
+	if len(a.config.SkillDirectories) > 0 {
+		cfg.SkillDirectories = a.config.SkillDirectories
+		log.Printf("Agent skill directories: %v", a.config.SkillDirectories)
+	}
+
+	// Enable infinite sessions for context compaction
+	if a.config.InfiniteSessions {
+		cfg.InfiniteSessions = &copilot.InfiniteSessionConfig{
+			Enabled: boolPtr(true),
+		}
+		log.Printf("Agent infinite sessions: enabled")
+	}
+
 	// Register MCP servers
 	if len(a.config.MCPServers) > 0 {
 		cfg.MCPServers = make(map[string]copilot.MCPServerConfig)
@@ -306,3 +324,5 @@ func (a *Agent) createSession(ctx context.Context) (*copilot.Session, error) {
 	log.Printf("Agent session created (model: %s, mcp_servers: %d)", a.config.Model, len(a.config.MCPServers))
 	return session, nil
 }
+
+func boolPtr(b bool) *bool { return &b }

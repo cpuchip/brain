@@ -194,27 +194,22 @@ func run() error {
 			}
 		}
 
-		agent = ai.NewAgent(copilotClient.CopilotClient(), ai.AgentConfig{
-			Model: cfg.AgentModel,
-			SystemMessage: `You are a development agent for the scripture-study project. You have access to:
+		// Load workspace configuration (.github/ agents, skills, instructions)
+		wc := config.LoadWorkspace(workingDir)
+		systemMessage := buildSystemMessage(wc, "") // no agent selected — base instructions only
 
-1. SCRIPTURE TOOLS (MCP): gospel_search, gospel_get, gospel_list, search_scriptures, search_talks, webster_define — use these to look up scriptures, conference talks, and word definitions.
+		agentCfg := ai.AgentConfig{
+			Model:            cfg.AgentModel,
+			SystemMessage:    systemMessage,
+			MCPServers:       mcpDefs,
+			WorkingDir:       workingDir,
+			InfiniteSessions: true,
+		}
+		if wc.SkillsDir != "" {
+			agentCfg.SkillDirectories = []string{wc.SkillsDir}
+		}
 
-2. BUILT-IN FILE TOOLS: You can read, search, and edit files in the workspace.
-
-When given a spec or task:
-- Read and understand the relevant source code first
-- Make precise, minimal changes that implement the spec
-- After making changes, verify by reading the modified files
-- Report what you changed and why
-
-When answering scripture questions:
-- Use the search tools to find relevant passages
-- Always cite specific references
-- Read the full source to verify quotes before citing them`,
-			MCPServers: mcpDefs,
-			WorkingDir: workingDir,
-		})
+		agent = ai.NewAgent(copilotClient.CopilotClient(), agentCfg)
 		log.Printf("  Agent: enabled (model: %s, %d MCP servers)", cfg.AgentModel, len(mcpDefs))
 	} else {
 		log.Printf("  Agent: disabled (requires copilot backend + MCP servers)")
@@ -401,8 +396,10 @@ func runMCP() error {
 //
 // Usage:
 //
-//	brain exec <spec-file>         # Read spec from file
-//	brain exec --prompt "do X"     # Inline prompt
+//	brain exec <spec-file>                          # Read spec from file
+//	brain exec --prompt "do X"                      # Inline prompt
+//	brain exec --agent study --prompt "Study X"     # Use a named agent
+//	brain exec --agent dev <spec-file>              # Named agent + spec file
 func runExec() error {
 	_ = godotenv.Load()
 
@@ -414,11 +411,21 @@ func runExec() error {
 	// Parse args after "exec"
 	args := os.Args[2:]
 	var prompt string
+	var agentName string
+
+	// Extract --agent flag
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--agent" && i+1 < len(args) {
+			agentName = args[i+1]
+			args = append(args[:i], args[i+2:]...)
+			break
+		}
+	}
 
 	switch {
 	case len(args) >= 2 && args[0] == "--prompt":
 		prompt = strings.Join(args[1:], " ")
-	case len(args) == 1:
+	case len(args) == 1 && args[0] != "--prompt":
 		specPath := args[0]
 		data, err := os.ReadFile(specPath)
 		if err != nil {
@@ -426,7 +433,7 @@ func runExec() error {
 		}
 		prompt = fmt.Sprintf("Execute this spec. Read the relevant source code, make the changes described, and report what you changed.\n\n---\n\n%s", string(data))
 	default:
-		return fmt.Errorf("usage: brain exec <spec-file> | brain exec --prompt \"...\"")
+		return fmt.Errorf("usage: brain exec [--agent <name>] <spec-file> | brain exec [--agent <name>] --prompt \"...\"")
 	}
 
 	ctx := context.Background()
@@ -462,28 +469,36 @@ func runExec() error {
 		}
 	}
 
-	agent := ai.NewAgent(copilotClient.CopilotClient(), ai.AgentConfig{
-		Model: cfg.AgentModel,
-		SystemMessage: `You are a development agent for the scripture-study project. You have access to:
+	// Load workspace configuration (.github/ agents, skills, instructions)
+	wc := config.LoadWorkspace(workingDir)
 
-1. SCRIPTURE TOOLS (MCP): gospel_search, gospel_get, gospel_list, search_scriptures, search_talks, webster_define — use these to look up scriptures, conference talks, and word definitions.
+	// Build system message
+	systemMessage := buildSystemMessage(wc, agentName)
 
-2. BUILT-IN FILE TOOLS: You can read, search, and edit files in the workspace.
+	agentCfg := ai.AgentConfig{
+		Model:            cfg.AgentModel,
+		SystemMessage:    systemMessage,
+		MCPServers:       mcpDefs,
+		WorkingDir:       workingDir,
+		InfiniteSessions: true,
+	}
 
-When given a spec or task:
-- Read and understand the relevant source code first
-- Make precise, minimal changes that implement the spec
-- After making changes, verify by reading the modified files
-- Report what you changed and why`,
-		MCPServers: mcpDefs,
-		WorkingDir: workingDir,
-	})
+	// Add skills directory if available
+	if wc.SkillsDir != "" {
+		agentCfg.SkillDirectories = []string{wc.SkillsDir}
+	}
 
-	log.Printf("Agent ready (%d MCP servers, working dir: %s)", len(mcpDefs), workingDir)
-	log.Printf("Sending spec to agent...")
+	agent := ai.NewAgent(copilotClient.CopilotClient(), agentCfg)
 
-	// Use a 10-minute timeout for spec execution — streaming shows progress
-	execCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	if agentName != "" {
+		log.Printf("Agent ready: @%s (%d MCP servers, working dir: %s)", agentName, len(mcpDefs), workingDir)
+	} else {
+		log.Printf("Agent ready (%d MCP servers, working dir: %s)", len(mcpDefs), workingDir)
+	}
+	log.Printf("Sending prompt to agent...")
+
+	// Use a 30-minute timeout for agent execution — studies can be long
+	execCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
 	response, err := agent.AskStreaming(execCtx, prompt, os.Stdout)
@@ -497,4 +512,47 @@ When given a spec or task:
 		fmt.Println()
 	}
 	return nil
+}
+
+// buildSystemMessage composes the system message from workspace config and optional agent.
+func buildSystemMessage(wc config.WorkspaceConfig, agentName string) string {
+	var parts []string
+
+	// If a specific agent is requested, use its prompt as the primary content
+	if agentName != "" {
+		if agent, ok := wc.Agents[agentName]; ok {
+			parts = append(parts, agent.Prompt)
+			log.Printf("Using agent: %s (%s)", agentName, agent.Description)
+		} else {
+			// List available agents
+			available := make([]string, 0, len(wc.Agents))
+			for name := range wc.Agents {
+				available = append(available, name)
+			}
+			log.Printf("WARNING: agent %q not found. Available: %v", agentName, available)
+			log.Printf("Falling back to base instructions")
+		}
+	}
+
+	// Always include base instructions (as supplement if agent specified, as primary if not)
+	if wc.BaseInstructions != "" {
+		parts = append(parts, wc.BaseInstructions)
+	}
+
+	if len(parts) == 0 {
+		// Fallback if no workspace config found
+		return `You are a development agent for the scripture-study project. You have access to:
+
+1. SCRIPTURE TOOLS (MCP): gospel_search, gospel_get, gospel_list, search_scriptures, search_talks, webster_define — use these to look up scriptures, conference talks, and word definitions.
+
+2. BUILT-IN FILE TOOLS: You can read, search, and edit files in the workspace.
+
+When given a spec or task:
+- Read and understand the relevant source code first
+- Make precise, minimal changes that implement the spec
+- After making changes, verify by reading the modified files
+- Report what you changed and why`
+	}
+
+	return strings.Join(parts, "\n\n---\n\n")
 }
