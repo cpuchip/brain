@@ -7,7 +7,8 @@
 #   - .env file configured (copy .env.example)
 param(
     [switch]$SkipBuild,
-    [int]$Port = 8445
+    [int]$Port = 8445,
+    [switch]$UseGoRun
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,4 +50,24 @@ Write-Host "`n  Starting brain server..." -ForegroundColor Green
 Write-Host "  Web UI: http://localhost:$Port" -ForegroundColor Cyan
 Write-Host "  Press Ctrl+C to stop`n" -ForegroundColor DarkGray
 
-& "$base\brain.exe"
+Push-Location $base
+try {
+    if ($UseGoRun) {
+        go run ./cmd/brain/
+    } else {
+        & "$base\brain.exe"
+    }
+}
+catch {
+    $msg = $_.Exception.Message
+    if ($msg -match "Application Control policy has blocked this file") {
+        Write-Host "  brain.exe blocked by Application Control policy." -ForegroundColor Yellow
+        Write-Host "  Falling back to: go run ./cmd/brain/" -ForegroundColor Yellow
+        go run ./cmd/brain/
+    } else {
+        throw
+    }
+}
+finally {
+    Pop-Location
+}
