@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { api, type BrainStatus, type RoutableEntry, type RunningEntry, type Stats } from '../api'
+import { api, type BrainStatus, type RoutableEntry, type RunningEntry, type ReviewEntry, type Stats } from '../api'
 
 const status = ref<BrainStatus | null>(null)
 const stats = ref<Stats | null>(null)
 const sessions = ref<string[]>([])
 const running = ref<RunningEntry[]>([])
 const routable = ref<RoutableEntry[]>([])
+const reviewEntries = ref<ReviewEntry[]>([])
 const loading = ref(true)
 const error = ref('')
 const shuttingDown = ref(false)
@@ -17,18 +18,20 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function loadAll() {
   try {
-    const [st, ss, run, rout, ses] = await Promise.all([
+    const [st, ss, run, rout, ses, rev] = await Promise.all([
       api.brainStatus(),
       api.stats(),
       api.agentRunning(),
       api.agentRoutable(),
       api.agentSessions(),
+      api.reviewQueue(),
     ])
     status.value = st
     stats.value = ss
     running.value = run.entries
     routable.value = rout.entries
     sessions.value = ses.sessions
+    reviewEntries.value = rev.entries
     error.value = ''
   } catch (e: any) {
     if (shuttingDown.value) return
@@ -238,6 +241,48 @@ onUnmounted(() => {
               >✓ Route</button>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- Section 4: Review Queue (completed agent work) -->
+      <div>
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-medium text-gray-500 uppercase tracking-wider">
+            Review Queue
+            <span v-if="reviewEntries.length" class="text-amber-400 ml-1">({{ reviewEntries.length }})</span>
+          </h2>
+          <RouterLink
+            v-if="reviewEntries.length > 0"
+            to="/review"
+            class="text-xs text-sky-400 hover:text-sky-300 transition-colors"
+          >View all →</RouterLink>
+        </div>
+        <div v-if="reviewEntries.length === 0" class="text-center py-6 text-gray-600 bg-gray-900/50 border border-gray-800 rounded-lg">
+          No completed work awaiting review
+        </div>
+        <div v-else class="space-y-2">
+          <div
+            v-for="entry in reviewEntries.slice(0, 3)"
+            :key="entry.id"
+            class="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3"
+          >
+            <div class="flex items-center justify-between mb-1">
+              <RouterLink
+                :to="`/entries/${entry.id}`"
+                class="font-medium text-sm text-gray-200 hover:text-sky-400 transition-colors truncate mr-4"
+              >{{ entry.title }}</RouterLink>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-sky-400">{{ entry.category }}</span>
+                <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-purple-400">{{ entry.agent_route }}</span>
+              </div>
+            </div>
+            <div class="text-sm text-gray-500 truncate">{{ entry.agent_output?.slice(0, 120) || 'No output' }}</div>
+          </div>
+          <RouterLink
+            v-if="reviewEntries.length > 3"
+            to="/review"
+            class="block text-center py-2 text-xs text-sky-400 hover:text-sky-300 transition-colors"
+          >+ {{ reviewEntries.length - 3 }} more</RouterLink>
         </div>
       </div>
     </template>

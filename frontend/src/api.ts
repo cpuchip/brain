@@ -65,6 +65,17 @@ export interface BrainStatus {
   categories: Record<string, number>
 }
 
+export interface ReviewEntry {
+  id: string
+  title: string
+  category: string
+  agent_route: string
+  agent_output: string
+  tokens_used: number
+  body: string
+  updated_at: string
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -192,6 +203,18 @@ export const api = {
 
   brainStatus() {
     return request<BrainStatus>('/brain/status')
+  },
+
+  // Review queue — completed agent work awaiting human review
+  reviewQueue() {
+    return request<{ entries: ReviewEntry[] }>('/agent/review')
+  },
+
+  reviewAction(entryId: string, action: 'accept' | 'reject') {
+    return request<{ status: string; entry_id: string }>(`/agent/review/${encodeURIComponent(entryId)}`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    })
   },
 
   shutdown() {

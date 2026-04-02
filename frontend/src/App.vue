@@ -4,12 +4,20 @@ import { RouterLink, RouterView } from 'vue-router'
 import { api, type Stats } from './api'
 
 const stats = ref<Stats | null>(null)
+const reviewCount = ref(0)
 
-onMounted(async () => {
+async function loadCounts() {
   try {
-    stats.value = await api.stats()
+    const [s, r] = await Promise.all([
+      api.stats(),
+      api.reviewQueue(),
+    ])
+    stats.value = s
+    reviewCount.value = r.entries.length
   } catch { /* ignore */ }
-})
+}
+
+onMounted(loadCounts)
 </script>
 
 <template>
@@ -29,6 +37,13 @@ onMounted(async () => {
           </RouterLink>
           <RouterLink to="/entries" class="text-gray-400 hover:text-white" active-class="!text-white font-medium">
             Entries
+          </RouterLink>
+          <RouterLink to="/review" class="text-gray-400 hover:text-white relative" active-class="!text-white font-medium">
+            Review
+            <span
+              v-if="reviewCount > 0"
+              class="absolute -top-1.5 -right-3 bg-amber-500 text-gray-950 text-[10px] font-bold min-w-[16px] h-4 rounded-full flex items-center justify-center px-1"
+            >{{ reviewCount }}</span>
           </RouterLink>
           <RouterLink to="/search" class="text-gray-400 hover:text-white" active-class="!text-white font-medium">
             Search
