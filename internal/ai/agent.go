@@ -21,13 +21,17 @@ type AgentConfig struct {
 	AgentName     string            // Optional named agent (study, journal, plan, ...)
 
 	// Governance / budgets
-	AllowedWritePaths      map[string][]string // Optional per-agent write path overrides (relative to WorkingDir)
-	TokenWarningThreshold  int64               // Warn when total tokens crosses this threshold
-	TokenHardCap           int64               // Deny/abort work once this threshold is reached
+	AllowedWritePaths     map[string][]string // Optional per-agent write path overrides (relative to WorkingDir)
+	TokenWarningThreshold int64               // Warn when total tokens crosses this threshold
+	TokenHardCap          int64               // Deny/abort work once this threshold is reached
 
 	// Workspace-aware fields
 	SkillDirectories []string // Directories to load skills from (e.g. .github/skills/)
 	InfiniteSessions bool     // Enable context compaction for long sessions
+
+	// SDK custom agents — wired into the default agent's session for intent-based delegation.
+	// Named agents (from entry routing) don't get these — they ARE the target agent.
+	CustomAgents []copilot.CustomAgentConfig
 }
 
 // MCPDef describes an MCP server that should be available to agent sessions.
@@ -309,6 +313,12 @@ func (a *Agent) createSession(ctx context.Context) (*copilot.Session, error) {
 			Enabled: boolPtr(true),
 		}
 		log.Printf("Agent infinite sessions: enabled")
+	}
+
+	// Wire custom agents for SDK delegation (default agent only)
+	if len(a.config.CustomAgents) > 0 {
+		cfg.CustomAgents = a.config.CustomAgents
+		log.Printf("Agent custom agents: %d registered for SDK delegation", len(a.config.CustomAgents))
 	}
 
 	// Register MCP servers

@@ -74,6 +74,12 @@ func (p *AgentPool) GetOrCreate(agentName string, wc config.WorkspaceConfig) *Ag
 	cfg.SystemMessage = BuildSystemMessage(wc, agentName)
 	cfg.AgentName = agentName
 
+	// Default agent gets custom agents for SDK intent-based delegation.
+	// Named agents don't — they ARE the agent the router selected.
+	if agentName == "" {
+		cfg.CustomAgents = BuildCustomAgents(wc)
+	}
+
 	a := NewAgent(p.client, cfg)
 	p.agents[key] = a
 
