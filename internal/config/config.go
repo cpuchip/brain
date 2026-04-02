@@ -82,6 +82,10 @@ type Config struct {
 	AgentTokenWarning int64 // Warn when per-agent session token usage crosses this threshold
 	AgentTokenHardCap int64 // Stop new/active agent work when this threshold is reached
 
+	// Auto-routing: when true, entries classified into categories with mode "auto" are
+	// immediately routed to their agent instead of being marked as "suggested".
+	AutoRouteEnabled bool
+
 	// Digest schedule
 	Digest DigestConfig
 
@@ -252,6 +256,9 @@ func Load() (*Config, error) {
 		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
 			cfg.AgentTokenHardCap = parsed
 		}
+	}
+	if v := os.Getenv("BRAIN_AUTO_ROUTE"); v != "" {
+		cfg.AutoRouteEnabled = v == "true" || v == "1"
 	}
 	if v := os.Getenv("BRAIN_DATA_DIR"); v != "" {
 		cfg.BrainDataDir = v

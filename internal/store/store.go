@@ -146,6 +146,11 @@ func (s *Store) SetAgentOutput(entryID, agentOutput string, tokensUsed int64) er
 	return s.db.SetAgentOutput(entryID, agentOutput, tokensUsed)
 }
 
+// ListByRouteStatus returns entries with the given route_status.
+func (s *Store) ListByRouteStatus(status string) ([]*Entry, error) {
+	return s.db.ListByRouteStatus(status)
+}
+
 // Reclassify moves an entry from one category to another.
 // The currentPath parameter is now an entry ID (for backward compat with relay/discord,
 // which pass the return value of Save()).

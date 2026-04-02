@@ -99,6 +99,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agent/route", s.cors(s.handleAgentRoute))
 	s.mux.HandleFunc("GET /api/agent/routable", s.cors(s.handleAgentRoutable))
 	s.mux.HandleFunc("GET /api/agent/running", s.cors(s.handleAgentRunning))
+	s.mux.HandleFunc("GET /api/agent/review", s.cors(s.handleAgentReviewQueue))
+	s.mux.HandleFunc("POST /api/agent/review/{id}", s.cors(s.handleAgentReviewAction))
 
 	// Dashboard operations
 	s.mux.HandleFunc("POST /api/entries/{id}/dismiss-route", s.cors(s.handleDismissRoute))
@@ -397,12 +399,23 @@ func (s *Server) handleClassify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-annotate routing: if this category has an agent route, mark as suggested
+	// Auto-annotate routing: if this category has an agent route, decide whether to
+	// auto-route immediately or just mark as suggested for manual triggering.
 	route := ai.LookupRoute(entry.Category)
 	if route.AgentName != "" && route.Mode != ai.RouteModeNone {
-		_ = s.store.SetAgentRoute(entry.ID, route.AgentName, ai.RouteStatusSuggested)
-		entry.AgentRoute = route.AgentName
-		entry.RouteStatus = ai.RouteStatusSuggested
+		if s.pool != nil && s.cfg.AutoRouteEnabled && route.Mode == ai.RouteModeAuto {
+			// Auto-route: mark the agent and kick off routing immediately
+			_ = s.store.SetAgentRoute(entry.ID, route.AgentName, ai.RouteStatusPending)
+			entry.AgentRoute = route.AgentName
+			entry.RouteStatus = ai.RouteStatusPending
+			s.routeEntry(entry, route)
+			log.Printf("Auto-routed entry %s to agent %s", entry.ID, route.AgentName)
+		} else {
+			// Suggest mode or auto-route disabled: mark for manual trigger
+			_ = s.store.SetAgentRoute(entry.ID, route.AgentName, ai.RouteStatusSuggested)
+			entry.AgentRoute = route.AgentName
+			entry.RouteStatus = ai.RouteStatusSuggested
+		}
 	}
 
 	// Create subtasks from extracted list items
@@ -942,7 +955,7 @@ func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request) {
 		"sessions": sessions,
 		"details":  details,
 		"budgets": map[string]int64{
-			"warning": s.cfg.AgentTokenWarning,
+			"warning":  s.cfg.AgentTokenWarning,
 			"hard_cap": s.cfg.AgentTokenHardCap,
 		},
 	})
@@ -980,16 +993,23 @@ func (s *Server) handleAgentRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mark as pending
-	if err := s.store.UpdateRouteStatus(req.EntryID, ai.RouteStatusPending); err != nil {
-		jsonError(w, "updating route status", err, http.StatusInternalServerError)
-		return
-	}
+	s.routeEntry(entry, route)
 
-	// Route to agent in background
+	jsonResponse(w, map[string]string{
+		"status":   "routed",
+		"agent":    route.AgentName,
+		"entry_id": req.EntryID,
+	})
+}
+
+// routeEntry runs agent routing for an entry in the background.
+// It marks the entry as pending, then spawns a goroutine to run the agent.
+func (s *Server) routeEntry(entry *store.Entry, route ai.RouteRule) {
+	_ = s.store.UpdateRouteStatus(entry.ID, ai.RouteStatusPending)
+
 	go func() {
-		ctx := s.pool.StartTask(req.EntryID, route.AgentName)
-		defer s.pool.FinishTask(req.EntryID)
+		ctx := s.pool.StartTask(entry.ID, route.AgentName)
+		defer s.pool.FinishTask(entry.ID)
 
 		agent := s.pool.GetOrCreate(route.AgentName, s.wc)
 		prompt := route.RenderPrompt(ai.RoutePromptData{
@@ -997,24 +1017,18 @@ func (s *Server) handleAgentRoute(w http.ResponseWriter, r *http.Request) {
 			Body:  entry.Body,
 		})
 
-		_ = s.store.UpdateRouteStatus(req.EntryID, ai.RouteStatusRunning)
+		_ = s.store.UpdateRouteStatus(entry.ID, ai.RouteStatusRunning)
 
 		response, err := agent.Ask(ctx, prompt)
 		if err != nil {
-			log.Printf("Agent route failed for entry %s: %v", req.EntryID, err)
-			_ = s.store.UpdateRouteStatus(req.EntryID, ai.RouteStatusFailed)
+			log.Printf("Agent route failed for entry %s: %v", entry.ID, err)
+			_ = s.store.UpdateRouteStatus(entry.ID, ai.RouteStatusFailed)
 			return
 		}
 
-		_ = s.store.SetAgentOutput(req.EntryID, response, 0)
-		log.Printf("Agent route complete for entry %s (agent: %s, %d chars)", req.EntryID, route.AgentName, len(response))
+		_ = s.store.SetAgentOutput(entry.ID, response, 0)
+		log.Printf("Agent route complete for entry %s (agent: %s, %d chars)", entry.ID, route.AgentName, len(response))
 	}()
-
-	jsonResponse(w, map[string]string{
-		"status":   "routed",
-		"agent":    route.AgentName,
-		"entry_id": req.EntryID,
-	})
 }
 
 func (s *Server) handleAgentRoutable(w http.ResponseWriter, r *http.Request) {
@@ -1079,6 +1093,69 @@ func (s *Server) handleDismissRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]string{"status": "dismissed", "entry_id": id})
+}
+
+func (s *Server) handleAgentReviewQueue(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.store.ListByRouteStatus(ai.RouteStatusComplete)
+	if err != nil {
+		jsonError(w, "listing review queue", err, http.StatusInternalServerError)
+		return
+	}
+
+	type reviewEntry struct {
+		ID          string `json:"id"`
+		Title       string `json:"title"`
+		Category    string `json:"category"`
+		AgentRoute  string `json:"agent_route"`
+		AgentOutput string `json:"agent_output"`
+		TokensUsed  int64  `json:"tokens_used"`
+		Body        string `json:"body"`
+		Updated     string `json:"updated_at"`
+	}
+	result := make([]reviewEntry, 0, len(entries))
+	for _, e := range entries {
+		result = append(result, reviewEntry{
+			ID:          e.ID,
+			Title:       e.Title,
+			Category:    e.Category,
+			AgentRoute:  e.AgentRoute,
+			AgentOutput: e.AgentOutput,
+			TokensUsed:  e.TokensUsed,
+			Body:        e.Body,
+			Updated:     e.Updated.Format(time.RFC3339),
+		})
+	}
+	jsonResponse(w, map[string]any{"entries": result})
+}
+
+func (s *Server) handleAgentReviewAction(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var req struct {
+		Action string `json:"action"` // "accept" or "reject"
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request", err, http.StatusBadRequest)
+		return
+	}
+
+	var newStatus string
+	switch req.Action {
+	case "accept":
+		newStatus = ai.RouteStatusAccepted
+	case "reject":
+		newStatus = ai.RouteStatusRejected
+	default:
+		jsonError(w, "action must be 'accept' or 'reject'", nil, http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.UpdateRouteStatus(id, newStatus); err != nil {
+		jsonError(w, "updating review status", err, http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, map[string]string{"status": newStatus, "entry_id": id})
 }
 
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {

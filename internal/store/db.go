@@ -222,6 +222,38 @@ func (d *DB) SetAgentOutput(entryID, agentOutput string, tokensUsed int64) error
 	return err
 }
 
+// ListByRouteStatus returns entries with the given route_status, newest first.
+func (d *DB) ListByRouteStatus(status string) ([]*Entry, error) {
+	rows, err := d.db.Query(`
+		SELECT id, title, category, body, confidence, source, created_at, updated_at,
+			agent_route, route_status, agent_output, tokens_used
+		FROM entries WHERE route_status = ? ORDER BY updated_at DESC`, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []*Entry
+	for rows.Next() {
+		e := &Entry{}
+		var createdStr, updatedStr string
+		var agentRoute, routeStatus, agentOutput sql.NullString
+		var tokensUsed sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &e.Source, &createdStr, &updatedStr,
+			&agentRoute, &routeStatus, &agentOutput, &tokensUsed); err != nil {
+			return nil, err
+		}
+		e.Created, _ = time.Parse(time.RFC3339, createdStr)
+		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
+		e.AgentRoute = agentRoute.String
+		e.RouteStatus = routeStatus.String
+		e.AgentOutput = agentOutput.String
+		e.TokensUsed = tokensUsed.Int64
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
 // SetIbecomeTaskID links a brain entry to an ibecome task.
 func (d *DB) SetIbecomeTaskID(entryID string, taskID int64) error {
 	_, err := d.db.Exec("UPDATE entries SET ibecome_task_id = ? WHERE id = ?", taskID, entryID)
