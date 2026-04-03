@@ -21,6 +21,7 @@ type ModelPreset struct {
 
 // AvailableModels are the presets the user can switch between via Discord.
 var AvailableModels = map[string]ModelPreset{
+	"raptor":   {ID: "raptor-mini", DisplayName: "Raptor Mini", PremiumRate: "0x"},
 	"gpt-mini": {ID: "gpt-5-mini", DisplayName: "GPT-5 Mini", PremiumRate: "0x"},
 	"haiku":    {ID: "claude-haiku-4.5", DisplayName: "Claude Haiku 4.5", PremiumRate: "0.33x"},
 	"sonnet":   {ID: "claude-sonnet-4.6", DisplayName: "Claude Sonnet 4.6", PremiumRate: "1x"},

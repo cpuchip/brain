@@ -1,0 +1,92 @@
+[
+  {
+    "id": "1772932979757431693-1",
+    "raw_text": "Need to pick up some items from the store, milk, hotdogs, and pizza",
+    "current_category": "actions",
+    "current_title": "Grocery shopping list"
+  },
+  {
+    "id": "1773196037828140595-1",
+    "raw_text": "I need to get a birthday present for my mom",
+    "current_category": "actions",
+    "current_title": "Get birthday present for mom"
+  },
+  {
+    "id": "1773956153087371698-1",
+    "raw_text": "Study the only begotten references",
+    "current_category": "study",
+    "current_title": "Study the Only Begotten References"
+  },
+  {
+    "id": "1773594566626324521-1",
+    "raw_text": "Teaching in the saviors way for parents : higbys",
+    "current_category": "study",
+    "current_title": "Teaching Children in Savior's Way"
+  },
+  {
+    "id": "1773974169473162527-1",
+    "raw_text": "Squad for ai agent flow, what can we learn?\nhttps://github.blog/ai-and-ml/github-copilot/how-squad-runs-coordinated-ai-agents-inside-your-repository/",
+    "current_category": "study",
+    "current_title": "Learning from SQUAD AI Agent Flow"
+  },
+  {
+    "id": "1774675007347476620-1",
+    "raw_text": "Ai jobs and skills, where do I stand?\nhttps://youtu.be/4cuT-LKcmWs?si=CqAizAMZy0Jhq90r",
+    "current_category": "study",
+    "current_title": "Assessing AI Skills and Career Positioning"
+  },
+  {
+    "id": "0d756be3-e7c2-43cb-b561-e674835e6e7e",
+    "raw_text": "In brain app the scriptures dont show the body of the memorize items",
+    "current_category": "study",
+    "current_title": "Scriptures not showing in Brain app"
+  },
+  {
+    "id": "1774966321487067784-1",
+    "raw_text": "Im pretty sure AI opus/sonnet wrote the article, but im also 95% sure he used AI to write is comment responses\nhttps://dev.to/dannwaneri/i-built-a-local-ai-agent-that-audits-my-own-articles-it-flagged-every-single-one-pkh",
+    "current_category": "people",
+    "current_title": "Uncertainty about AI's role in content creation"
+  },
+  {
+    "id": "1774674968912896765-1",
+    "raw_text": "Claude scientific research\nhttps://www.anthropic.com/research/long-running-Claude",
+    "current_category": "projects",
+    "current_title": "Claude AI Research Project"
+  },
+  {
+    "id": "1774482257136522231-1",
+    "raw_text": "Study enhancement?\nSee if there are other ways of digesting our study materials, and build out digesting our own study corpus, its rather large now",
+    "current_category": "projects",
+    "current_title": "Enhance Study Material Digestion System"
+  },
+  {
+    "id": "1774876719528516067-1",
+    "raw_text": "Agent sandbox as a basis for our brain sandbox?\nhttps://sandbox.agent-infra.com/\nhttps://github.com/agent-infra/sandbox",
+    "current_category": "ideas",
+    "current_title": "Agent Sandbox for Brain Sandbox Foundation"
+  },
+  {
+    "id": "1774961811871784844-1",
+    "raw_text": "Could I use this for my star trek UIs?\nhttps://github.com/chenglou/pretext",
+    "current_category": "ideas",
+    "current_title": "Star Trek UI with Pretext"
+  },
+  {
+    "id": "1775057389186324555-1",
+    "raw_text": "Bryce physical therapy. Research hippa compliant AI. Github copilot?",
+    "current_category": "projects",
+    "current_title": "HIPAA-Compliant AI Research"
+  },
+  {
+    "id": "1775052519268755466-1",
+    "raw_text": "Look into how they are using github copilot sdk and agents!\nhttps://github.blog/ai-and-ml/github-copilot/agent-driven-development-in-copilot-applied-science/",
+    "current_category": "projects",
+    "current_title": "Research GitHub Copilot Agent-Driven Development"
+  },
+  {
+    "id": "1774045209514811940-1",
+    "raw_text": "Stripe minions\nhttps://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents",
+    "current_category": "ideas",
+    "current_title": "Stripe Minions Coding Agents"
+  }
+]
