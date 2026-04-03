@@ -44,7 +44,10 @@ func (d *DB) migrate() error {
 	if err := d.migrateIbecomeTaskID(); err != nil {
 		return err
 	}
-	return d.migrateAgentRouting()
+	if err := d.migrateAgentRouting(); err != nil {
+		return err
+	}
+	return d.migrateOriginalBody()
 }
 
 const schema = `
@@ -173,6 +176,58 @@ func (d *DB) migrateAgentRouting() error {
 	return nil
 }
 
+// migrateOriginalBody adds the original_body column and backfills it.
+// First pass: set from body (or title). Second pass: recover from entry_versions
+// where the earliest version has a longer title (indicating the real raw capture
+// before classification overwrote it).
+func (d *DB) migrateOriginalBody() error {
+	cols, err := d.columnNames("entries")
+	if err != nil {
+		return err
+	}
+	if cols["original_body"] {
+		// Column exists — run recovery pass for entries that got backfilled with
+		// AI-generated titles instead of the actual raw text.
+		_, _ = d.db.Exec(`
+			UPDATE entries SET original_body = (
+				SELECT ev.title FROM entry_versions ev
+				WHERE ev.entry_id = entries.id
+				ORDER BY ev.changed_at ASC LIMIT 1
+			)
+			WHERE original_body IS NOT NULL
+			  AND length(original_body) < 100
+			  AND EXISTS (
+				SELECT 1 FROM entry_versions ev
+				WHERE ev.entry_id = entries.id
+				  AND length(ev.title) > length(entries.original_body)
+			)`)
+		return nil
+	}
+	if _, err := d.db.Exec("ALTER TABLE entries ADD COLUMN original_body TEXT"); err != nil {
+		return fmt.Errorf("original_body migration: %w", err)
+	}
+	// Backfill: set original_body to body where body is non-empty, else title
+	_, err = d.db.Exec(`UPDATE entries SET original_body = CASE WHEN body != '' THEN body ELSE title END WHERE original_body IS NULL`)
+	if err != nil {
+		return fmt.Errorf("backfilling original_body: %w", err)
+	}
+	// Recovery: for entries where body is empty and entry_versions has the original
+	// raw capture text (longer title from before classification), recover from versions.
+	_, _ = d.db.Exec(`
+		UPDATE entries SET original_body = (
+			SELECT ev.title FROM entry_versions ev
+			WHERE ev.entry_id = entries.id
+			ORDER BY ev.changed_at ASC LIMIT 1
+		)
+		WHERE body = ''
+		  AND EXISTS (
+			SELECT 1 FROM entry_versions ev
+			WHERE ev.entry_id = entries.id
+			  AND length(ev.title) > length(entries.title)
+		)`)
+	return nil
+}
+
 // columnNames returns a set of column names for the given table.
 func (d *DB) columnNames(table string) (map[string]bool, error) {
 	rows, err := d.db.Query("PRAGMA table_info(" + table + ")")
@@ -294,14 +349,14 @@ func (d *DB) InsertEntry(e *Entry) (string, error) {
 
 	_, err = tx.Exec(`
 		INSERT INTO entries (
-			id, title, category, body, confidence, needs_review, source,
+			id, title, category, body, original_body, confidence, needs_review, source,
 			created_at, updated_at,
 			person_name, person_context, follow_ups,
 			status, next_action, one_liner,
 			due_date, action_done, scripture_refs, insight,
 			mood, gratitude
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		e.ID, e.Title, e.Category, e.Body, e.Confidence, boolToInt(e.NeedsReview), e.Source,
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		e.ID, e.Title, e.Category, e.Body, e.OriginalBody, e.Confidence, boolToInt(e.NeedsReview), e.Source,
 		e.Created.UTC().Format(time.RFC3339), e.Updated.UTC().Format(time.RFC3339),
 		nullStr(e.Name), nullStr(e.Context), nullStr(e.FollowUps),
 		nullStr(e.Status), nullStr(e.NextAction), nullStr(e.OneLiner),
@@ -347,6 +402,35 @@ func (d *DB) InsertVersion(entryID, title, category, body, changedBy string) err
 	return err
 }
 
+// ListVersions returns the version history for an entry, newest first.
+func (d *DB) ListVersions(entryID string) ([]map[string]any, error) {
+	rows, err := d.db.Query(`
+		SELECT id, title, category, body, changed_by, changed_at
+		FROM entry_versions WHERE entry_id = ? ORDER BY changed_at DESC`, entryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var versions []map[string]any
+	for rows.Next() {
+		var id int
+		var title, category, body, changedBy, changedAt string
+		if err := rows.Scan(&id, &title, &category, &body, &changedBy, &changedAt); err != nil {
+			return nil, err
+		}
+		versions = append(versions, map[string]any{
+			"id":         id,
+			"title":      title,
+			"category":   category,
+			"body":       body,
+			"changed_by": changedBy,
+			"changed_at": changedAt,
+		})
+	}
+	return versions, nil
+}
+
 // GetEntry retrieves a single entry by ID, including its tags.
 func (d *DB) GetEntry(id string) (*Entry, error) {
 	e := &Entry{}
@@ -358,6 +442,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	var mood, gratitude sql.NullString
 	var agentRoute, routeStatus, agentOutput sql.NullString
 	var tokensUsed sql.NullInt64
+	var originalBody sql.NullString
 
 	err := d.db.QueryRow(`
 		SELECT id, title, category, body, confidence, needs_review, source,
@@ -366,7 +451,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 			status, next_action, one_liner,
 			due_date, action_done, scripture_refs, insight,
 			mood, gratitude,
-			agent_route, route_status, agent_output, tokens_used
+			agent_route, route_status, agent_output, tokens_used,
+			original_body
 		FROM entries WHERE id = ?`, id).Scan(
 		&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
 		&createdStr, &updatedStr,
@@ -375,6 +461,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		&dueDate, &actionDone, &scriptureRefs, &insight,
 		&mood, &gratitude,
 		&agentRoute, &routeStatus, &agentOutput, &tokensUsed,
+		&originalBody,
 	)
 	if err != nil {
 		return nil, err
@@ -399,6 +486,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	e.RouteStatus = routeStatus.String
 	e.AgentOutput = agentOutput.String
 	e.TokensUsed = tokensUsed.Int64
+	e.OriginalBody = originalBody.String
 
 	// Load tags
 	rows, err := d.db.Query(`SELECT tag FROM tags WHERE entry_id = ?`, id)

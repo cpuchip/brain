@@ -167,6 +167,15 @@ JSON SCHEMA:
 		StructuredOutput: false,
 		// Uses default prompt — this was the original model, prompt was tuned for it
 	},
+
+	"mistralai/ministral-3-14b-reasoning": {
+		ID:               "mistralai/ministral-3-14b-reasoning",
+		Name:             "Ministral 14B Reasoning",
+		Tasks:            []Task{TaskClassify, TaskChat},
+		Temperature:      0.1,
+		StructuredOutput: true,
+		// Uses default prompt — 14B model handles it well
+	},
 }
 
 // DefaultClassifyPrompt is the fallback system prompt for models without a custom one.

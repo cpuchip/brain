@@ -159,9 +159,9 @@ func Load() (*Config, error) {
 		AgentTokenWarning:   500000,
 		AgentTokenHardCap:   800000,
 		LMStudioURL:         "http://localhost:1234/v1",
-		LMStudioModel:       "qwen/qwen3.5-9b",
+		LMStudioModel:       "mistralai/ministral-3-14b-reasoning",
 		EmbeddingBackend:    "lmstudio", // default: use LM Studio for embeddings too
-		EmbeddingModel:      "text-embedding-qwen3-embedding-4b",
+		EmbeddingModel:      "text-embedding-qwen3-embedding-8b",
 		WebEnabled:          true,
 		WebPort:             "8445",
 		RelayEnabled:        true, // Relay on by default

@@ -84,6 +84,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/tags", s.cors(s.handleTags))
 	s.mux.HandleFunc("POST /api/archive", s.cors(s.handleArchive))
 
+	// Entry version history
+	s.mux.HandleFunc("GET /api/entries/{id}/versions", s.cors(s.handleEntryVersions))
+
 	// Flutter app compatibility endpoints
 	s.mux.HandleFunc("GET /api/brain/history", s.cors(s.handleBrainHistory))
 	s.mux.HandleFunc("GET /api/brain/status", s.cors(s.handleBrainStatus))
@@ -195,6 +198,12 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		Body:     req.Body,
 		Tags:     req.Tags,
 		Source:   req.Source,
+	}
+	// Preserve raw input text — never modified by classification.
+	if entry.Body != "" {
+		entry.OriginalBody = entry.Body
+	} else {
+		entry.OriginalBody = entry.Title
 	}
 
 	id, err := s.store.DB().InsertEntry(entry)
@@ -378,6 +387,11 @@ func (s *Server) handleClassify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Apply classification results to the entry
+	// Preserve raw input: if body is empty but title carried the raw text,
+	// move the original title into body before classification overwrites it.
+	if entry.Body == "" && entry.Title != "" {
+		entry.Body = entry.Title
+	}
 	entry.Title = result.Title
 	entry.Confidence = result.Confidence
 	entry.NeedsReview = s.classify.NeedsReview(result)
@@ -547,6 +561,19 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, tags)
+}
+
+func (s *Server) handleEntryVersions(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	versions, err := s.store.DB().ListVersions(id)
+	if err != nil {
+		jsonError(w, "listing versions", err, http.StatusInternalServerError)
+		return
+	}
+	if versions == nil {
+		versions = []map[string]any{}
+	}
+	jsonResponse(w, versions)
 }
 
 type archiveRequest struct {

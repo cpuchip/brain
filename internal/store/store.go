@@ -85,7 +85,8 @@ func (s *Store) Save(result *classifier.Result, rawText string, needsReview bool
 		// Review
 		NeedsReview: needsReview,
 		// Body
-		Body: rawText,
+		Body:         rawText,
+		OriginalBody: rawText,
 	}
 
 	if needsReview {

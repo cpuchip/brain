@@ -47,6 +47,10 @@ type Entry struct {
 	// Body (not in front matter — stored as markdown body for archive export)
 	Body string `json:"body" yaml:"-"`
 
+	// OriginalBody preserves the raw input text at creation time.
+	// Never modified by classification — survives title/body rewrites.
+	OriginalBody string `json:"original_body,omitempty" yaml:"-"`
+
 	// Agent routing (populated post-classification)
 	AgentRoute  string `json:"agent_route,omitempty" yaml:"agent_route,omitempty"`
 	RouteStatus string `json:"route_status,omitempty" yaml:"route_status,omitempty"`

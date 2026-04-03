@@ -713,6 +713,14 @@ func (c *Client) handleEntryCreate(ws *websocket.Conn, data []byte) {
 		}
 	}
 
+	// Preserve raw input text — never modified by classification.
+	// Prefer body (full content), fall back to title (which often carries the raw capture).
+	if entry.Body != "" {
+		entry.OriginalBody = entry.Body
+	} else {
+		entry.OriginalBody = entry.Title
+	}
+
 	id, err := c.store.DB().InsertEntry(entry)
 	if err != nil {
 		log.Printf("[relay] entry_create failed: %v", err)
@@ -791,6 +799,12 @@ func (c *Client) autoClassifyEntry(ws *websocket.Conn, id string, entry *store.E
 	if err != nil {
 		log.Printf("[relay] auto-classify GetEntry failed for %s: %v", currentID, err)
 		return
+	}
+
+	// Preserve raw input: if body is empty but title carried the raw text,
+	// move the original title into body before classification overwrites it.
+	if updated.Body == "" && updated.Title != "" {
+		updated.Body = updated.Title
 	}
 
 	updated.Title = result.Title
