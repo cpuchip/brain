@@ -63,6 +63,8 @@ func defaultAllowedWritePaths(agentName string) []string {
 		return []string{"study/talks"}
 	case "talk":
 		return []string{"callings"}
+	case "research":
+		return []string{".spec/scratch", "study/.scratch"}
 	default:
 		return []string{"study", "lessons", "journal", "callings", ".spec", "docs", "scripts"}
 	}

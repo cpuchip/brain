@@ -1,0 +1,354 @@
+// Package pipeline implements brain entry maturity pipeline operations:
+// research passes, plan passes, and stage transitions.
+package pipeline
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/cpuchip/brain/internal/ai"
+	"github.com/cpuchip/brain/internal/classifier"
+	"github.com/cpuchip/brain/internal/config"
+	"github.com/cpuchip/brain/internal/store"
+)
+
+//go:generate echo "governance docs are loaded at runtime from docs/governance/"
+
+// ResearchModel is the default cheap model used for research passes.
+const ResearchModel = "claude-haiku-4.5"
+
+// Pipeline orchestrates maturity transitions for brain entries.
+type Pipeline struct {
+	store     *store.Store
+	pool      *ai.AgentPool
+	cfg       *config.Config
+	wc        config.WorkspaceConfig
+	codeDir   string // brain code dir (scripts/brain)
+	workspace string // parent workspace root (scripture-study)
+}
+
+// New creates a pipeline controller.
+func New(st *store.Store, pool *ai.AgentPool, cfg *config.Config, wc config.WorkspaceConfig) *Pipeline {
+	workspace := ""
+	if cfg.BrainCodeDir != "" {
+		scriptsDir := filepath.Dir(cfg.BrainCodeDir)
+		workspace = filepath.Dir(scriptsDir)
+	}
+	return &Pipeline{
+		store:     st,
+		pool:      pool,
+		cfg:       cfg,
+		wc:        wc,
+		codeDir:   cfg.BrainCodeDir,
+		workspace: workspace,
+	}
+}
+
+// AdvanceAction is what to do with a pipeline entry.
+type AdvanceAction string
+
+const (
+	ActionAdvance AdvanceAction = "advance"
+	ActionRevise  AdvanceAction = "revise"
+	ActionReject  AdvanceAction = "reject"
+	ActionDefer   AdvanceAction = "defer"
+)
+
+// AdvanceRequest holds parameters for a pipeline advance operation.
+type AdvanceRequest struct {
+	EntryID   string        `json:"id"`
+	Action    AdvanceAction `json:"action"`
+	Feedback  string        `json:"feedback,omitempty"`  // human guidance for revision
+	Scenarios []string      `json:"scenarios,omitempty"` // for specced stage
+}
+
+// AdvanceResult holds the outcome of an advance operation.
+type AdvanceResult struct {
+	EntryID     string `json:"id"`
+	OldMaturity string `json:"old_maturity"`
+	NewMaturity string `json:"new_maturity"`
+	ScratchPath string `json:"scratch_path,omitempty"`
+	Message     string `json:"message"`
+}
+
+// Advance processes a pipeline action for an entry.
+func (p *Pipeline) Advance(ctx context.Context, req AdvanceRequest) (*AdvanceResult, error) {
+	entry, err := p.store.DB().GetEntry(req.EntryID)
+	if err != nil {
+		return nil, fmt.Errorf("entry not found: %w", err)
+	}
+
+	if !classifier.PipelineCategories[entry.Category] {
+		return nil, fmt.Errorf("entry %s (category: %s) is not a pipeline category", req.EntryID, entry.Category)
+	}
+
+	oldMaturity := entry.Maturity
+	if oldMaturity == "" {
+		oldMaturity = "raw"
+	}
+
+	switch req.Action {
+	case ActionAdvance:
+		return p.advance(ctx, entry, oldMaturity, req)
+	case ActionRevise:
+		return p.revise(ctx, entry, oldMaturity, req)
+	case ActionReject:
+		return p.reject(entry, oldMaturity)
+	case ActionDefer:
+		return p.deferEntry(entry, oldMaturity)
+	default:
+		return nil, fmt.Errorf("unknown action: %s", req.Action)
+	}
+}
+
+func (p *Pipeline) advance(ctx context.Context, entry *store.Entry, oldMaturity string, req AdvanceRequest) (*AdvanceResult, error) {
+	switch oldMaturity {
+	case "raw":
+		// raw → researched: run research pass
+		return p.runResearch(ctx, entry, req.Feedback)
+	case "researched":
+		// researched → planned: future Phase 4c
+		notes := "Advanced to planned"
+		if req.Feedback != "" {
+			notes = req.Feedback
+		}
+		if err := p.store.DB().SetMaturity(entry.ID, "planned", notes); err != nil {
+			return nil, fmt.Errorf("setting maturity: %w", err)
+		}
+		return &AdvanceResult{
+			EntryID:     entry.ID,
+			OldMaturity: oldMaturity,
+			NewMaturity: "planned",
+			Message:     "Advanced to planned (plan pass not yet implemented — Phase 4c)",
+		}, nil
+	case "planned":
+		// planned → specced: requires scenarios
+		if len(req.Scenarios) == 0 {
+			return nil, fmt.Errorf("advancing to specced requires scenarios")
+		}
+		scenariosJSON := strings.Join(req.Scenarios, "\n- ")
+		if err := p.store.DB().SetScenarios(entry.ID, "- "+scenariosJSON); err != nil {
+			return nil, fmt.Errorf("setting scenarios: %w", err)
+		}
+		if err := p.store.DB().SetMaturity(entry.ID, "specced", ""); err != nil {
+			return nil, fmt.Errorf("setting maturity: %w", err)
+		}
+		return &AdvanceResult{
+			EntryID:     entry.ID,
+			OldMaturity: oldMaturity,
+			NewMaturity: "specced",
+			Message:     fmt.Sprintf("Advanced to specced with %d scenarios", len(req.Scenarios)),
+		}, nil
+	default:
+		return nil, fmt.Errorf("cannot advance from %s — use the agent routing system for execution", oldMaturity)
+	}
+}
+
+func (p *Pipeline) revise(ctx context.Context, entry *store.Entry, oldMaturity string, req AdvanceRequest) (*AdvanceResult, error) {
+	if req.Feedback == "" {
+		return nil, fmt.Errorf("revise requires feedback")
+	}
+
+	switch oldMaturity {
+	case "researched":
+		// Re-run research with feedback guidance
+		return p.runResearch(ctx, entry, req.Feedback)
+	default:
+		// Store the feedback as maturity notes
+		notes := fmt.Sprintf("Revision requested: %s", req.Feedback)
+		if err := p.store.DB().SetMaturity(entry.ID, oldMaturity, notes); err != nil {
+			return nil, fmt.Errorf("setting maturity notes: %w", err)
+		}
+		return &AdvanceResult{
+			EntryID:     entry.ID,
+			OldMaturity: oldMaturity,
+			NewMaturity: oldMaturity,
+			Message:     "Revision feedback recorded",
+		}, nil
+	}
+}
+
+func (p *Pipeline) reject(entry *store.Entry, oldMaturity string) (*AdvanceResult, error) {
+	if err := p.store.DB().SetMaturity(entry.ID, "raw", "Rejected — returned to raw"); err != nil {
+		return nil, fmt.Errorf("setting maturity: %w", err)
+	}
+	return &AdvanceResult{
+		EntryID:     entry.ID,
+		OldMaturity: oldMaturity,
+		NewMaturity: "raw",
+		Message:     "Rejected — returned to raw",
+	}, nil
+}
+
+func (p *Pipeline) deferEntry(entry *store.Entry, oldMaturity string) (*AdvanceResult, error) {
+	notes := fmt.Sprintf("Deferred at %s on %s", oldMaturity, time.Now().Format("2006-01-02"))
+	if err := p.store.DB().SetMaturity(entry.ID, oldMaturity, notes); err != nil {
+		return nil, fmt.Errorf("setting maturity notes: %w", err)
+	}
+	return &AdvanceResult{
+		EntryID:     entry.ID,
+		OldMaturity: oldMaturity,
+		NewMaturity: oldMaturity,
+		Message:     "Deferred — will revisit later",
+	}, nil
+}
+
+// runResearch executes the research pass for an entry.
+func (p *Pipeline) runResearch(ctx context.Context, entry *store.Entry, feedback string) (*AdvanceResult, error) {
+	if p.pool == nil {
+		return nil, fmt.Errorf("agent pool not available — research pass requires Copilot SDK")
+	}
+
+	// Determine scratch file path
+	slug := slugify(entry.Title)
+	var scratchPath string
+	if entry.Category == "study" {
+		scratchPath = filepath.Join("study", ".scratch", slug+".md")
+	} else {
+		scratchPath = filepath.Join(".spec", "scratch", slug, "main.md")
+	}
+
+	// Load governance document
+	govDoc := ""
+	govPath := filepath.Join(p.codeDir, "docs", "governance", "research-covenant.md")
+	if data, err := os.ReadFile(govPath); err == nil {
+		govDoc = string(data)
+	} else {
+		log.Printf("warning: research governance doc not found at %s: %v", govPath, err)
+	}
+
+	// Build research prompt
+	body := entry.Body
+	if body == "" {
+		body = entry.Title
+	}
+
+	absPath := scratchPath
+	if p.workspace != "" {
+		absPath = filepath.Join(p.workspace, scratchPath)
+	}
+
+	prompt := buildResearchPrompt(entry, body, absPath, feedback)
+
+	// Build system message: governance doc + research instructions
+	systemMsg := "You are a research assistant for the brain pipeline.\n\n"
+	if govDoc != "" {
+		systemMsg += "## Your Governance Covenant\n\n" + govDoc + "\n\n---\n\n"
+	}
+	systemMsg += `Your job is to research the captured thought below and write a structured summary to a scratch file.
+
+Rules:
+1. Search internal workspace first (existing studies, proposals, brain entries, code)
+2. Search external sources second (web, articles)
+3. Write ALL findings to the scratch file path provided
+4. Never decide or recommend — surface findings and questions
+5. Label sources: [WORKSPACE], [WEB], [SYNTHESIS]
+6. If you find nothing relevant, say so honestly`
+
+	// Create agent with cheap model and research-specific config
+	agentCfg := ai.AgentConfig{
+		Model:         ResearchModel,
+		SystemMessage: systemMsg,
+		MCPServers:    p.buildMCPDefs(),
+		WorkingDir:    p.workspace,
+		AgentName:     "research",
+		AllowedWritePaths: map[string][]string{
+			"research": {"study/.scratch", ".spec/scratch"},
+		},
+		TokenWarningThreshold: 50000,
+		TokenHardCap:          100000,
+	}
+
+	agent := ai.NewAgent(p.pool.Client(), agentCfg)
+
+	log.Printf("Research pass starting for %s (%s) → %s", entry.ID, entry.Title, scratchPath)
+
+	response, err := agent.Ask(ctx, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("research agent failed: %w", err)
+	}
+
+	log.Printf("Research pass complete for %s (%d chars response)", entry.ID, len(response))
+
+	// Update entry maturity and scratch path
+	if err := p.store.DB().SetScratchPath(entry.ID, scratchPath); err != nil {
+		log.Printf("warning: failed to set scratch path for %s: %v", entry.ID, err)
+	}
+	if err := p.store.DB().SetMaturity(entry.ID, "researched", ""); err != nil {
+		return nil, fmt.Errorf("setting maturity: %w", err)
+	}
+
+	return &AdvanceResult{
+		EntryID:     entry.ID,
+		OldMaturity: entry.Maturity,
+		NewMaturity: "researched",
+		ScratchPath: scratchPath,
+		Message:     fmt.Sprintf("Research pass complete. Findings at %s", scratchPath),
+	}, nil
+}
+
+// buildMCPDefs returns MCP server definitions from config for agent use.
+func (p *Pipeline) buildMCPDefs() map[string]ai.MCPDef {
+	if p.cfg.MCPServers == nil {
+		return nil
+	}
+	defs := make(map[string]ai.MCPDef)
+	for name, def := range p.cfg.MCPServers {
+		defs[name] = ai.MCPDef{
+			Command: def.Command,
+			Args:    def.Args,
+			Env:     def.Env,
+			Cwd:     def.Cwd,
+		}
+	}
+	return defs
+}
+
+func buildResearchPrompt(entry *store.Entry, body, scratchPath, feedback string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Research the following captured thought:\n\n")
+	fmt.Fprintf(&sb, "**Title:** %s\n", entry.Title)
+	fmt.Fprintf(&sb, "**Category:** %s\n", entry.Category)
+	fmt.Fprintf(&sb, "**Content:** %s\n\n", body)
+
+	if len(entry.Tags) > 0 {
+		fmt.Fprintf(&sb, "**Tags:** %s\n\n", strings.Join(entry.Tags, ", "))
+	}
+
+	if feedback != "" {
+		fmt.Fprintf(&sb, "**Additional guidance from human:** %s\n\n", feedback)
+	}
+
+	fmt.Fprintf(&sb, "Write your findings to this file: `%s`\n\n", scratchPath)
+	fmt.Fprintf(&sb, "Use this structure:\n")
+	fmt.Fprintf(&sb, "1. **What This Is About** — 1-2 sentence summary\n")
+	fmt.Fprintf(&sb, "2. **What Already Exists** — search workspace for related studies, proposals, brain entries\n")
+	fmt.Fprintf(&sb, "3. **External Context** — web search for articles, tools, prior art\n")
+	fmt.Fprintf(&sb, "4. **Open Questions** — what needs human input before this can move forward\n")
+	fmt.Fprintf(&sb, "5. **Raw Sources** — links to everything referenced\n")
+
+	return sb.String()
+}
+
+// slugify converts a title to a filesystem-safe slug.
+func slugify(title string) string {
+	s := strings.ToLower(title)
+	s = regexp.MustCompile(`[^a-z0-9\s-]`).ReplaceAllString(s, "")
+	s = regexp.MustCompile(`[\s]+`).ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if len(s) > 60 {
+		s = s[:60]
+		// Don't end on a hyphen
+		s = strings.TrimRight(s, "-")
+	}
+	if s == "" {
+		s = "untitled"
+	}
+	return s
+}

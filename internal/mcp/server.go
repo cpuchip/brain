@@ -5,6 +5,8 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/cpuchip/brain/internal/store"
@@ -14,12 +16,14 @@ import (
 
 // Server wraps the MCP server and brain store.
 type Server struct {
-	mcpServer *server.MCPServer
-	store     *store.Store
+	mcpServer    *server.MCPServer
+	store        *store.Store
+	workspaceDir string // workspace root for scratch file reading
 }
 
 // New creates a new MCP server with brain tools.
-func New(st *store.Store) *Server {
+// workspaceDir is optional — needed for brain_review to read scratch files.
+func New(st *store.Store, workspaceDir ...string) *Server {
 	mcpServer := server.NewMCPServer(
 		"brain-mcp",
 		"1.0.0",
@@ -29,6 +33,9 @@ func New(st *store.Store) *Server {
 	s := &Server{
 		mcpServer: mcpServer,
 		store:     st,
+	}
+	if len(workspaceDir) > 0 {
+		s.workspaceDir = workspaceDir[0]
 	}
 
 	s.registerTools()
@@ -130,6 +137,49 @@ func (s *Server) registerTools() {
 			readOnlyAnnotation,
 		),
 		s.handleQueue,
+	)
+
+	var mutatingAnnotation = mcp.WithToolAnnotation(mcp.ToolAnnotation{
+		ReadOnlyHint:    boolPtr(false),
+		DestructiveHint: notDestructive,
+		IdempotentHint:  idempotent,
+		OpenWorldHint:   notOpenWorld,
+	})
+
+	s.mcpServer.AddTool(
+		mcp.NewTool("brain_advance",
+			mcp.WithDescription("Advance a pipeline entry through maturity stages: raw → researched → planned → specced. "+
+				"Actions: advance (next stage), revise (re-do current stage with feedback), reject (back to raw), defer (pause). "+
+				"Only works for pipeline categories (ideas, projects, study)."),
+			mcp.WithString("id",
+				mcp.Required(),
+				mcp.Description("The entry UUID"),
+			),
+			mcp.WithString("action",
+				mcp.Required(),
+				mcp.Description("What to do: advance, revise, reject, defer"),
+			),
+			mcp.WithString("feedback",
+				mcp.Description("Human guidance for revise action, or notes for advance"),
+			),
+			mutatingAnnotation,
+		),
+		s.handleAdvance,
+	)
+
+	s.mcpServer.AddTool(
+		mcp.NewTool("brain_review",
+			mcp.WithDescription("Review a pipeline entry with its scratch file contents. Returns the entry details, maturity stage, and inline scratch file contents for human review before advancing."),
+			mcp.WithString("id",
+				mcp.Required(),
+				mcp.Description("The entry UUID"),
+			),
+			mcp.WithString("include_scratch",
+				mcp.Description("Include scratch file contents inline (default: true). Set to 'false' to skip."),
+			),
+			readOnlyAnnotation,
+		),
+		s.handleReview,
 	)
 }
 
@@ -429,6 +479,178 @@ func (s *Server) handleQueue(ctx context.Context, request mcp.CallToolRequest) (
 			}
 		}
 		fmt.Fprintf(&b, "\n")
+	}
+
+	return mcp.NewToolResultText(b.String()), nil
+}
+
+// validActions for brain_advance.
+var validActions = map[string]bool{
+	"advance": true,
+	"revise":  true,
+	"reject":  true,
+	"defer":   true,
+}
+
+// pipelineCats defines which categories participate in the pipeline.
+var pipelineCats = map[string]bool{
+	"ideas":    true,
+	"projects": true,
+	"study":    true,
+}
+
+func nextStage(current string) (string, bool) {
+	for i, s := range stageOrder {
+		if s == current && i+1 < len(stageOrder) {
+			return stageOrder[i+1], true
+		}
+	}
+	return "", false
+}
+
+func (s *Server) handleAdvance(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := request.RequireString("id")
+	if err != nil {
+		return mcp.NewToolResultError("id parameter is required"), nil
+	}
+
+	action, err := request.RequireString("action")
+	if err != nil {
+		return mcp.NewToolResultError("action parameter is required"), nil
+	}
+
+	if !validActions[action] {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid action %q — use: advance, revise, reject, defer", action)), nil
+	}
+
+	entry, err := s.store.DB().GetEntry(id)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("entry not found: %v", err)), nil
+	}
+
+	if !pipelineCats[entry.Category] {
+		return mcp.NewToolResultError(fmt.Sprintf("entry %s (category: %s) is not a pipeline category — only ideas, projects, study", id, entry.Category)), nil
+	}
+
+	currentMaturity := entry.Maturity
+	if currentMaturity == "" {
+		currentMaturity = "raw"
+	}
+
+	feedback, _ := request.GetArguments()["feedback"].(string)
+
+	var b strings.Builder
+
+	switch action {
+	case "advance":
+		next, ok := nextStage(currentMaturity)
+		if !ok {
+			return mcp.NewToolResultError(fmt.Sprintf("cannot advance beyond %s", currentMaturity)), nil
+		}
+
+		notes := ""
+		if feedback != "" {
+			notes = feedback
+		}
+		if err := s.store.DB().SetMaturity(entry.ID, next, notes); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to advance: %v", err)), nil
+		}
+
+		fmt.Fprintf(&b, "## Advanced: %s → %s\n\n", currentMaturity, next)
+		fmt.Fprintf(&b, "**%s** `[%s]`\n\n", entry.Title, entry.Category)
+		if next == "researched" {
+			fmt.Fprintf(&b, "Entry marked as researched. To trigger an AI research pass, use `brain advance %s` from the CLI or web UI.\n", id)
+		}
+
+	case "revise":
+		if feedback == "" {
+			return mcp.NewToolResultError("revise requires feedback — what should change?"), nil
+		}
+		notes := fmt.Sprintf("Revision requested: %s", feedback)
+		if err := s.store.DB().SetMaturity(entry.ID, currentMaturity, notes); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to record revision: %v", err)), nil
+		}
+		fmt.Fprintf(&b, "## Revision Recorded\n\n")
+		fmt.Fprintf(&b, "**%s** stays at %s\n\n", entry.Title, currentMaturity)
+		fmt.Fprintf(&b, "Feedback: %s\n", feedback)
+
+	case "reject":
+		if err := s.store.DB().SetMaturity(entry.ID, "raw", "Rejected — returned to raw"); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to reject: %v", err)), nil
+		}
+		fmt.Fprintf(&b, "## Rejected: %s → raw\n\n", currentMaturity)
+		fmt.Fprintf(&b, "**%s** returned to raw.\n", entry.Title)
+
+	case "defer":
+		notes := fmt.Sprintf("Deferred at %s", currentMaturity)
+		if feedback != "" {
+			notes += ": " + feedback
+		}
+		if err := s.store.DB().SetMaturity(entry.ID, currentMaturity, notes); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to defer: %v", err)), nil
+		}
+		fmt.Fprintf(&b, "## Deferred\n\n")
+		fmt.Fprintf(&b, "**%s** paused at %s. Will revisit later.\n", entry.Title, currentMaturity)
+	}
+
+	return mcp.NewToolResultText(b.String()), nil
+}
+
+func (s *Server) handleReview(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := request.RequireString("id")
+	if err != nil {
+		return mcp.NewToolResultError("id parameter is required"), nil
+	}
+
+	entry, err := s.store.ReadEntry(id)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("entry not found: %v", err)), nil
+	}
+
+	includeScratch := true
+	if v, ok := request.GetArguments()["include_scratch"].(string); ok && v == "false" {
+		includeScratch = false
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Review: %s\n\n", entry.Title)
+	fmt.Fprintf(&b, "- **Category:** %s\n", entry.Category)
+	fmt.Fprintf(&b, "- **Created:** %s\n", entry.Created.Format("2006-01-02 15:04"))
+	fmt.Fprintf(&b, "- **Updated:** %s\n", entry.Updated.Format("2006-01-02 15:04"))
+
+	maturity := entry.Maturity
+	if maturity == "" {
+		maturity = "raw"
+	}
+	fmt.Fprintf(&b, "- **Maturity:** %s\n", maturity)
+
+	if entry.MaturityNotes != "" {
+		fmt.Fprintf(&b, "- **Notes:** %s\n", entry.MaturityNotes)
+	}
+	if entry.ScratchPath != "" {
+		fmt.Fprintf(&b, "- **Scratch:** %s\n", entry.ScratchPath)
+	}
+	if entry.Scenarios != "" {
+		fmt.Fprintf(&b, "- **Scenarios:** %s\n", entry.Scenarios)
+	}
+	if len(entry.Tags) > 0 {
+		fmt.Fprintf(&b, "- **Tags:** %s\n", strings.Join(entry.Tags, ", "))
+	}
+
+	fmt.Fprintf(&b, "\n## Body\n\n%s\n", entry.Body)
+
+	// Include scratch file if requested and available
+	if includeScratch && entry.ScratchPath != "" && s.workspaceDir != "" {
+		absPath := entry.ScratchPath
+		if !filepath.IsAbs(absPath) {
+			absPath = filepath.Join(s.workspaceDir, absPath)
+		}
+		data, readErr := os.ReadFile(absPath)
+		if readErr == nil {
+			fmt.Fprintf(&b, "\n---\n\n## Scratch File: %s\n\n%s\n", entry.ScratchPath, string(data))
+		} else {
+			fmt.Fprintf(&b, "\n---\n\n*Scratch file not found at %s*\n", entry.ScratchPath)
+		}
 	}
 
 	return mcp.NewToolResultText(b.String()), nil

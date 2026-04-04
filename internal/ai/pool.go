@@ -45,6 +45,12 @@ func NewAgentPool(client *copilot.Client, baseCfg AgentConfig) *AgentPool {
 	}
 }
 
+// Client returns the underlying Copilot SDK client.
+// Used by the pipeline package to create agents with custom configs.
+func (p *AgentPool) Client() *copilot.Client {
+	return p.client
+}
+
 // GetOrCreate returns the agent for the given name, creating it if needed.
 // The agent's system message is composed from workspace config + agent prompt.
 // An empty agentName returns a default agent with base instructions only.
