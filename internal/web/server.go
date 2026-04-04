@@ -13,6 +13,7 @@ import (
 	"github.com/cpuchip/brain/internal/ai"
 	"github.com/cpuchip/brain/internal/classifier"
 	"github.com/cpuchip/brain/internal/config"
+	"github.com/cpuchip/brain/internal/pipeline"
 	"github.com/cpuchip/brain/internal/store"
 )
 
@@ -22,6 +23,7 @@ type Server struct {
 	cfg        *config.Config
 	classify   *classifier.Classifier
 	pool       *ai.AgentPool
+	pipeline   *pipeline.Pipeline
 	wc         config.WorkspaceConfig
 	mux        *http.ServeMux
 	srv        *http.Server
@@ -40,6 +42,9 @@ func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, p
 		mux:        http.NewServeMux(),
 		frontendFS: frontendFS,
 		shutdownCh: shutdownCh,
+	}
+	if pool != nil {
+		s.pipeline = pipeline.New(st, pool, cfg, wc)
 	}
 	s.routes()
 	return s
@@ -104,6 +109,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/agent/running", s.cors(s.handleAgentRunning))
 	s.mux.HandleFunc("GET /api/agent/review", s.cors(s.handleAgentReviewQueue))
 	s.mux.HandleFunc("POST /api/agent/review/{id}", s.cors(s.handleAgentReviewAction))
+
+	// Pipeline maturity
+	s.mux.HandleFunc("POST /api/pipeline/advance", s.cors(s.handlePipelineAdvance))
+	s.mux.HandleFunc("GET /api/pipeline/review/{id}", s.cors(s.handlePipelineReview))
 
 	// Dashboard operations
 	s.mux.HandleFunc("POST /api/entries/{id}/dismiss-route", s.cors(s.handleDismissRoute))
@@ -1225,4 +1234,67 @@ func jsonError(w http.ResponseWriter, msg string, err error, status int) {
 		detail = fmt.Sprintf("%s: %v", msg, err)
 	}
 	json.NewEncoder(w).Encode(map[string]string{"error": detail})
+}
+
+// --- Pipeline Handlers ---
+
+func (s *Server) handlePipelineAdvance(w http.ResponseWriter, r *http.Request) {
+	var req pipeline.AdvanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request body", err, http.StatusBadRequest)
+		return
+	}
+
+	if req.EntryID == "" {
+		jsonError(w, "id is required", nil, http.StatusBadRequest)
+		return
+	}
+	if req.Action == "" {
+		jsonError(w, "action is required", nil, http.StatusBadRequest)
+		return
+	}
+
+	if s.pipeline == nil {
+		jsonError(w, "pipeline not available (no agent pool)", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	result, err := s.pipeline.Advance(r.Context(), req)
+	if err != nil {
+		jsonError(w, "pipeline advance failed", err, http.StatusBadRequest)
+		return
+	}
+
+	jsonResponse(w, result)
+}
+
+func (s *Server) handlePipelineReview(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	entry, err := s.store.ReadEntry(id)
+	if err != nil {
+		jsonError(w, "entry not found", err, http.StatusNotFound)
+		return
+	}
+
+	maturity := entry.Maturity
+	if maturity == "" {
+		maturity = "raw"
+	}
+
+	review := map[string]any{
+		"id":             entry.ID,
+		"title":          entry.Title,
+		"category":       entry.Category,
+		"body":           entry.Body,
+		"maturity":       maturity,
+		"maturity_notes": entry.MaturityNotes,
+		"scratch_path":   entry.ScratchPath,
+		"scenarios":      entry.Scenarios,
+		"tags":           entry.Tags,
+		"created_at":     entry.Created,
+		"updated_at":     entry.Updated,
+	}
+
+	jsonResponse(w, review)
 }
