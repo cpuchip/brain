@@ -204,7 +204,6 @@ func run() error {
 			WorkingDir:            workingDir,
 			InfiniteSessions:      true,
 			TokenWarningThreshold: cfg.AgentTokenWarning,
-			TokenHardCap:          cfg.AgentTokenHardCap,
 		}
 		if wc.SkillsDir != "" {
 			baseCfg.SkillDirectories = []string{wc.SkillsDir}
@@ -490,7 +489,6 @@ func runExec() error {
 		AgentName:             agentName,
 		InfiniteSessions:      true,
 		TokenWarningThreshold: cfg.AgentTokenWarning,
-		TokenHardCap:          cfg.AgentTokenHardCap,
 	}
 
 	// Add skills directory if available

@@ -79,9 +79,8 @@ type Config struct {
 	// Agent (Copilot SDK sessions with MCP tools)
 	AgentModel string                  // Model for agent sessions (default: claude-sonnet-4.6)
 	MCPServers map[string]MCPServerDef // External MCP servers available to agent sessions
-	// Agent token governance
+	// Agent token governance (observability only — billing is per-request, not per-token)
 	AgentTokenWarning int64 // Warn when per-agent session token usage crosses this threshold
-	AgentTokenHardCap int64 // Stop new/active agent work when this threshold is reached
 
 	// Auto-routing: when true, entries classified into categories with mode "auto" are
 	// immediately routed to their agent instead of being marked as "suggested".
@@ -158,7 +157,6 @@ func Load() (*Config, error) {
 		AIModelPreset:       "gpt-mini",
 		AgentModel:          "claude-sonnet-4.6",
 		AgentTokenWarning:   500000,
-		AgentTokenHardCap:   800000,
 		LMStudioURL:         "http://localhost:1234/v1",
 		LMStudioModel:       "mistralai/ministral-3-14b-reasoning",
 		EmbeddingBackend:    "lmstudio", // default: use LM Studio for embeddings too
@@ -251,11 +249,6 @@ func Load() (*Config, error) {
 	if v := os.Getenv("AGENT_TOKEN_WARNING"); v != "" {
 		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
 			cfg.AgentTokenWarning = parsed
-		}
-	}
-	if v := os.Getenv("AGENT_TOKEN_HARD_CAP"); v != "" {
-		if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
-			cfg.AgentTokenHardCap = parsed
 		}
 	}
 	if v := os.Getenv("BRAIN_AUTO_ROUTE"); v != "" {
@@ -352,11 +345,8 @@ func (c *Config) Validate() error {
 	if c.DBPath == "" {
 		return fmt.Errorf("database path not configured")
 	}
-	if c.AgentTokenWarning < 0 || c.AgentTokenHardCap < 0 {
-		return fmt.Errorf("AGENT_TOKEN_WARNING and AGENT_TOKEN_HARD_CAP must be non-negative")
-	}
-	if c.AgentTokenWarning > 0 && c.AgentTokenHardCap > 0 && c.AgentTokenWarning > c.AgentTokenHardCap {
-		return fmt.Errorf("AGENT_TOKEN_WARNING (%d) cannot exceed AGENT_TOKEN_HARD_CAP (%d)", c.AgentTokenWarning, c.AgentTokenHardCap)
+	if c.AgentTokenWarning < 0 {
+		return fmt.Errorf("AGENT_TOKEN_WARNING must be non-negative")
 	}
 	return nil
 }
@@ -439,19 +429,20 @@ func discoverMCPServers(brainCodeDir string) map[string]MCPServerDef {
 
 	// Known MCP servers and their serve commands
 	type serverSpec struct {
+		key  string   // map key (defaults to exe if empty)
 		dir  string   // directory name under scripts/
 		exe  string   // binary name (without .exe)
 		args []string // arguments to start MCP stdio mode
 	}
 
 	specs := []serverSpec{
-		{"gospel-mcp", "gospel-mcp", []string{"serve"}},
-		{"gospel-vec", "gospel-vec", []string{"mcp"}},
-		{"webster-mcp", "webster-mcp", nil},
-		{"becoming", "mcp", nil},
-		{"byu-citations", "byu-citations", nil},
-		{"search-mcp", "search-mcp", []string{"serve"}},
-		{"yt-mcp", "yt-mcp", []string{"serve"}},
+		{"", "gospel-mcp", "gospel-mcp", []string{"serve"}},
+		{"", "gospel-vec", "gospel-vec", []string{"mcp"}},
+		{"", "webster-mcp", "webster-mcp", nil},
+		{"becoming", "becoming", "mcp", nil},
+		{"", "byu-citations", "byu-citations", nil},
+		{"", "search-mcp", "search-mcp", []string{"serve"}},
+		{"", "yt-mcp", "yt-mcp", []string{"serve"}},
 	}
 
 	for _, spec := range specs {
@@ -464,7 +455,11 @@ func discoverMCPServers(brainCodeDir string) map[string]MCPServerDef {
 				continue
 			}
 		}
-		servers[spec.exe] = MCPServerDef{
+		name := spec.key
+		if name == "" {
+			name = spec.exe
+		}
+		servers[name] = MCPServerDef{
 			Command: exe,
 			Args:    spec.args,
 			Cwd:     dir,

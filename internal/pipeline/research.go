@@ -257,20 +257,27 @@ Rules:
 3. Write ALL findings to the scratch file path provided
 4. Never decide or recommend — surface findings and questions
 5. Label sources: [WORKSPACE], [WEB], [SYNTHESIS]
-6. If you find nothing relevant, say so honestly`
+6. If you find nothing relevant, say so honestly
+
+Token budget guidance:
+- Be targeted in searches. Use specific keywords, not broad patterns.
+- When reading files, request only the lines you need (use startLine/endLine).
+- Prefer MCP tools (gospel_search, brain_search, web_search) over raw grep/glob when possible — they return focused results.
+- Write findings to the scratch file incrementally as you discover them. Don't wait until the end.
+- If you've found enough context on a subtopic, move on. Exhaustive coverage is less important than covering all sections.`
 
 	// Create agent with cheap model and research-specific config
 	agentCfg := ai.AgentConfig{
 		Model:         ResearchModel,
 		SystemMessage: systemMsg,
-		MCPServers:    p.buildMCPDefs(),
+		MCPServers:    p.mcpDefsForCategory(entry.Category),
 		WorkingDir:    p.workspace,
 		AgentName:     "research",
 		AllowedWritePaths: map[string][]string{
 			"research": {"study/.scratch", ".spec/scratch"},
 		},
-		TokenWarningThreshold: 50000,
-		TokenHardCap:          100000,
+		TokenWarningThreshold: 100000,
+		PremiumRequestCost:    0.33, // Haiku 4.5
 	}
 
 	agent := ai.NewAgent(p.pool.Client(), agentCfg)
@@ -302,6 +309,7 @@ Rules:
 }
 
 // buildMCPDefs returns MCP server definitions from config for agent use.
+// Includes all servers — use mcpDefsForCategory for a leaner set.
 func (p *Pipeline) buildMCPDefs() map[string]ai.MCPDef {
 	if p.cfg.MCPServers == nil {
 		return nil
@@ -313,6 +321,45 @@ func (p *Pipeline) buildMCPDefs() map[string]ai.MCPDef {
 			Args:    def.Args,
 			Env:     def.Env,
 			Cwd:     def.Cwd,
+		}
+	}
+	return defs
+}
+
+// mcpDefsForCategory returns a subset of MCP servers appropriate for the
+// entry's category. Non-study entries skip gospel-mcp, gospel-vec,
+// webster-mcp, and byu-citations to save ~30-50k tokens of tool definitions.
+func (p *Pipeline) mcpDefsForCategory(category string) map[string]ai.MCPDef {
+	if p.cfg.MCPServers == nil {
+		return nil
+	}
+
+	// Core servers every research/plan agent needs
+	core := map[string]bool{
+		"becoming":   true, // ibeco.me tools (brain_search, brain_get, practices, etc.)
+		"search-mcp": true, // web search
+		"yt-mcp":     true, // youtube for tech research
+	}
+
+	// Study-related entries also get gospel tools
+	studyExtras := map[string]bool{
+		"gospel-mcp":    true,
+		"gospel-vec":    true,
+		"webster-mcp":   true,
+		"byu-citations": true,
+	}
+
+	isStudy := category == "study"
+
+	defs := make(map[string]ai.MCPDef)
+	for name, def := range p.cfg.MCPServers {
+		if core[name] || (isStudy && studyExtras[name]) {
+			defs[name] = ai.MCPDef{
+				Command: def.Command,
+				Args:    def.Args,
+				Env:     def.Env,
+				Cwd:     def.Cwd,
+			}
 		}
 	}
 	return defs
@@ -382,14 +429,14 @@ Rules:
 	agentCfg := ai.AgentConfig{
 		Model:         PlanModel,
 		SystemMessage: systemMsg,
-		MCPServers:    p.buildMCPDefs(),
+		MCPServers:    p.mcpDefsForCategory(entry.Category),
 		WorkingDir:    p.workspace,
 		AgentName:     "plan",
 		AllowedWritePaths: map[string][]string{
 			"plan": {".spec/scratch", ".spec/proposals", "study/.scratch"},
 		},
-		TokenWarningThreshold: 80000,
-		TokenHardCap:          150000,
+		TokenWarningThreshold: 150000,
+		PremiumRequestCost:    1.0, // Sonnet 4
 	}
 
 	agent := ai.NewAgent(p.pool.Client(), agentCfg)
@@ -534,6 +581,7 @@ func buildResearchPrompt(entry *store.Entry, body, scratchPath, feedback string)
 	}
 
 	fmt.Fprintf(&sb, "Write your findings to this file: `%s`\n\n", scratchPath)
+	fmt.Fprintf(&sb, "IMPORTANT: Create this file with a skeleton FIRST (all 5 headings), then fill in sections as you find information. Do not wait until the end to write.\n\n")
 	fmt.Fprintf(&sb, "Use this structure:\n")
 	fmt.Fprintf(&sb, "1. **What This Is About** — 1-2 sentence summary\n")
 	fmt.Fprintf(&sb, "2. **What Already Exists** — search workspace for related studies, proposals, brain entries\n")

@@ -1000,8 +1000,7 @@ func (s *Server) handleAgentSessions(w http.ResponseWriter, r *http.Request) {
 		"sessions": sessions,
 		"details":  details,
 		"budgets": map[string]int64{
-			"warning":  s.cfg.AgentTokenWarning,
-			"hard_cap": s.cfg.AgentTokenHardCap,
+			"warning": s.cfg.AgentTokenWarning,
 		},
 	})
 }

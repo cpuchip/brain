@@ -22,8 +22,8 @@ type AgentConfig struct {
 
 	// Governance / budgets
 	AllowedWritePaths     map[string][]string // Optional per-agent write path overrides (relative to WorkingDir)
-	TokenWarningThreshold int64               // Warn when total tokens crosses this threshold
-	TokenHardCap          int64               // Deny/abort work once this threshold is reached
+	TokenWarningThreshold int64               // Warn when total tokens crosses this threshold (observability only, does not abort)
+	PremiumRequestCost    float64             // Cost multiplier per Ask() call (e.g. 0.33 for haiku, 1.0 for sonnet, 3.0 for opus)
 
 	// Workspace-aware fields
 	SkillDirectories []string // Directories to load skills from (e.g. .github/skills/)
@@ -56,13 +56,14 @@ type Agent struct {
 
 // SessionUsage tracks usage and governance state for one agent session.
 type SessionUsage struct {
-	InputTokens   int64  `json:"input_tokens"`
-	OutputTokens  int64  `json:"output_tokens"`
-	TotalTokens   int64  `json:"total_tokens"`
-	ToolCalls     int64  `json:"tool_calls"`
-	BudgetWarning bool   `json:"budget_warning"`
-	HardCapHit    bool   `json:"hard_cap_hit"`
-	LastTool      string `json:"last_tool,omitempty"`
+	InputTokens     int64   `json:"input_tokens"`
+	OutputTokens    int64   `json:"output_tokens"`
+	TotalTokens     int64   `json:"total_tokens"`
+	ToolCalls       int64   `json:"tool_calls"`
+	Prompts         int64   `json:"prompts"`          // Number of Ask() calls (each = 1 premium request × cost)
+	PremiumRequests float64 `json:"premium_requests"` // Cumulative premium request cost (prompts × model multiplier)
+	BudgetWarning   bool    `json:"budget_warning"`
+	LastTool        string  `json:"last_tool,omitempty"`
 }
 
 // NewAgent creates an agent backed by the given Copilot client.
@@ -84,9 +85,15 @@ func (a *Agent) Ask(ctx context.Context, prompt string) (string, error) {
 // Tool calls are logged. Blocks until session is idle or context is cancelled.
 // Returns the final assembled response text.
 func (a *Agent) AskStreaming(ctx context.Context, prompt string, w io.Writer) (string, error) {
-	if err := a.checkBudgetBeforePrompt(); err != nil {
-		return "", err
+	// Record premium request cost for this prompt
+	a.mu.Lock()
+	a.usage.Prompts++
+	if a.config.PremiumRequestCost > 0 {
+		a.usage.PremiumRequests += a.config.PremiumRequestCost
 	}
+	a.mu.Unlock()
+	log.Printf("BILLING: agent=%s model=%s prompt=#%d premium_cost=%.2f cumulative=%.2f",
+		a.displayName(), a.config.Model, a.usage.Prompts, a.config.PremiumRequestCost, a.usage.PremiumRequests)
 
 	a.mu.Lock()
 	session := a.session
@@ -169,14 +176,7 @@ func (a *Agent) AskStreaming(ctx context.Context, prompt string, w io.Writer) (s
 		case copilot.SessionUsageInfo, copilot.AssistantUsage:
 			in := toInt64(event.Data.InputTokens)
 			out := toInt64(event.Data.OutputTokens)
-			hardCapHit := a.recordUsage(in, out)
-			if hardCapHit {
-				cancelRun()
-				select {
-				case errCh <- fmt.Errorf("token hard cap reached for agent %q", a.displayName()):
-				default:
-				}
-			}
+			a.recordUsage(in, out)
 
 		// Noisy events we expect but don't need to log
 		case copilot.AssistantReasoningDelta, copilot.AssistantReasoning,
@@ -359,20 +359,6 @@ func (a *Agent) displayName() string {
 	return "_default"
 }
 
-func (a *Agent) checkBudgetBeforePrompt() error {
-	if a.config.TokenHardCap <= 0 {
-		return nil
-	}
-	usage := a.Usage()
-	if usage.TotalTokens >= a.config.TokenHardCap {
-		a.mu.Lock()
-		a.usage.HardCapHit = true
-		a.mu.Unlock()
-		return fmt.Errorf("token hard cap reached for agent %q (%d/%d)", a.displayName(), usage.TotalTokens, a.config.TokenHardCap)
-	}
-	return nil
-}
-
 func (a *Agent) recordToolCall(toolName string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -380,8 +366,8 @@ func (a *Agent) recordToolCall(toolName string) {
 	a.usage.LastTool = toolName
 }
 
-// recordUsage returns true when hard cap is reached and execution should stop.
-func (a *Agent) recordUsage(inputTokens, outputTokens int64) bool {
+// recordUsage tracks token consumption for observability.
+func (a *Agent) recordUsage(inputTokens, outputTokens int64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -393,14 +379,6 @@ func (a *Agent) recordUsage(inputTokens, outputTokens int64) bool {
 		a.usage.BudgetWarning = true
 		log.Printf("TOKEN WARNING: agent=%s total=%d warning_threshold=%d", a.displayName(), a.usage.TotalTokens, a.config.TokenWarningThreshold)
 	}
-
-	if a.config.TokenHardCap > 0 && a.usage.TotalTokens >= a.config.TokenHardCap {
-		a.usage.HardCapHit = true
-		log.Printf("TOKEN HARD CAP: agent=%s total=%d hard_cap=%d", a.displayName(), a.usage.TotalTokens, a.config.TokenHardCap)
-		return true
-	}
-
-	return false
 }
 
 func toInt64(v *float64) int64 {
