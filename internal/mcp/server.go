@@ -150,7 +150,8 @@ func (s *Server) registerTools() {
 		mcp.NewTool("brain_advance",
 			mcp.WithDescription("Advance a pipeline entry through maturity stages: raw → researched → planned → specced. "+
 				"Actions: advance (next stage), revise (re-do current stage with feedback), reject (back to raw), defer (pause). "+
-				"Only works for pipeline categories (ideas, projects, study)."),
+				"Only works for pipeline categories (ideas, projects, study). "+
+				"When advancing from planned → specced, provide scenarios (testable acceptance criteria)."),
 			mcp.WithString("id",
 				mcp.Required(),
 				mcp.Description("The entry UUID"),
@@ -161,6 +162,9 @@ func (s *Server) registerTools() {
 			),
 			mcp.WithString("feedback",
 				mcp.Description("Human guidance for revise action, or notes for advance"),
+			),
+			mcp.WithString("scenarios",
+				mcp.Description("Newline-separated list of testable scenarios (required when advancing from planned → specced)"),
 			),
 			mutatingAnnotation,
 		),
@@ -538,6 +542,7 @@ func (s *Server) handleAdvance(ctx context.Context, request mcp.CallToolRequest)
 	}
 
 	feedback, _ := request.GetArguments()["feedback"].(string)
+	scenariosStr, _ := request.GetArguments()["scenarios"].(string)
 
 	var b strings.Builder
 
@@ -546,6 +551,28 @@ func (s *Server) handleAdvance(ctx context.Context, request mcp.CallToolRequest)
 		next, ok := nextStage(currentMaturity)
 		if !ok {
 			return mcp.NewToolResultError(fmt.Sprintf("cannot advance beyond %s", currentMaturity)), nil
+		}
+
+		// planned → specced requires scenarios
+		if currentMaturity == "planned" {
+			if scenariosStr == "" {
+				return mcp.NewToolResultError("advancing from planned → specced requires scenarios (newline-separated list of testable acceptance criteria)"), nil
+			}
+			scenarios := strings.Split(scenariosStr, "\n")
+			var cleaned []string
+			for _, s := range scenarios {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					cleaned = append(cleaned, s)
+				}
+			}
+			if len(cleaned) == 0 {
+				return mcp.NewToolResultError("scenarios must contain at least one non-empty line"), nil
+			}
+			scenariosFormatted := "- " + strings.Join(cleaned, "\n- ")
+			if err := s.store.DB().SetScenarios(entry.ID, scenariosFormatted); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("failed to set scenarios: %v", err)), nil
+			}
 		}
 
 		notes := ""
@@ -560,6 +587,9 @@ func (s *Server) handleAdvance(ctx context.Context, request mcp.CallToolRequest)
 		fmt.Fprintf(&b, "**%s** `[%s]`\n\n", entry.Title, entry.Category)
 		if next == "researched" {
 			fmt.Fprintf(&b, "Entry marked as researched. To trigger an AI research pass, use `brain advance %s` from the CLI or web UI.\n", id)
+		}
+		if next == "planned" {
+			fmt.Fprintf(&b, "Entry marked as planned. To trigger an AI plan pass, use `brain advance %s` from the CLI or web UI.\n", id)
 		}
 
 	case "revise":

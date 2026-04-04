@@ -277,3 +277,87 @@ func findSubstring(s, sub string) bool {
 	}
 	return false
 }
+
+func TestHandleAdvancePlannedToSpeccedRequiresScenarios(t *testing.T) {
+	st, db := setupTestStore(t)
+	srv := New(st)
+
+	id := insertEntry(t, db, "Needs scenarios", "ideas")
+	if err := db.SetMaturity(id, "planned", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without scenarios should fail
+	result := callTool(t, srv.handleAdvance, map[string]any{
+		"id":     id,
+		"action": "advance",
+	})
+	if !result.IsError {
+		t.Error("expected error when advancing planned→specced without scenarios")
+	}
+	text := result.Content[0].(mcp.TextContent).Text
+	if !contains(text, "scenarios") {
+		t.Errorf("error should mention scenarios, got: %s", text)
+	}
+}
+
+func TestHandleAdvancePlannedToSpeccedWithScenarios(t *testing.T) {
+	st, db := setupTestStore(t)
+	srv := New(st)
+
+	id := insertEntry(t, db, "Ready to spec", "projects")
+	if err := db.SetMaturity(id, "planned", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	result := callTool(t, srv.handleAdvance, map[string]any{
+		"id":        id,
+		"action":    "advance",
+		"scenarios": "Happy path works\nError returns 400\nEdge case handled",
+	})
+	if result.IsError {
+		text := result.Content[0].(mcp.TextContent).Text
+		t.Fatalf("unexpected error: %s", text)
+	}
+
+	entry, _ := db.GetEntry(id)
+	if entry.Maturity != "specced" {
+		t.Errorf("maturity = %q, want %q", entry.Maturity, "specced")
+	}
+	if !contains(entry.Scenarios, "Happy path works") {
+		t.Errorf("scenarios = %q, should contain 'Happy path works'", entry.Scenarios)
+	}
+	if !contains(entry.Scenarios, "Error returns 400") {
+		t.Errorf("scenarios = %q, should contain 'Error returns 400'", entry.Scenarios)
+	}
+}
+
+func TestHandleAdvancePlannedToSpeccedEmptyScenarios(t *testing.T) {
+	st, db := setupTestStore(t)
+	srv := New(st)
+
+	id := insertEntry(t, db, "Empty scenarios", "ideas")
+	if err := db.SetMaturity(id, "planned", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty string should fail
+	result := callTool(t, srv.handleAdvance, map[string]any{
+		"id":        id,
+		"action":    "advance",
+		"scenarios": "",
+	})
+	if !result.IsError {
+		t.Error("expected error for empty scenarios string")
+	}
+
+	// Whitespace-only lines should fail
+	result = callTool(t, srv.handleAdvance, map[string]any{
+		"id":        id,
+		"action":    "advance",
+		"scenarios": "\n  \n\n",
+	})
+	if !result.IsError {
+		t.Error("expected error for whitespace-only scenarios")
+	}
+}

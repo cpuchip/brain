@@ -54,7 +54,7 @@ func defaultAllowedWritePaths(agentName string) []string {
 	case "journal":
 		return []string{"journal"}
 	case "plan":
-		return []string{".spec/proposals", ".spec/scratch"}
+		return []string{".spec/proposals", ".spec/scratch", "study/.scratch"}
 	case "dev":
 		return []string{"scripts", ".spec", "docs"}
 	case "eval":

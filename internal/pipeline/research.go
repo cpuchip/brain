@@ -23,6 +23,9 @@ import (
 // ResearchModel is the default cheap model used for research passes.
 const ResearchModel = "claude-haiku-4.5"
 
+// PlanModel is the mid-tier model used for plan passes (better reasoning for structure).
+const PlanModel = "claude-sonnet-4"
+
 // Pipeline orchestrates maturity transitions for brain entries.
 type Pipeline struct {
 	store     *store.Store
@@ -113,22 +116,10 @@ func (p *Pipeline) advance(ctx context.Context, entry *store.Entry, oldMaturity 
 		// raw → researched: run research pass
 		return p.runResearch(ctx, entry, req.Feedback)
 	case "researched":
-		// researched → planned: future Phase 4c
-		notes := "Advanced to planned"
-		if req.Feedback != "" {
-			notes = req.Feedback
-		}
-		if err := p.store.DB().SetMaturity(entry.ID, "planned", notes); err != nil {
-			return nil, fmt.Errorf("setting maturity: %w", err)
-		}
-		return &AdvanceResult{
-			EntryID:     entry.ID,
-			OldMaturity: oldMaturity,
-			NewMaturity: "planned",
-			Message:     "Advanced to planned (plan pass not yet implemented — Phase 4c)",
-		}, nil
+		// researched → planned: run plan pass
+		return p.runPlan(ctx, entry, req.Feedback)
 	case "planned":
-		// planned → specced: requires scenarios
+		// planned → specced: requires scenarios, generates proposal file
 		if len(req.Scenarios) == 0 {
 			return nil, fmt.Errorf("advancing to specced requires scenarios")
 		}
@@ -139,11 +130,25 @@ func (p *Pipeline) advance(ctx context.Context, entry *store.Entry, oldMaturity 
 		if err := p.store.DB().SetMaturity(entry.ID, "specced", ""); err != nil {
 			return nil, fmt.Errorf("setting maturity: %w", err)
 		}
+
+		// Generate proposal file
+		proposalPath := ""
+		proposalMsg := ""
+		pp, err := p.generateProposal(entry, req.Scenarios)
+		if err != nil {
+			log.Printf("warning: failed to generate proposal for %s: %v", entry.ID, err)
+			proposalMsg = " (proposal generation failed — check logs)"
+		} else {
+			proposalPath = pp
+			proposalMsg = fmt.Sprintf(" Proposal: %s", proposalPath)
+		}
+
 		return &AdvanceResult{
 			EntryID:     entry.ID,
 			OldMaturity: oldMaturity,
 			NewMaturity: "specced",
-			Message:     fmt.Sprintf("Advanced to specced with %d scenarios", len(req.Scenarios)),
+			ScratchPath: proposalPath,
+			Message:     fmt.Sprintf("Advanced to specced with %d scenarios.%s", len(req.Scenarios), proposalMsg),
 		}, nil
 	default:
 		return nil, fmt.Errorf("cannot advance from %s — use the agent routing system for execution", oldMaturity)
@@ -159,6 +164,9 @@ func (p *Pipeline) revise(ctx context.Context, entry *store.Entry, oldMaturity s
 	case "researched":
 		// Re-run research with feedback guidance
 		return p.runResearch(ctx, entry, req.Feedback)
+	case "planned":
+		// Re-run plan with feedback guidance
+		return p.runPlan(ctx, entry, req.Feedback)
 	default:
 		// Store the feedback as maturity notes
 		notes := fmt.Sprintf("Revision requested: %s", req.Feedback)
@@ -308,6 +316,206 @@ func (p *Pipeline) buildMCPDefs() map[string]ai.MCPDef {
 		}
 	}
 	return defs
+}
+
+// runPlan executes the plan pass for a researched entry.
+func (p *Pipeline) runPlan(ctx context.Context, entry *store.Entry, feedback string) (*AdvanceResult, error) {
+	if p.pool == nil {
+		return nil, fmt.Errorf("agent pool not available — plan pass requires Copilot SDK")
+	}
+
+	// Determine scratch file path (same convention as research)
+	slug := slugify(entry.Title)
+	var scratchPath string
+	if entry.ScratchPath != "" {
+		scratchPath = entry.ScratchPath
+	} else if entry.Category == "study" {
+		scratchPath = filepath.Join("study", ".scratch", slug+".md")
+	} else {
+		scratchPath = filepath.Join(".spec", "scratch", slug, "main.md")
+	}
+
+	// Load existing scratch file contents (research findings)
+	existingScratch := ""
+	absPath := scratchPath
+	if p.workspace != "" {
+		absPath = filepath.Join(p.workspace, scratchPath)
+	}
+	if data, err := os.ReadFile(absPath); err == nil {
+		existingScratch = string(data)
+	}
+
+	// Load governance document
+	govDoc := ""
+	govPath := filepath.Join(p.codeDir, "docs", "governance", "plan-covenant.md")
+	if data, err := os.ReadFile(govPath); err == nil {
+		govDoc = string(data)
+	} else {
+		log.Printf("warning: plan governance doc not found at %s: %v", govPath, err)
+	}
+
+	// Build plan prompt
+	body := entry.Body
+	if body == "" {
+		body = entry.Title
+	}
+
+	prompt := buildPlanPrompt(entry, body, absPath, existingScratch, feedback)
+
+	// Build system message: governance doc + plan instructions
+	systemMsg := "You are a plan architect for the brain pipeline.\n\n"
+	if govDoc != "" {
+		systemMsg += "## Your Governance Covenant\n\n" + govDoc + "\n\n---\n\n"
+	}
+	systemMsg += `Your job is to take a researched brain entry and produce a structured plan with scenarios.
+
+Rules:
+1. Read the existing scratch file — it contains research findings. Build on them, don't redo them.
+2. Produce concrete scenarios (testable acceptance criteria)
+3. Identify decisions the human must make — present options, don't choose
+4. Estimate scope in sessions (1 session = 2-4 hours of focused work)
+5. Reference actual files, packages, and patterns from the workspace
+6. APPEND your plan section to the scratch file — do not overwrite existing content
+7. If the research is thin or missing, flag that as a blocker`
+
+	// Create agent with Sonnet model and plan-specific config
+	agentCfg := ai.AgentConfig{
+		Model:         PlanModel,
+		SystemMessage: systemMsg,
+		MCPServers:    p.buildMCPDefs(),
+		WorkingDir:    p.workspace,
+		AgentName:     "plan",
+		AllowedWritePaths: map[string][]string{
+			"plan": {".spec/scratch", ".spec/proposals", "study/.scratch"},
+		},
+		TokenWarningThreshold: 80000,
+		TokenHardCap:          150000,
+	}
+
+	agent := ai.NewAgent(p.pool.Client(), agentCfg)
+
+	log.Printf("Plan pass starting for %s (%s) → %s", entry.ID, entry.Title, scratchPath)
+
+	response, err := agent.Ask(ctx, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("plan agent failed: %w", err)
+	}
+
+	log.Printf("Plan pass complete for %s (%d chars response)", entry.ID, len(response))
+
+	// Update entry maturity and scratch path
+	if entry.ScratchPath == "" {
+		if err := p.store.DB().SetScratchPath(entry.ID, scratchPath); err != nil {
+			log.Printf("warning: failed to set scratch path for %s: %v", entry.ID, err)
+		}
+	}
+	if err := p.store.DB().SetMaturity(entry.ID, "planned", ""); err != nil {
+		return nil, fmt.Errorf("setting maturity: %w", err)
+	}
+
+	return &AdvanceResult{
+		EntryID:     entry.ID,
+		OldMaturity: entry.Maturity,
+		NewMaturity: "planned",
+		ScratchPath: scratchPath,
+		Message:     fmt.Sprintf("Plan pass complete. Plan appended to %s", scratchPath),
+	}, nil
+}
+
+func buildPlanPrompt(entry *store.Entry, body, scratchPath, existingScratch, feedback string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Create a structured plan for the following brain entry:\n\n")
+	fmt.Fprintf(&sb, "**Title:** %s\n", entry.Title)
+	fmt.Fprintf(&sb, "**Category:** %s\n", entry.Category)
+	fmt.Fprintf(&sb, "**Content:** %s\n\n", body)
+
+	if len(entry.Tags) > 0 {
+		fmt.Fprintf(&sb, "**Tags:** %s\n\n", strings.Join(entry.Tags, ", "))
+	}
+
+	if existingScratch != "" {
+		fmt.Fprintf(&sb, "**Existing scratch file (research findings):**\n\n```markdown\n%s\n```\n\n", existingScratch)
+	} else {
+		fmt.Fprintf(&sb, "**Warning:** No existing scratch file found. Research may not have been run, or it created no output. Flag this in your plan.\n\n")
+	}
+
+	if feedback != "" {
+		fmt.Fprintf(&sb, "**Human guidance:** %s\n\n", feedback)
+	}
+
+	fmt.Fprintf(&sb, "APPEND your plan to this file: `%s`\n\n", scratchPath)
+	fmt.Fprintf(&sb, "Your plan section must include:\n")
+	fmt.Fprintf(&sb, "1. **Scope** — estimated sessions and complexity\n")
+	fmt.Fprintf(&sb, "2. **What to Build** — concrete deliverables (packages, files, endpoints)\n")
+	fmt.Fprintf(&sb, "3. **Phases** — ordered, each independently deliverable\n")
+	fmt.Fprintf(&sb, "4. **Scenarios** — testable acceptance criteria (\"when X, then Y\")\n")
+	fmt.Fprintf(&sb, "5. **Decisions Needed** — choice points with options and trade-offs\n")
+	fmt.Fprintf(&sb, "6. **Risks** — what could go wrong\n")
+	fmt.Fprintf(&sb, "7. **Dependencies** — what must exist first\n")
+
+	return sb.String()
+}
+
+// generateProposal creates a proposal file from a specced entry with scenarios.
+func (p *Pipeline) generateProposal(entry *store.Entry, scenarios []string) (string, error) {
+	slug := slugify(entry.Title)
+	proposalPath := filepath.Join(".spec", "proposals", slug+".md")
+
+	absPath := proposalPath
+	if p.workspace != "" {
+		absPath = filepath.Join(p.workspace, proposalPath)
+	}
+
+	// Ensure directory exists
+	dir := filepath.Dir(absPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("creating proposal directory: %w", err)
+	}
+
+	// Read scratch file if available
+	scratchContent := ""
+	if entry.ScratchPath != "" {
+		scratchAbsPath := entry.ScratchPath
+		if !filepath.IsAbs(scratchAbsPath) && p.workspace != "" {
+			scratchAbsPath = filepath.Join(p.workspace, scratchAbsPath)
+		}
+		if data, err := os.ReadFile(scratchAbsPath); err == nil {
+			scratchContent = string(data)
+		}
+	}
+
+	// Build proposal content
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "# %s\n\n", entry.Title)
+	fmt.Fprintf(&sb, "**Category:** %s\n", entry.Category)
+	fmt.Fprintf(&sb, "**Status:** specced\n")
+	fmt.Fprintf(&sb, "**Created:** %s\n", entry.Created.Format("2006-01-02"))
+	fmt.Fprintf(&sb, "**Specced:** %s\n\n", time.Now().Format("2006-01-02"))
+
+	if len(entry.Tags) > 0 {
+		fmt.Fprintf(&sb, "**Tags:** %s\n\n", strings.Join(entry.Tags, ", "))
+	}
+
+	fmt.Fprintf(&sb, "---\n\n")
+	fmt.Fprintf(&sb, "## Summary\n\n%s\n\n", entry.Body)
+
+	fmt.Fprintf(&sb, "## Scenarios\n\n")
+	for _, s := range scenarios {
+		fmt.Fprintf(&sb, "- %s\n", s)
+	}
+	fmt.Fprintf(&sb, "\n")
+
+	if scratchContent != "" {
+		fmt.Fprintf(&sb, "---\n\n## Research & Plan\n\n")
+		fmt.Fprintf(&sb, "*From scratch file: %s*\n\n", entry.ScratchPath)
+		fmt.Fprintf(&sb, "%s\n", scratchContent)
+	}
+
+	if err := os.WriteFile(absPath, []byte(sb.String()), 0644); err != nil {
+		return "", fmt.Errorf("writing proposal file: %w", err)
+	}
+
+	return proposalPath, nil
 }
 
 func buildResearchPrompt(entry *store.Entry, body, scratchPath, feedback string) string {
