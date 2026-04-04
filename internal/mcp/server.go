@@ -114,6 +114,23 @@ func (s *Server) registerTools() {
 		),
 		s.handleTags,
 	)
+
+	s.mcpServer.AddTool(
+		mcp.NewTool("brain_queue",
+			mcp.WithDescription("View the brain pipeline — entries grouped by maturity stage (raw, researched, planned, specced, executing, verified). Shows ideas, projects, and study entries that are progressing through the pipeline. Use this to see what needs attention, what's ready to act on, and what's still forming."),
+			mcp.WithString("stage",
+				mcp.Description("Filter to a specific maturity stage: raw, researched, planned, specced, executing, verified"),
+			),
+			mcp.WithString("category",
+				mcp.Description("Filter by category: ideas, projects, study"),
+			),
+			mcp.WithNumber("limit",
+				mcp.Description("Maximum entries per stage (default: 10)"),
+			),
+			readOnlyAnnotation,
+		),
+		s.handleQueue,
+	)
 }
 
 func (s *Server) handleSearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -351,4 +368,68 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// stageOrder defines display order for pipeline stages.
+var stageOrder = []string{"raw", "researched", "planned", "specced", "executing", "verified"}
+
+func (s *Server) handleQueue(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	limit := 10
+	if v, ok := request.GetArguments()["limit"]; ok {
+		if n, ok := v.(float64); ok && n > 0 {
+			limit = int(n)
+		}
+	}
+
+	stage, _ := request.GetArguments()["stage"].(string)
+	category, _ := request.GetArguments()["category"].(string)
+
+	pipeline, err := s.store.DB().ListPipeline(stage, category, limit)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("pipeline query failed: %v", err)), nil
+	}
+
+	// Count total entries
+	total := 0
+	for _, entries := range pipeline {
+		total += len(entries)
+	}
+
+	if total == 0 {
+		msg := "No pipeline entries found"
+		if stage != "" {
+			msg += fmt.Sprintf(" at stage %q", stage)
+		}
+		if category != "" {
+			msg += fmt.Sprintf(" in category %q", category)
+		}
+		return mcp.NewToolResultText(msg), nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "## Pipeline Queue")
+	if category != "" {
+		fmt.Fprintf(&b, " (%s)", category)
+	}
+	fmt.Fprintf(&b, "\n\n")
+	fmt.Fprintf(&b, "**%d entries** across pipeline stages\n\n", total)
+
+	for _, st := range stageOrder {
+		entries, ok := pipeline[st]
+		if !ok || len(entries) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "### %s (%d)\n\n", strings.ToUpper(st[:1])+st[1:], len(entries))
+		for _, e := range entries {
+			fmt.Fprintf(&b, "- **%s** `[%s]`\n", e.Title, e.Category)
+			fmt.Fprintf(&b, "  - ID: `%s`\n", e.ID)
+			fmt.Fprintf(&b, "  - Updated: %s\n", e.Updated.Format("2006-01-02"))
+			if e.ScratchPath != "" {
+				fmt.Fprintf(&b, "  - Scratch: %s\n", e.ScratchPath)
+			}
+		}
+		fmt.Fprintf(&b, "\n")
+	}
+
+	return mcp.NewToolResultText(b.String()), nil
 }

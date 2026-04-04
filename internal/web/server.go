@@ -432,6 +432,15 @@ func (s *Server) handleClassify(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Post-classification maturity assessment for pipeline categories
+	maturity := classifier.AssessMaturity(result)
+	if maturity != "" {
+		entry.Maturity = string(maturity)
+		if err := s.store.DB().SetMaturity(entry.ID, string(maturity), ""); err != nil {
+			log.Printf("warning: maturity assessment failed for %s: %v", id, err)
+		}
+	}
+
 	// Create subtasks from extracted list items
 	if len(result.SubItems) > 0 {
 		for i, itemText := range result.SubItems {

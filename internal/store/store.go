@@ -99,6 +99,14 @@ func (s *Store) Save(result *classifier.Result, rawText string, needsReview bool
 	}
 	entry.ID = id
 
+	// Assess maturity for pipeline categories (ideas, projects, study)
+	maturity := classifier.AssessMaturity(result)
+	if maturity != "" {
+		if err := s.db.SetMaturity(id, string(maturity), ""); err != nil {
+			log.Printf("warning: maturity assessment failed for %s: %v", id, err)
+		}
+	}
+
 	// Embed in vector store (async-safe, non-blocking intent)
 	if s.vec != nil && s.vec.Enabled() {
 		go func() {

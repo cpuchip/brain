@@ -47,7 +47,10 @@ func (d *DB) migrate() error {
 	if err := d.migrateAgentRouting(); err != nil {
 		return err
 	}
-	return d.migrateOriginalBody()
+	if err := d.migrateOriginalBody(); err != nil {
+		return err
+	}
+	return d.migrateMaturity()
 }
 
 const schema = `
@@ -225,6 +228,31 @@ func (d *DB) migrateOriginalBody() error {
 			WHERE ev.entry_id = entries.id
 			  AND length(ev.title) > length(entries.title)
 		)`)
+	return nil
+}
+
+// migrateMaturity adds pipeline maturity columns if they don't exist.
+func (d *DB) migrateMaturity() error {
+	cols, err := d.columnNames("entries")
+	if err != nil {
+		return err
+	}
+	if cols["maturity"] {
+		return nil // already migrated
+	}
+	for _, stmt := range []string{
+		"ALTER TABLE entries ADD COLUMN maturity TEXT NOT NULL DEFAULT 'raw'",
+		"ALTER TABLE entries ADD COLUMN maturity_updated_at TEXT",
+		"ALTER TABLE entries ADD COLUMN scratch_path TEXT",
+		"ALTER TABLE entries ADD COLUMN scenarios TEXT",
+		"ALTER TABLE entries ADD COLUMN maturity_notes TEXT",
+	} {
+		if _, err := d.db.Exec(stmt); err != nil {
+			return fmt.Errorf("maturity migration: %w", err)
+		}
+	}
+	// Index for pipeline queue queries
+	d.db.Exec("CREATE INDEX IF NOT EXISTS idx_entries_maturity ON entries(maturity)")
 	return nil
 }
 
@@ -443,6 +471,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	var agentRoute, routeStatus, agentOutput sql.NullString
 	var tokensUsed sql.NullInt64
 	var originalBody sql.NullString
+	var maturity, maturityUpdated, scratchPath, scenarios, maturityNotes sql.NullString
 
 	err := d.db.QueryRow(`
 		SELECT id, title, category, body, confidence, needs_review, source,
@@ -452,7 +481,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 			due_date, action_done, scripture_refs, insight,
 			mood, gratitude,
 			agent_route, route_status, agent_output, tokens_used,
-			original_body
+			original_body,
+			maturity, maturity_updated_at, scratch_path, scenarios, maturity_notes
 		FROM entries WHERE id = ?`, id).Scan(
 		&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
 		&createdStr, &updatedStr,
@@ -462,6 +492,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		&mood, &gratitude,
 		&agentRoute, &routeStatus, &agentOutput, &tokensUsed,
 		&originalBody,
+		&maturity, &maturityUpdated, &scratchPath, &scenarios, &maturityNotes,
 	)
 	if err != nil {
 		return nil, err
@@ -487,6 +518,11 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	e.AgentOutput = agentOutput.String
 	e.TokensUsed = tokensUsed.Int64
 	e.OriginalBody = originalBody.String
+	e.Maturity = maturity.String
+	e.MaturityUpdated = maturityUpdated.String
+	e.ScratchPath = scratchPath.String
+	e.Scenarios = scenarios.String
+	e.MaturityNotes = maturityNotes.String
 
 	// Load tags
 	rows, err := d.db.Query(`SELECT tag FROM tags WHERE entry_id = ?`, id)
@@ -824,6 +860,92 @@ func (d *DB) SetEmbeddingStatus(entryID, model string, embeddedAt time.Time, emb
 		entryID, embeddedAt.UTC().Format(time.RFC3339), model, nullStr(embErr),
 	)
 	return err
+}
+
+// --- Pipeline maturity ---
+
+// SetMaturity updates the maturity stage and related fields for an entry.
+func (d *DB) SetMaturity(entryID, maturity, notes string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := d.db.Exec(
+		"UPDATE entries SET maturity = ?, maturity_updated_at = ?, maturity_notes = ?, updated_at = ? WHERE id = ?",
+		maturity, now, nullStr(notes), now, entryID,
+	)
+	return err
+}
+
+// SetScratchPath records the path to the entry's scratch/research file.
+func (d *DB) SetScratchPath(entryID, path string) error {
+	_, err := d.db.Exec(
+		"UPDATE entries SET scratch_path = ?, updated_at = ? WHERE id = ?",
+		path, time.Now().UTC().Format(time.RFC3339), entryID,
+	)
+	return err
+}
+
+// SetScenarios stores the JSON scenarios array for a specced entry.
+func (d *DB) SetScenarios(entryID, scenariosJSON string) error {
+	_, err := d.db.Exec(
+		"UPDATE entries SET scenarios = ?, updated_at = ? WHERE id = ?",
+		scenariosJSON, time.Now().UTC().Format(time.RFC3339), entryID,
+	)
+	return err
+}
+
+// PipelineCategories are the categories that enter the maturity pipeline.
+var PipelineCategories = []string{"ideas", "projects", "study"}
+
+// ListPipeline returns entries in pipeline categories grouped by maturity stage.
+// Returns a map of maturity stage -> entries, with entries ordered by updated_at desc.
+func (d *DB) ListPipeline(stageFilter, categoryFilter string, limitPerStage int) (map[string][]*Entry, error) {
+	query := `
+		SELECT id, title, category, maturity, maturity_updated_at, scratch_path, created_at, updated_at
+		FROM entries
+		WHERE category IN ('ideas', 'projects', 'study')`
+	var args []interface{}
+
+	if stageFilter != "" {
+		query += " AND maturity = ?"
+		args = append(args, stageFilter)
+	}
+	if categoryFilter != "" {
+		query += " AND category = ?"
+		args = append(args, categoryFilter)
+	}
+	query += " ORDER BY updated_at DESC"
+
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string][]*Entry)
+	counts := make(map[string]int)
+
+	for rows.Next() {
+		e := &Entry{}
+		var createdStr, updatedStr string
+		var maturity, maturityUpdated, scratchPath sql.NullString
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &maturity, &maturityUpdated, &scratchPath, &createdStr, &updatedStr); err != nil {
+			return nil, err
+		}
+		e.Maturity = maturity.String
+		if e.Maturity == "" {
+			e.Maturity = "raw"
+		}
+		e.MaturityUpdated = maturityUpdated.String
+		e.ScratchPath = scratchPath.String
+		e.Created, _ = time.Parse(time.RFC3339, createdStr)
+		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
+
+		if limitPerStage > 0 && counts[e.Maturity] >= limitPerStage {
+			continue
+		}
+		result[e.Maturity] = append(result[e.Maturity], e)
+		counts[e.Maturity]++
+	}
+	return result, nil
 }
 
 // helpers

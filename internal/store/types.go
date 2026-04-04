@@ -57,6 +57,13 @@ type Entry struct {
 	AgentOutput string `json:"agent_output,omitempty" yaml:"agent_output,omitempty"`
 	TokensUsed  int64  `json:"tokens_used,omitempty" yaml:"tokens_used,omitempty"`
 
+	// Pipeline maturity (populated post-classification for ideas/projects/study)
+	Maturity        string `json:"maturity,omitempty" yaml:"maturity,omitempty"`                       // raw, researched, planned, specced, executing, verified
+	MaturityUpdated string `json:"maturity_updated_at,omitempty" yaml:"maturity_updated_at,omitempty"` // RFC3339
+	ScratchPath     string `json:"scratch_path,omitempty" yaml:"scratch_path,omitempty"`
+	Scenarios       string `json:"scenarios,omitempty" yaml:"scenarios,omitempty"` // JSON array of testable scenarios
+	MaturityNotes   string `json:"maturity_notes,omitempty" yaml:"maturity_notes,omitempty"`
+
 	// Sub-tasks (loaded separately from subtasks table)
 	SubTasks []SubTask `json:"subtasks,omitempty" yaml:"subtasks,omitempty"`
 }
