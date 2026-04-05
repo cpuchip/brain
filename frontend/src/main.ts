@@ -8,6 +8,8 @@ const router = createRouter({
   routes: [
     { path: '/', component: () => import('./views/CaptureView.vue') },
     { path: '/dashboard', component: () => import('./views/DashboardView.vue') },
+    { path: '/projects', component: () => import('./views/ProjectsView.vue') },
+    { path: '/projects/:id', component: () => import('./views/ProjectDetailView.vue') },
     { path: '/entries', component: () => import('./views/EntriesView.vue') },
     { path: '/entries/:id', component: () => import('./views/EntryDetailView.vue') },
     { path: '/review', component: () => import('./views/ReviewView.vue') },

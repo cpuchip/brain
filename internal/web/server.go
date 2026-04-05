@@ -114,6 +114,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/pipeline/advance", s.cors(s.handlePipelineAdvance))
 	s.mux.HandleFunc("GET /api/pipeline/review/{id}", s.cors(s.handlePipelineReview))
 
+	// Projects
+	s.mux.HandleFunc("GET /api/projects", s.cors(s.handleListProjects))
+	s.mux.HandleFunc("POST /api/projects", s.cors(s.handleCreateProject))
+	s.mux.HandleFunc("GET /api/projects/{id}", s.cors(s.handleGetProject))
+	s.mux.HandleFunc("PUT /api/projects/{id}", s.cors(s.handleUpdateProject))
+	s.mux.HandleFunc("DELETE /api/projects/{id}", s.cors(s.handleDeleteProject))
+	s.mux.HandleFunc("GET /api/projects/{id}/entries", s.cors(s.handleProjectEntries))
+	s.mux.HandleFunc("PUT /api/entries/{id}/project", s.cors(s.handleSetEntryProject))
+
 	// Dashboard operations
 	s.mux.HandleFunc("POST /api/entries/{id}/dismiss-route", s.cors(s.handleDismissRoute))
 	s.mux.HandleFunc("POST /api/shutdown", s.cors(s.handleShutdown))
@@ -282,6 +291,14 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 	}
 	if v, ok := updates["due_date"].(string); ok {
 		existing.DueDate = v
+	}
+	if v, ok := updates["project_id"]; ok {
+		if v == nil {
+			existing.ProjectID = nil
+		} else if pid, ok := v.(float64); ok {
+			id := int(pid)
+			existing.ProjectID = &id
+		}
 	}
 
 	if err := s.store.DB().UpdateEntry(existing); err != nil {
@@ -1296,4 +1313,151 @@ func (s *Server) handlePipelineReview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, review)
+}
+
+// --- Project handlers ---
+
+func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
+	projects, err := s.store.DB().ListProjects()
+	if err != nil {
+		jsonError(w, "listing projects", err, http.StatusInternalServerError)
+		return
+	}
+	if projects == nil {
+		projects = []*store.Project{}
+	}
+	jsonResponse(w, projects)
+}
+
+func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Emoji       string `json:"emoji"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" {
+		jsonError(w, "name is required", nil, http.StatusBadRequest)
+		return
+	}
+
+	p := &store.Project{
+		Name:        req.Name,
+		Description: req.Description,
+		Status:      "active",
+		Emoji:       req.Emoji,
+	}
+	id, err := s.store.DB().CreateProject(p)
+	if err != nil {
+		jsonError(w, "creating project", err, http.StatusInternalServerError)
+		return
+	}
+	p.ID = id
+	w.WriteHeader(http.StatusCreated)
+	jsonResponse(w, p)
+}
+
+func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "invalid project id", err, http.StatusBadRequest)
+		return
+	}
+	p, err := s.store.DB().GetProject(id)
+	if err != nil {
+		jsonError(w, "project not found", err, http.StatusNotFound)
+		return
+	}
+	jsonResponse(w, p)
+}
+
+func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "invalid project id", err, http.StatusBadRequest)
+		return
+	}
+
+	existing, err := s.store.DB().GetProject(id)
+	if err != nil {
+		jsonError(w, "project not found", err, http.StatusNotFound)
+		return
+	}
+
+	// Partial update — read-modify-write
+	var updates map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+
+	if v, ok := updates["name"].(string); ok {
+		existing.Name = v
+	}
+	if v, ok := updates["description"].(string); ok {
+		existing.Description = v
+	}
+	if v, ok := updates["status"].(string); ok {
+		existing.Status = v
+	}
+	if v, ok := updates["emoji"].(string); ok {
+		existing.Emoji = v
+	}
+
+	if err := s.store.DB().UpdateProject(existing); err != nil {
+		jsonError(w, "updating project", err, http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, existing)
+}
+
+func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "invalid project id", err, http.StatusBadRequest)
+		return
+	}
+	if err := s.store.DB().DeleteProject(id); err != nil {
+		jsonError(w, "deleting project", err, http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleProjectEntries(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "invalid project id", err, http.StatusBadRequest)
+		return
+	}
+	entries, err := s.store.DB().ListEntriesByProject(id)
+	if err != nil {
+		jsonError(w, "listing project entries", err, http.StatusInternalServerError)
+		return
+	}
+	if entries == nil {
+		entries = []*store.Entry{}
+	}
+	jsonResponse(w, entries)
+}
+
+func (s *Server) handleSetEntryProject(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+
+	var req struct {
+		ProjectID *int `json:"project_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.DB().SetEntryProject(entryID, req.ProjectID); err != nil {
+		jsonError(w, "setting entry project", err, http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]any{"entry_id": entryID, "project_id": req.ProjectID})
 }

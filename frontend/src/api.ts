@@ -18,6 +18,7 @@ export interface Entry {
   confidence: number
   needs_review: boolean
   ibecome_task_id?: number
+  project_id?: number | null
   created_at: string
   updated_at: string
   subtasks?: SubTask[]
@@ -31,6 +32,19 @@ export interface Entry {
   route_status?: string
   agent_output?: string
   tokens_used?: number
+  // Pipeline maturity
+  maturity?: string
+}
+
+export interface Project {
+  id: number
+  name: string
+  description?: string
+  status: string
+  emoji?: string
+  entry_count?: number
+  created_at: string
+  updated_at: string
 }
 
 export interface Stats {
@@ -219,5 +233,43 @@ export const api = {
 
   shutdown() {
     return request<{ status: string }>('/shutdown', { method: 'POST' })
+  },
+
+  // Projects
+  listProjects() {
+    return request<Project[]>('/projects')
+  },
+
+  createProject(data: { name: string; description?: string; emoji?: string }) {
+    return request<Project>('/projects', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
+
+  getProject(id: number) {
+    return request<Project>(`/projects/${id}`)
+  },
+
+  updateProject(id: number, updates: Partial<Pick<Project, 'name' | 'description' | 'status' | 'emoji'>>) {
+    return request<Project>(`/projects/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    })
+  },
+
+  deleteProject(id: number) {
+    return request<void>(`/projects/${id}`, { method: 'DELETE' })
+  },
+
+  projectEntries(id: number) {
+    return request<Entry[]>(`/projects/${id}/entries`)
+  },
+
+  setEntryProject(entryId: string, projectId: number | null) {
+    return request<{ entry_id: string; project_id: number | null }>(`/entries/${encodeURIComponent(entryId)}/project`, {
+      method: 'PUT',
+      body: JSON.stringify({ project_id: projectId }),
+    })
   },
 }

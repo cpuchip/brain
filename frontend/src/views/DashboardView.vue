@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { api, type BrainStatus, type RoutableEntry, type RunningEntry, type ReviewEntry, type Stats } from '../api'
+import { api, type BrainStatus, type RoutableEntry, type RunningEntry, type ReviewEntry, type Stats, type Project } from '../api'
 
 const status = ref<BrainStatus | null>(null)
 const stats = ref<Stats | null>(null)
+const projects = ref<Project[]>([])
 const sessions = ref<string[]>([])
 const running = ref<RunningEntry[]>([])
 const routable = ref<RoutableEntry[]>([])
@@ -18,13 +19,14 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function loadAll() {
   try {
-    const [st, ss, run, rout, ses, rev] = await Promise.all([
+    const [st, ss, run, rout, ses, rev, proj] = await Promise.all([
       api.brainStatus(),
       api.stats(),
       api.agentRunning(),
       api.agentRoutable(),
       api.agentSessions(),
       api.reviewQueue(),
+      api.listProjects(),
     ])
     status.value = st
     stats.value = ss
@@ -32,6 +34,7 @@ async function loadAll() {
     routable.value = rout.entries
     sessions.value = ses.sessions
     reviewEntries.value = rev.entries
+    projects.value = proj
     error.value = ''
   } catch (e: any) {
     if (shuttingDown.value) return
@@ -179,6 +182,28 @@ onUnmounted(() => {
       <!-- Error banner -->
       <div v-if="error" class="bg-red-900/30 border border-red-800 rounded-lg px-4 py-3 text-sm text-red-300">
         {{ error }}
+      </div>
+
+      <!-- Section: Projects -->
+      <div v-if="projects.length > 0">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-medium text-gray-500 uppercase tracking-wider">Projects</h2>
+          <RouterLink to="/projects" class="text-xs text-sky-400 hover:text-sky-300 transition-colors">View all &rarr;</RouterLink>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <RouterLink
+            v-for="project in projects.filter(p => p.status === 'active').slice(0, 6)"
+            :key="project.id"
+            :to="`/projects/${project.id}`"
+            class="bg-gray-900 border border-gray-800 rounded-lg px-3 py-2.5 hover:border-gray-700 transition-colors block"
+          >
+            <div class="flex items-center gap-1.5 mb-0.5">
+              <span v-if="project.emoji" class="text-sm">{{ project.emoji }}</span>
+              <span class="font-medium text-sm text-gray-200 truncate">{{ project.name }}</span>
+            </div>
+            <div class="text-xs text-gray-500">{{ project.entry_count || 0 }} entries</div>
+          </RouterLink>
+        </div>
       </div>
 
       <!-- Section 2: Active Work -->

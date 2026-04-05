@@ -4,6 +4,20 @@ import (
 	"time"
 )
 
+// Project groups related entries under a named goal/workstream.
+type Project struct {
+	ID          int       `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	Status      string    `json:"status"` // active, paused, archived
+	Emoji       string    `json:"emoji,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+
+	// Computed (not stored)
+	EntryCount int `json:"entry_count,omitempty"`
+}
+
 // Entry is a classified thought stored in SQLite with optional vector embedding.
 type Entry struct {
 	// Identity
@@ -13,6 +27,9 @@ type Entry struct {
 	Created  time.Time `json:"created_at" yaml:"created"`
 	Updated  time.Time `json:"updated_at" yaml:"updated"`
 	Tags     []string  `json:"tags,omitempty" yaml:"tags,omitempty"`
+
+	// Project association
+	ProjectID *int `json:"project_id,omitempty" yaml:"project_id,omitempty"`
 
 	// Classification
 	Confidence  float64 `json:"confidence" yaml:"confidence"`

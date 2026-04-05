@@ -50,7 +50,10 @@ func (d *DB) migrate() error {
 	if err := d.migrateOriginalBody(); err != nil {
 		return err
 	}
-	return d.migrateMaturity()
+	if err := d.migrateMaturity(); err != nil {
+		return err
+	}
+	return d.migrateProjects()
 }
 
 const schema = `
@@ -472,6 +475,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	var tokensUsed sql.NullInt64
 	var originalBody sql.NullString
 	var maturity, maturityUpdated, scratchPath, scenarios, maturityNotes sql.NullString
+	var projectID sql.NullInt64
 
 	err := d.db.QueryRow(`
 		SELECT id, title, category, body, confidence, needs_review, source,
@@ -482,7 +486,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 			mood, gratitude,
 			agent_route, route_status, agent_output, tokens_used,
 			original_body,
-			maturity, maturity_updated_at, scratch_path, scenarios, maturity_notes
+			maturity, maturity_updated_at, scratch_path, scenarios, maturity_notes,
+			project_id
 		FROM entries WHERE id = ?`, id).Scan(
 		&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
 		&createdStr, &updatedStr,
@@ -493,6 +498,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		&agentRoute, &routeStatus, &agentOutput, &tokensUsed,
 		&originalBody,
 		&maturity, &maturityUpdated, &scratchPath, &scenarios, &maturityNotes,
+		&projectID,
 	)
 	if err != nil {
 		return nil, err
@@ -523,6 +529,10 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	e.ScratchPath = scratchPath.String
 	e.Scenarios = scenarios.String
 	e.MaturityNotes = maturityNotes.String
+	if projectID.Valid {
+		v := int(projectID.Int64)
+		e.ProjectID = &v
+	}
 
 	// Load tags
 	rows, err := d.db.Query(`SELECT tag FROM tags WHERE entry_id = ?`, id)
@@ -583,14 +593,14 @@ func (d *DB) UpdateEntry(e *Entry) error {
 			person_name = ?, person_context = ?, follow_ups = ?,
 			status = ?, next_action = ?, one_liner = ?,
 			due_date = ?, action_done = ?, scripture_refs = ?, insight = ?,
-			mood = ?, gratitude = ?
+			mood = ?, gratitude = ?, project_id = ?
 		WHERE id = ?`,
 		e.Title, e.Category, e.Body, e.Confidence,
 		boolToInt(e.NeedsReview), e.Source, e.Updated.UTC().Format(time.RFC3339),
 		nullStr(e.Name), nullStr(e.Context), nullStr(e.FollowUps),
 		nullStr(e.Status), nullStr(e.NextAction), nullStr(e.OneLiner),
 		nullStr(e.DueDate), boolToInt(e.ActionDone), nullStr(e.References), nullStr(e.Insight),
-		nullStr(e.Mood), nullStr(e.Gratitude),
+		nullStr(e.Mood), nullStr(e.Gratitude), e.ProjectID,
 		e.ID,
 	)
 	if err != nil {
@@ -1054,4 +1064,187 @@ func (d *DB) ReorderSubTasks(entryID string, ids []string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// --- Projects ---
+
+// migrateProjects creates the projects table and adds project_id to entries.
+func (d *DB) migrateProjects() error {
+	// Create projects table if not exists
+	_, err := d.db.Exec(`
+		CREATE TABLE IF NOT EXISTS projects (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT NOT NULL UNIQUE,
+			description TEXT,
+			status      TEXT NOT NULL DEFAULT 'active',
+			emoji       TEXT,
+			created_at  TEXT NOT NULL,
+			updated_at  TEXT NOT NULL
+		)`)
+	if err != nil {
+		return fmt.Errorf("creating projects table: %w", err)
+	}
+
+	// Add project_id column to entries if not exists
+	cols, err := d.columnNames("entries")
+	if err != nil {
+		return err
+	}
+	if !cols["project_id"] {
+		_, err = d.db.Exec("ALTER TABLE entries ADD COLUMN project_id INTEGER REFERENCES projects(id)")
+		if err != nil {
+			return fmt.Errorf("adding project_id to entries: %w", err)
+		}
+		d.db.Exec("CREATE INDEX IF NOT EXISTS idx_entries_project ON entries(project_id)")
+	}
+	return nil
+}
+
+// CreateProject inserts a new project and returns its ID.
+func (d *DB) CreateProject(p *Project) (int, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := d.db.Exec(`
+		INSERT INTO projects (name, description, status, emoji, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), now, now,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("creating project: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	return int(id), nil
+}
+
+// GetProject retrieves a project by ID.
+func (d *DB) GetProject(id int) (*Project, error) {
+	p := &Project{}
+	var createdStr, updatedStr string
+	var desc, emoji sql.NullString
+	err := d.db.QueryRow(`
+		SELECT id, name, description, status, emoji, created_at, updated_at
+		FROM projects WHERE id = ?`, id).Scan(
+		&p.ID, &p.Name, &desc, &p.Status, &emoji, &createdStr, &updatedStr,
+	)
+	if err != nil {
+		return nil, err
+	}
+	p.Description = desc.String
+	p.Emoji = emoji.String
+	p.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+	p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
+	return p, nil
+}
+
+// ListProjects returns all projects with entry counts, ordered by status then name.
+func (d *DB) ListProjects() ([]*Project, error) {
+	rows, err := d.db.Query(`
+		SELECT p.id, p.name, p.description, p.status, p.emoji, p.created_at, p.updated_at,
+			COUNT(e.id) AS entry_count
+		FROM projects p
+		LEFT JOIN entries e ON e.project_id = p.id
+		GROUP BY p.id
+		ORDER BY
+			CASE p.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END,
+			p.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var projects []*Project
+	for rows.Next() {
+		p := &Project{}
+		var createdStr, updatedStr string
+		var desc, emoji sql.NullString
+		if err := rows.Scan(&p.ID, &p.Name, &desc, &p.Status, &emoji, &createdStr, &updatedStr, &p.EntryCount); err != nil {
+			return nil, err
+		}
+		p.Description = desc.String
+		p.Emoji = emoji.String
+		p.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
+		projects = append(projects, p)
+	}
+	return projects, nil
+}
+
+// UpdateProject updates a project's mutable fields.
+func (d *DB) UpdateProject(p *Project) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := d.db.Exec(`
+		UPDATE projects SET name = ?, description = ?, status = ?, emoji = ?, updated_at = ?
+		WHERE id = ?`,
+		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), now, p.ID,
+	)
+	return err
+}
+
+// DeleteProject removes a project. Entries linked to it get project_id set to NULL.
+func (d *DB) DeleteProject(id int) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Unlink entries
+	if _, err := tx.Exec("UPDATE entries SET project_id = NULL WHERE project_id = ?", id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM projects WHERE id = ?", id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SetEntryProject assigns an entry to a project (or removes assignment with nil).
+func (d *DB) SetEntryProject(entryID string, projectID *int) error {
+	_, err := d.db.Exec(
+		"UPDATE entries SET project_id = ?, updated_at = ? WHERE id = ?",
+		projectID, time.Now().UTC().Format(time.RFC3339), entryID,
+	)
+	return err
+}
+
+// ListEntriesByProject returns entries for a given project, newest first.
+func (d *DB) ListEntriesByProject(projectID int) ([]*Entry, error) {
+	rows, err := d.db.Query(`
+		SELECT id, title, category, body, confidence, needs_review, source, created_at, updated_at,
+			agent_route, route_status, maturity, project_id
+		FROM entries WHERE project_id = ? ORDER BY created_at DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []*Entry
+	for rows.Next() {
+		e := &Entry{}
+		var needsReview int
+		var createdStr, updatedStr string
+		var agentRoute, routeStatus, maturity sql.NullString
+		var pid sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
+			&createdStr, &updatedStr, &agentRoute, &routeStatus, &maturity, &pid); err != nil {
+			return nil, err
+		}
+		e.NeedsReview = needsReview != 0
+		e.Created, _ = time.Parse(time.RFC3339, createdStr)
+		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
+		e.AgentRoute = agentRoute.String
+		e.RouteStatus = routeStatus.String
+		e.Maturity = maturity.String
+		if e.Maturity == "" {
+			e.Maturity = "raw"
+		}
+		if pid.Valid {
+			v := int(pid.Int64)
+			e.ProjectID = &v
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
 }
