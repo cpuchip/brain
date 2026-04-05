@@ -47,6 +47,14 @@ export interface Project {
   updated_at: string
 }
 
+export interface SessionMessage {
+  id: number
+  entry_id: string
+  role: 'human' | 'agent'
+  content: string
+  created_at: string
+}
+
 export interface Stats {
   categories: Record<string, number>
   total: number
@@ -125,7 +133,7 @@ export const api = {
     })
   },
 
-  updateEntry(id: string, updates: Partial<Pick<Entry, 'title' | 'category' | 'body' | 'tags' | 'status' | 'action_done' | 'due_date'>>) {
+  updateEntry(id: string, updates: Partial<Pick<Entry, 'title' | 'category' | 'body' | 'tags' | 'status' | 'action_done' | 'due_date' | 'project_id'>>) {
     return request<Entry>(`/entries/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(updates),
@@ -271,5 +279,27 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ project_id: projectId }),
     })
+  },
+
+  // Session messages (iterative turns)
+  listMessages(entryId: string) {
+    return request<SessionMessage[]>(`/entries/${encodeURIComponent(entryId)}/messages`)
+  },
+
+  reply(entryId: string, content: string) {
+    return request<{ id: number; entry_id: string; role: string }>(`/entries/${encodeURIComponent(entryId)}/reply`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    })
+  },
+
+  markComplete(entryId: string) {
+    return request<{ entry_id: string; status: string }>(`/entries/${encodeURIComponent(entryId)}/complete`, {
+      method: 'POST',
+    })
+  },
+
+  yourTurn() {
+    return request<{ entries: { id: string; title: string; category: string; agent_route: string; body: string; updated_at: string }[] }>('/entries/your-turn')
   },
 }

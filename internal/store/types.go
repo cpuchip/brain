@@ -96,6 +96,15 @@ type SubTask struct {
 	Updated   time.Time `json:"updated_at"`
 }
 
+// SessionMessage records one turn in an iterative agent conversation.
+type SessionMessage struct {
+	ID        int       `json:"id"`
+	EntryID   string    `json:"entry_id"`
+	Role      string    `json:"role"` // "human" or "agent"
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // AuditRecord logs what the brain did with a capture.
 type AuditRecord struct {
 	Timestamp   time.Time `json:"timestamp" yaml:"timestamp"`

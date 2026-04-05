@@ -53,7 +53,10 @@ func (d *DB) migrate() error {
 	if err := d.migrateMaturity(); err != nil {
 		return err
 	}
-	return d.migrateProjects()
+	if err := d.migrateProjects(); err != nil {
+		return err
+	}
+	return d.migrateSessionMessages()
 }
 
 const schema = `
@@ -666,8 +669,8 @@ func (d *DB) Reclassify(id, newCategory string) error {
 // ListCategory returns entries in a given category, newest first.
 func (d *DB) ListCategory(category string) ([]*Entry, error) {
 	rows, err := d.db.Query(`
-		SELECT id, title, category, confidence, needs_review, source, created_at, updated_at,
-			agent_route, route_status
+		SELECT id, title, category, body, confidence, needs_review, source, created_at, updated_at,
+			agent_route, route_status, project_id
 		FROM entries WHERE category = ? ORDER BY created_at DESC`, category)
 	if err != nil {
 		return nil, err
@@ -680,8 +683,9 @@ func (d *DB) ListCategory(category string) ([]*Entry, error) {
 		var needsReview int
 		var createdStr, updatedStr string
 		var agentRoute, routeStatus sql.NullString
-		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr,
-			&agentRoute, &routeStatus); err != nil {
+		var projectID sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr,
+			&agentRoute, &routeStatus, &projectID); err != nil {
 			return nil, err
 		}
 		e.NeedsReview = needsReview != 0
@@ -689,6 +693,10 @@ func (d *DB) ListCategory(category string) ([]*Entry, error) {
 		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
 		e.AgentRoute = agentRoute.String
 		e.RouteStatus = routeStatus.String
+		if projectID.Valid {
+			v := int(projectID.Int64)
+			e.ProjectID = &v
+		}
 		entries = append(entries, e)
 	}
 	return entries, nil
@@ -697,7 +705,7 @@ func (d *DB) ListCategory(category string) ([]*Entry, error) {
 // ListAll returns all entries, newest first.
 func (d *DB) ListAll(limit, offset int) ([]*Entry, error) {
 	rows, err := d.db.Query(`
-		SELECT id, title, category, confidence, needs_review, source, created_at, updated_at
+		SELECT id, title, category, body, confidence, needs_review, source, created_at, updated_at, project_id
 		FROM entries ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
@@ -709,12 +717,17 @@ func (d *DB) ListAll(limit, offset int) ([]*Entry, error) {
 		e := &Entry{}
 		var needsReview int
 		var createdStr, updatedStr string
-		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr); err != nil {
+		var projectID sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr, &projectID); err != nil {
 			return nil, err
 		}
 		e.NeedsReview = needsReview != 0
 		e.Created, _ = time.Parse(time.RFC3339, createdStr)
 		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
+		if projectID.Valid {
+			v := int(projectID.Int64)
+			e.ProjectID = &v
+		}
 		entries = append(entries, e)
 	}
 	return entries, nil
@@ -766,7 +779,7 @@ func (d *DB) ListAllForSync() ([]*Entry, error) {
 // NeedsReviewEntries returns entries flagged for review.
 func (d *DB) NeedsReviewEntries() ([]*Entry, error) {
 	rows, err := d.db.Query(`
-		SELECT id, title, category, confidence, needs_review, source, created_at, updated_at
+		SELECT id, title, category, body, confidence, needs_review, source, created_at, updated_at, project_id
 		FROM entries WHERE needs_review = 1 ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -778,12 +791,17 @@ func (d *DB) NeedsReviewEntries() ([]*Entry, error) {
 		e := &Entry{}
 		var needsReview int
 		var createdStr, updatedStr string
-		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr); err != nil {
+		var projectID sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr, &projectID); err != nil {
 			return nil, err
 		}
 		e.NeedsReview = needsReview != 0
 		e.Created, _ = time.Parse(time.RFC3339, createdStr)
 		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
+		if projectID.Valid {
+			v := int(projectID.Int64)
+			e.ProjectID = &v
+		}
 		entries = append(entries, e)
 	}
 	return entries, nil
@@ -1247,4 +1265,61 @@ func (d *DB) ListEntriesByProject(projectID int) ([]*Entry, error) {
 		entries = append(entries, e)
 	}
 	return entries, nil
+}
+
+// --- Session Messages (Phase 2: Iterative Sessions) ---
+
+func (d *DB) migrateSessionMessages() error {
+	_, err := d.db.Exec(`
+		CREATE TABLE IF NOT EXISTS session_messages (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			entry_id   TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+			role       TEXT NOT NULL,
+			content    TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`)
+	if err != nil {
+		return fmt.Errorf("creating session_messages table: %w", err)
+	}
+	d.db.Exec("CREATE INDEX IF NOT EXISTS idx_session_messages_entry ON session_messages(entry_id)")
+	return nil
+}
+
+// AddSessionMessage records a turn in an entry's conversation.
+func (d *DB) AddSessionMessage(entryID, role, content string) (int, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := d.db.Exec(`
+		INSERT INTO session_messages (entry_id, role, content, created_at)
+		VALUES (?, ?, ?, ?)`, entryID, role, content, now)
+	if err != nil {
+		return 0, fmt.Errorf("adding session message: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	return int(id), nil
+}
+
+// ListSessionMessages returns all messages for an entry, oldest first.
+func (d *DB) ListSessionMessages(entryID string) ([]*SessionMessage, error) {
+	rows, err := d.db.Query(`
+		SELECT id, entry_id, role, content, created_at
+		FROM session_messages WHERE entry_id = ? ORDER BY created_at ASC`, entryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []*SessionMessage
+	for rows.Next() {
+		m := &SessionMessage{}
+		var createdStr string
+		if err := rows.Scan(&m.ID, &m.EntryID, &m.Role, &m.Content, &createdStr); err != nil {
+			return nil, err
+		}
+		m.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+		msgs = append(msgs, m)
+	}
+	return msgs, nil
 }

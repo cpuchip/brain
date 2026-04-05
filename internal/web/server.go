@@ -123,6 +123,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/projects/{id}/entries", s.cors(s.handleProjectEntries))
 	s.mux.HandleFunc("PUT /api/entries/{id}/project", s.cors(s.handleSetEntryProject))
 
+	// Session messages (iterative turns)
+	s.mux.HandleFunc("GET /api/entries/{id}/messages", s.cors(s.handleListMessages))
+	s.mux.HandleFunc("POST /api/entries/{id}/reply", s.cors(s.handleReply))
+	s.mux.HandleFunc("POST /api/entries/{id}/complete", s.cors(s.handleMarkComplete))
+	s.mux.HandleFunc("GET /api/entries/your-turn", s.cors(s.handleYourTurn))
+
 	// Dashboard operations
 	s.mux.HandleFunc("POST /api/entries/{id}/dismiss-route", s.cors(s.handleDismissRoute))
 	s.mux.HandleFunc("POST /api/shutdown", s.cors(s.handleShutdown))
@@ -1460,4 +1466,93 @@ func (s *Server) handleSetEntryProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]any{"entry_id": entryID, "project_id": req.ProjectID})
+}
+
+// --- Session Messages (Iterative Turns) ---
+
+func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+	msgs, err := s.store.DB().ListSessionMessages(entryID)
+	if err != nil {
+		jsonError(w, "listing messages", err, http.StatusInternalServerError)
+		return
+	}
+	if msgs == nil {
+		msgs = []*store.SessionMessage{}
+	}
+	jsonResponse(w, msgs)
+}
+
+func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+	if req.Content == "" {
+		jsonError(w, "content is required", nil, http.StatusBadRequest)
+		return
+	}
+
+	id, err := s.store.DB().AddSessionMessage(entryID, "human", req.Content)
+	if err != nil {
+		jsonError(w, "adding reply", err, http.StatusInternalServerError)
+		return
+	}
+
+	// Set status to your_turn — the human has responded, awaiting next action
+	if err := s.store.DB().UpdateRouteStatus(entryID, "your_turn"); err != nil {
+		jsonError(w, "updating route status", err, http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, map[string]any{"id": id, "entry_id": entryID, "role": "human"})
+}
+
+func (s *Server) handleMarkComplete(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+
+	if err := s.store.DB().UpdateRouteStatus(entryID, "complete"); err != nil {
+		jsonError(w, "marking complete", err, http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]any{"entry_id": entryID, "status": "complete"})
+}
+
+func (s *Server) handleYourTurn(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.store.ListByRouteStatus(ai.RouteStatusYourTurn)
+	if err != nil {
+		jsonError(w, "listing your-turn entries", err, http.StatusInternalServerError)
+		return
+	}
+
+	type turnEntry struct {
+		ID         string `json:"id"`
+		Title      string `json:"title"`
+		Category   string `json:"category"`
+		AgentRoute string `json:"agent_route"`
+		Body       string `json:"body"`
+		UpdatedAt  string `json:"updated_at"`
+	}
+
+	result := make([]turnEntry, 0, len(entries))
+	for _, e := range entries {
+		bodyPreview := e.Body
+		if len(bodyPreview) > 200 {
+			bodyPreview = bodyPreview[:200]
+		}
+		result = append(result, turnEntry{
+			ID:         e.ID,
+			Title:      e.Title,
+			Category:   e.Category,
+			AgentRoute: e.AgentRoute,
+			Body:       bodyPreview,
+			UpdatedAt:  e.Updated.Format(time.RFC3339),
+		})
+	}
+	jsonResponse(w, map[string]any{"entries": result})
 }

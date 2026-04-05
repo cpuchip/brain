@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, type Entry, type Stats } from '../api'
+import { api, type Entry, type Stats, type Project } from '../api'
 
 const route = useRoute()
 const router = useRouter()
 const entries = ref<Entry[]>([])
 const stats = ref<Stats | null>(null)
+const projects = ref<Project[]>([])
 const loading = ref(true)
 const activeCategory = ref('')
 
@@ -36,7 +37,9 @@ watch(activeCategory, loadEntries)
 
 onMounted(async () => {
   activeCategory.value = (route.query.category as string) || ''
-  stats.value = await api.stats()
+  const [s, p] = await Promise.all([api.stats(), api.listProjects()])
+  stats.value = s
+  projects.value = p
   await loadEntries()
 })
 </script>
@@ -100,8 +103,12 @@ onMounted(async () => {
             <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-sky-400">{{ entry.category }}</span>
           </div>
         </div>
-        <div class="text-sm text-gray-500 truncate">{{ entry.body }}</div>
+        <div class="text-sm text-gray-500 line-clamp-2">{{ entry.body?.slice(0, 200) }}</div>
         <div class="flex items-center gap-2 mt-1">
+          <span
+            v-if="entry.project_id"
+            class="text-xs px-1.5 py-0.5 rounded-full bg-indigo-900 text-indigo-300"
+          >{{ projects.find(p => p.id === entry.project_id)?.emoji }} {{ projects.find(p => p.id === entry.project_id)?.name }}</span>
           <span v-if="entry.due_date" class="text-xs text-amber-400">📅 {{ entry.due_date }}</span>
           <span
             v-for="tag in (entry.tags || []).slice(0, 5)"

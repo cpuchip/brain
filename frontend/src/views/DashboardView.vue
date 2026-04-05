@@ -5,6 +5,7 @@ import { api, type BrainStatus, type RoutableEntry, type RunningEntry, type Revi
 const status = ref<BrainStatus | null>(null)
 const stats = ref<Stats | null>(null)
 const projects = ref<Project[]>([])
+const yourTurnEntries = ref<{ id: string; title: string; category: string; agent_route: string; body: string; updated_at: string }[]>([])
 const sessions = ref<string[]>([])
 const running = ref<RunningEntry[]>([])
 const routable = ref<RoutableEntry[]>([])
@@ -19,7 +20,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function loadAll() {
   try {
-    const [st, ss, run, rout, ses, rev, proj] = await Promise.all([
+    const [st, ss, run, rout, ses, rev, proj, yt] = await Promise.all([
       api.brainStatus(),
       api.stats(),
       api.agentRunning(),
@@ -27,6 +28,7 @@ async function loadAll() {
       api.agentSessions(),
       api.reviewQueue(),
       api.listProjects(),
+      api.yourTurn(),
     ])
     status.value = st
     stats.value = ss
@@ -35,6 +37,7 @@ async function loadAll() {
     sessions.value = ses.sessions
     reviewEntries.value = rev.entries
     projects.value = proj
+    yourTurnEntries.value = yt.entries
     error.value = ''
   } catch (e: any) {
     if (shuttingDown.value) return
@@ -202,6 +205,31 @@ onUnmounted(() => {
               <span class="font-medium text-sm text-gray-200 truncate">{{ project.name }}</span>
             </div>
             <div class="text-xs text-gray-500">{{ project.entry_count || 0 }} entries</div>
+          </RouterLink>
+        </div>
+      </div>
+
+      <!-- Section: Your Turn -->
+      <div v-if="yourTurnEntries.length > 0">
+        <h2 class="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">
+          Your Turn
+          <span class="text-amber-400 ml-1">({{ yourTurnEntries.length }})</span>
+        </h2>
+        <div class="space-y-2">
+          <RouterLink
+            v-for="entry in yourTurnEntries"
+            :key="entry.id"
+            :to="`/entries/${entry.id}`"
+            class="block bg-gray-900 border border-amber-900/50 rounded-lg px-4 py-3 hover:border-amber-700 transition-colors"
+          >
+            <div class="flex items-center justify-between mb-1">
+              <span class="font-medium text-sm text-gray-200 truncate mr-4">{{ entry.title }}</span>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-sky-400">{{ entry.category }}</span>
+                <span class="text-xs px-2 py-0.5 rounded-full bg-amber-900 text-amber-300">Your Turn</span>
+              </div>
+            </div>
+            <div v-if="entry.body" class="text-sm text-gray-500 line-clamp-2">{{ entry.body }}</div>
           </RouterLink>
         </div>
       </div>

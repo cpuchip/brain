@@ -40,6 +40,7 @@ const (
 	RouteStatusDismissed = "dismissed"
 	RouteStatusAccepted  = "accepted"
 	RouteStatusRejected  = "rejected"
+	RouteStatusYourTurn  = "your_turn"
 )
 
 // DefaultRoutes maps classifier categories to agents.

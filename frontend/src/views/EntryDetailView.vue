@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, type Entry, type SubTask } from '../api'
+import { api, type Entry, type SubTask, type Project, type SessionMessage } from '../api'
 
 const route = useRoute()
 const router = useRouter()
 const entry = ref<Entry | null>(null)
+const projects = ref<Project[]>([])
+const messages = ref<SessionMessage[]>([])
 const loading = ref(true)
 const editing = ref(false)
 const saving = ref(false)
@@ -19,6 +21,7 @@ const editForm = ref({
   tags: '',
   status: '',
   due_date: '',
+  project_id: null as number | null,
 })
 
 const categories = ['people', 'projects', 'ideas', 'actions', 'study', 'journal', 'inbox']
@@ -44,7 +47,14 @@ function showToast(msg: string) {
 async function load() {
   loading.value = true
   try {
-    entry.value = await api.getEntry(route.params.id as string)
+    const [e, p, m] = await Promise.all([
+      api.getEntry(route.params.id as string),
+      api.listProjects(),
+      api.listMessages(route.params.id as string),
+    ])
+    entry.value = e
+    projects.value = p
+    messages.value = m
   } finally {
     loading.value = false
   }
@@ -59,6 +69,7 @@ function startEdit() {
     tags: (entry.value.tags || []).join(', '),
     status: entry.value.status || '',
     due_date: entry.value.due_date || '',
+    project_id: entry.value.project_id ?? null,
   }
   editing.value = true
 }
@@ -77,6 +88,7 @@ async function save() {
       tags,
       status: editForm.value.status || undefined,
       due_date: editForm.value.due_date || undefined,
+      project_id: editForm.value.project_id,
     })
     editing.value = false
     showToast('Saved')
@@ -170,6 +182,38 @@ async function deleteSubTask(st: SubTask) {
   }
 }
 
+// Session messages / iterative turns
+const replyText = ref('')
+const replying = ref(false)
+
+const hasConversation = computed(() => messages.value.length > 0)
+
+async function sendReply() {
+  if (!entry.value || !replyText.value.trim() || replying.value) return
+  replying.value = true
+  try {
+    await api.reply(entry.value.id, replyText.value.trim())
+    replyText.value = ''
+    showToast('Reply sent')
+    await load()
+  } catch {
+    showToast('Failed to send reply')
+  } finally {
+    replying.value = false
+  }
+}
+
+async function markComplete() {
+  if (!entry.value) return
+  try {
+    await api.markComplete(entry.value.id)
+    showToast('Marked complete')
+    await load()
+  } catch {
+    showToast('Failed to mark complete')
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -210,6 +254,11 @@ onMounted(load)
           <div class="flex items-center gap-2 mt-1 text-sm text-gray-500 flex-wrap">
             <span class="px-2 py-0.5 rounded-full bg-gray-800 text-sky-400 text-xs">{{ entry.category }}</span>
             <span v-if="entry.status" class="px-2 py-0.5 rounded-full bg-gray-800 text-amber-400 text-xs">{{ entry.status }}</span>
+            <RouterLink
+              v-if="entry.project_id"
+              :to="`/projects/${entry.project_id}`"
+              class="px-2 py-0.5 rounded-full bg-indigo-900 text-indigo-300 text-xs hover:bg-indigo-800 transition-colors"
+            >{{ projects.find(p => p.id === entry!.project_id)?.emoji }} {{ projects.find(p => p.id === entry!.project_id)?.name || 'Project' }}</RouterLink>
             <span v-if="entry.due_date" class="text-xs">📅 {{ entry.due_date }}</span>
             <span>{{ new Date(entry.created_at).toLocaleString() }}</span>
             <span>· {{ entry.source }}</span>
@@ -312,6 +361,74 @@ onMounted(load)
             </button>
           </div>
         </div>
+
+        <!-- Agent conversation / session messages -->
+        <div v-if="hasConversation || entry.agent_output" class="mt-6">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wider">Conversation</h3>
+            <div v-if="entry.route_status && entry.route_status !== 'complete'" class="flex gap-2">
+              <span
+                :class="[
+                  'px-2 py-0.5 text-xs rounded-full font-medium',
+                  entry.route_status === 'your_turn' ? 'bg-amber-900 text-amber-300' :
+                  entry.route_status === 'running' ? 'bg-blue-900 text-blue-300 animate-pulse' :
+                  'bg-gray-800 text-gray-400'
+                ]"
+              >{{ entry.route_status === 'your_turn' ? 'Your Turn' : entry.route_status === 'running' ? 'Agent Working' : entry.route_status }}</span>
+              <button
+                v-if="entry.route_status !== 'complete'"
+                @click="markComplete"
+                class="px-2 py-0.5 text-xs text-green-400 border border-green-800 rounded-full hover:bg-green-900 transition-colors"
+              >✓ Complete</button>
+            </div>
+          </div>
+
+          <!-- Legacy agent output (if no messages yet) -->
+          <div v-if="entry.agent_output && messages.length === 0" class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-sm whitespace-pre-wrap text-gray-300">
+            {{ entry.agent_output }}
+          </div>
+
+          <!-- Message thread -->
+          <div v-if="messages.length > 0" class="space-y-3">
+            <div
+              v-for="msg in messages"
+              :key="msg.id"
+              :class="[
+                'rounded-lg px-4 py-3 text-sm',
+                msg.role === 'human'
+                  ? 'bg-sky-950 border border-sky-900 ml-8'
+                  : 'bg-gray-900 border border-gray-800 mr-8'
+              ]"
+            >
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-xs font-medium" :class="msg.role === 'human' ? 'text-sky-400' : 'text-purple-400'">
+                  {{ msg.role === 'human' ? 'You' : 'Agent' }}
+                </span>
+                <span class="text-xs text-gray-600">{{ new Date(msg.created_at).toLocaleString() }}</span>
+              </div>
+              <div class="whitespace-pre-wrap text-gray-300">{{ msg.content }}</div>
+            </div>
+          </div>
+
+          <!-- Reply input -->
+          <div v-if="entry.route_status && entry.route_status !== 'complete'" class="mt-3">
+            <div class="flex gap-2">
+              <textarea
+                v-model="replyText"
+                @keydown.ctrl.enter="sendReply"
+                placeholder="Reply with feedback..."
+                rows="2"
+                class="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
+              />
+              <button
+                @click="sendReply"
+                :disabled="!replyText.trim() || replying"
+                class="px-4 py-2 text-sm bg-sky-600 text-white rounded-lg hover:bg-sky-500 disabled:opacity-40 self-end"
+              >Reply</button>
+            </div>
+            <p class="text-xs text-gray-600 mt-1">Ctrl+Enter to send</p>
+          </div>
+        </div>
       </div>
 
       <!-- Edit mode -->
@@ -349,6 +466,16 @@ onMounted(load)
               class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-sky-500"
             />
           </div>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">Project</label>
+          <select
+            v-model="editForm.project_id"
+            class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-sky-500"
+          >
+            <option :value="null">No project</option>
+            <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.emoji ? p.emoji + ' ' : '' }}{{ p.name }}</option>
+          </select>
         </div>
         <div>
           <label class="block text-xs text-gray-500 mb-1">Body</label>
