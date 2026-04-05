@@ -1230,6 +1230,51 @@ func (d *DB) SetEntryProject(entryID string, projectID *int) error {
 	return err
 }
 
+// ProjectStats holds per-maturity-stage counts for a project.
+type ProjectStats struct {
+	MaturityCounts map[string]int `json:"maturity_counts"` // e.g. {"raw": 5, "researched": 2}
+	YourTurnCount  int            `json:"your_turn_count"`
+	RunningCount   int            `json:"running_count"`
+	TotalEntries   int            `json:"total_entries"`
+}
+
+// GetProjectStats returns aggregate stats for a project.
+func (d *DB) GetProjectStats(projectID int) (*ProjectStats, error) {
+	stats := &ProjectStats{MaturityCounts: make(map[string]int)}
+
+	// Maturity counts
+	rows, err := d.db.Query(`
+		SELECT COALESCE(maturity, 'raw') AS m, COUNT(*) AS c
+		FROM entries WHERE project_id = ?
+		GROUP BY m`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m string
+		var c int
+		if err := rows.Scan(&m, &c); err != nil {
+			return nil, err
+		}
+		if m == "" {
+			m = "raw"
+		}
+		stats.MaturityCounts[m] = c
+		stats.TotalEntries += c
+	}
+
+	// Your-turn count
+	d.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE project_id = ? AND route_status = 'your_turn'`,
+		projectID).Scan(&stats.YourTurnCount)
+
+	// Running count
+	d.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE project_id = ? AND route_status = 'running'`,
+		projectID).Scan(&stats.RunningCount)
+
+	return stats, nil
+}
+
 // ListEntriesByProject returns entries for a given project, newest first.
 func (d *DB) ListEntriesByProject(projectID int) ([]*Entry, error) {
 	rows, err := d.db.Query(`

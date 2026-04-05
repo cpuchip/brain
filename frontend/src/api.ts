@@ -325,6 +325,10 @@ export const api = {
     return request<Entry[]>(`/projects/${id}/entries`)
   },
 
+  projectStats(id: number) {
+    return request<{ maturity_counts: Record<string, number>; your_turn_count: number; running_count: number; total_entries: number }>(`/projects/${id}/stats`)
+  },
+
   setEntryProject(entryId: string, projectId: number | null) {
     return request<{ entry_id: string; project_id: number | null }>(`/entries/${encodeURIComponent(entryId)}/project`, {
       method: 'PUT',
@@ -406,5 +410,17 @@ export const api = {
   activity(limit?: number) {
     const params = limit ? `?limit=${limit}` : ''
     return request<ActivityEvent[]>(`/activity${params}`)
+  },
+
+  // Pipeline maturity
+  pipelineAdvance(entryId: string, action: 'advance' | 'revise' | 'reject' | 'defer', feedback?: string, scenarios?: string[]) {
+    return request<{ id: string; old_maturity: string; new_maturity: string; scratch_path?: string; message: string }>('/pipeline/advance', {
+      method: 'POST',
+      body: JSON.stringify({ id: entryId, action, feedback, scenarios }),
+    })
+  },
+
+  pipelineReview(entryId: string) {
+    return request<{ id: string; title: string; category: string; body: string; maturity: string; maturity_notes: string; scratch_path: string; scenarios: string; tags: string[] }>(`/pipeline/review/${encodeURIComponent(entryId)}`)
   },
 }

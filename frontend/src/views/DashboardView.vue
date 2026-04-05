@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { api, type BrainStatus, type RoutableEntry, type RunningEntry, type ReviewEntry, type Stats, type Project, type ActivityEvent } from '../api'
 
 const status = ref<BrainStatus | null>(null)
 const stats = ref<Stats | null>(null)
 const projects = ref<Project[]>([])
+const projectStats = ref<Record<number, { maturity_counts: Record<string, number>; your_turn_count: number; running_count: number; total_entries: number }>>({})
 const yourTurnEntries = ref<{ id: string; title: string; category: string; agent_route: string; body: string; updated_at: string }[]>([])
 const sessions = ref<string[]>([])
 const running = ref<RunningEntry[]>([])
@@ -16,6 +17,24 @@ const error = ref('')
 const shuttingDown = ref(false)
 const showShutdownConfirm = ref(false)
 const actionInProgress = ref<string | null>(null)
+
+const maturityStages = ['raw', 'researched', 'planned', 'specced', 'executing', 'verified'] as const
+
+function maturityBarColor(stage: string) {
+  switch (stage) {
+    case 'raw': return 'bg-gray-600'
+    case 'researched': return 'bg-blue-700'
+    case 'planned': return 'bg-purple-700'
+    case 'specced': return 'bg-indigo-600'
+    case 'executing': return 'bg-amber-600'
+    case 'verified': return 'bg-green-600'
+    default: return 'bg-gray-700'
+  }
+}
+
+const totalYourTurn = computed(() => {
+  return Object.values(projectStats.value).reduce((sum, s) => sum + s.your_turn_count, 0)
+})
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -42,6 +61,17 @@ async function loadAll() {
     yourTurnEntries.value = yt.entries
     activityEvents.value = act
     error.value = ''
+
+    // Fetch stats for active projects (in parallel, non-blocking)
+    const activeProjects = proj.filter(p => p.status === 'active').slice(0, 6)
+    const statsResults = await Promise.all(
+      activeProjects.map(p => api.projectStats(p.id).then(s => ({ id: p.id, stats: s })).catch(() => null))
+    )
+    const newStats: typeof projectStats.value = {}
+    for (const r of statsResults) {
+      if (r) newStats[r.id] = r.stats
+    }
+    projectStats.value = newStats
   } catch (e: any) {
     if (shuttingDown.value) return
     error.value = e.message || 'Failed to connect'
@@ -193,7 +223,10 @@ onUnmounted(() => {
       <!-- Section: Projects -->
       <div v-if="projects.length > 0">
         <div class="flex items-center justify-between mb-3">
-          <h2 class="text-sm font-medium text-gray-500 uppercase tracking-wider">Projects</h2>
+          <h2 class="text-sm font-medium text-gray-500 uppercase tracking-wider">
+            Projects
+            <span v-if="totalYourTurn > 0" class="text-amber-400 ml-1">({{ totalYourTurn }} blocked on you)</span>
+          </h2>
           <RouterLink to="/projects" class="text-xs text-sky-400 hover:text-sky-300 transition-colors">View all &rarr;</RouterLink>
         </div>
         <div class="grid grid-cols-2 gap-2">
@@ -206,8 +239,28 @@ onUnmounted(() => {
             <div class="flex items-center gap-1.5 mb-0.5">
               <span v-if="project.emoji" class="text-sm">{{ project.emoji }}</span>
               <span class="font-medium text-sm text-gray-200 truncate">{{ project.name }}</span>
+              <!-- Your-turn badge -->
+              <span
+                v-if="projectStats[project.id]?.your_turn_count"
+                class="ml-auto px-1.5 py-0.5 text-xs rounded-full bg-amber-900 text-amber-300 shrink-0"
+                title="Blocked on you"
+              >🔔 {{ projectStats[project.id]?.your_turn_count }}</span>
             </div>
-            <div class="text-xs text-gray-500">{{ project.entry_count || 0 }} entries</div>
+            <div class="text-xs text-gray-500 mb-1.5">{{ project.entry_count || 0 }} entries</div>
+            <!-- Stage distribution bar -->
+            <div
+              v-if="projectStats[project.id]?.total_entries"
+              class="flex h-1.5 rounded-full overflow-hidden bg-gray-800"
+              :title="maturityStages.filter(s => projectStats[project.id]?.maturity_counts[s]).map(s => `${s}: ${projectStats[project.id]?.maturity_counts[s]}`).join(', ')"
+            >
+              <div
+                v-for="stage in maturityStages"
+                :key="stage"
+                v-show="projectStats[project.id]?.maturity_counts[stage]"
+                :class="maturityBarColor(stage)"
+                :style="{ width: ((projectStats[project.id]?.maturity_counts[stage] || 0) / (projectStats[project.id]?.total_entries || 1) * 100) + '%' }"
+              />
+            </div>
           </RouterLink>
         </div>
       </div>

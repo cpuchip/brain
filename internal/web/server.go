@@ -124,6 +124,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/projects/{id}", s.cors(s.handleUpdateProject))
 	s.mux.HandleFunc("DELETE /api/projects/{id}", s.cors(s.handleDeleteProject))
 	s.mux.HandleFunc("GET /api/projects/{id}/entries", s.cors(s.handleProjectEntries))
+	s.mux.HandleFunc("GET /api/projects/{id}/stats", s.cors(s.handleProjectStats))
 	s.mux.HandleFunc("PUT /api/entries/{id}/project", s.cors(s.handleSetEntryProject))
 
 	// Session messages (iterative turns)
@@ -1497,6 +1498,20 @@ func (s *Server) handleProjectEntries(w http.ResponseWriter, r *http.Request) {
 		entries = []*store.Entry{}
 	}
 	jsonResponse(w, entries)
+}
+
+func (s *Server) handleProjectStats(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "invalid project id", err, http.StatusBadRequest)
+		return
+	}
+	stats, err := s.store.DB().GetProjectStats(id)
+	if err != nil {
+		jsonError(w, "getting project stats", err, http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, stats)
 }
 
 func (s *Server) handleSetEntryProject(w http.ResponseWriter, r *http.Request) {
