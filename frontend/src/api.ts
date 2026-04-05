@@ -109,6 +109,7 @@ export interface MemoryFile {
 export interface Stats {
   categories: Record<string, number>
   total: number
+  unassigned_count: number
   vec_count: number
   vec_enabled: boolean
 }
@@ -163,12 +164,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  listEntries(params?: { category?: string; limit?: number; offset?: number; needs_review?: boolean }) {
+  listEntries(params?: { category?: string; limit?: number; offset?: number; needs_review?: boolean; unassigned?: boolean }) {
     const q = new URLSearchParams()
     if (params?.category) q.set('category', params.category)
     if (params?.limit) q.set('limit', String(params.limit))
     if (params?.offset) q.set('offset', String(params.offset))
     if (params?.needs_review) q.set('needs_review', 'true')
+    if (params?.unassigned) q.set('unassigned', 'true')
     const qs = q.toString()
     return request<Entry[]>(`/entries${qs ? '?' + qs : ''}`)
   },

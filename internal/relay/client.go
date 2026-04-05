@@ -315,7 +315,7 @@ func (c *Client) handleThought(ctx context.Context, ws *websocket.Conn, data []b
 	defer cancel()
 
 	// Classify
-	result, err := c.classify.Classify(classifyCtx, thought.Text)
+	result, err := c.classify.Classify(classifyCtx, thought.Text, c.loadProjectContext())
 	if err != nil {
 		log.Printf("[relay] classification error: %v", err)
 		result = &classifier.Result{
@@ -765,7 +765,7 @@ func (c *Client) autoClassifyEntry(ws *websocket.Conn, id string, entry *store.E
 	const maxRetries = 3
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		result, err = c.classify.Classify(ctx, text)
+		result, err = c.classify.Classify(ctx, text, c.loadProjectContext())
 		cancel()
 		if err == nil {
 			break
@@ -820,6 +820,11 @@ func (c *Client) autoClassifyEntry(ws *websocket.Conn, id string, entry *store.E
 		updated.NextAction = result.Fields.NextAction
 	}
 
+	// Auto-assign project if classifier suggested one and entry has no project yet
+	if result.ProjectID != nil && updated.ProjectID == nil {
+		updated.ProjectID = result.ProjectID
+	}
+
 	if err := c.store.DB().UpdateEntry(updated); err != nil {
 		log.Printf("[relay] auto-classify update failed for %s: %v", currentID, err)
 		return
@@ -859,6 +864,22 @@ func (c *Client) autoClassifyEntry(ws *websocket.Conn, id string, entry *store.E
 			}
 		}
 	}
+}
+
+// loadProjectContext returns active projects as classifier.ProjectContext for auto-assignment.
+func (c *Client) loadProjectContext() []classifier.ProjectContext {
+	projects, err := c.store.DB().ListProjects()
+	if err != nil {
+		log.Printf("[relay] loadProjectContext: %v", err)
+		return nil
+	}
+	var ctx []classifier.ProjectContext
+	for _, p := range projects {
+		if p.Status == "active" {
+			ctx = append(ctx, classifier.ProjectContext{ID: p.ID, Name: p.Name, Description: p.Description})
+		}
+	}
+	return ctx
 }
 
 // sendEntryCreated sends an entry_created message to the hub with the full entry data.

@@ -1159,6 +1159,47 @@ func (d *DB) GetProject(id int) (*Project, error) {
 	return p, nil
 }
 
+// ListUnassigned returns entries with no project assignment, ordered by newest first.
+func (d *DB) ListUnassigned(limit int) ([]*Entry, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := d.db.Query(`
+		SELECT id, title, category, body, confidence, needs_review, source, created_at, updated_at, project_id
+		FROM entries WHERE project_id IS NULL ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []*Entry
+	for rows.Next() {
+		e := &Entry{}
+		var needsReview int
+		var createdStr, updatedStr string
+		var projectID sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr, &projectID); err != nil {
+			return nil, err
+		}
+		e.NeedsReview = needsReview != 0
+		e.Created, _ = time.Parse(time.RFC3339, createdStr)
+		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
+		if projectID.Valid {
+			v := int(projectID.Int64)
+			e.ProjectID = &v
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+// CountUnassigned returns the number of entries with no project assignment.
+func (d *DB) CountUnassigned() int {
+	var count int
+	d.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE project_id IS NULL`).Scan(&count)
+	return count
+}
+
 // ListProjects returns all projects with entry counts, ordered by status then name.
 func (d *DB) ListProjects() ([]*Project, error) {
 	rows, err := d.db.Query(`

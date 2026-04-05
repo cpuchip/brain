@@ -99,6 +99,13 @@ func (s *Store) Save(result *classifier.Result, rawText string, needsReview bool
 	}
 	entry.ID = id
 
+	// Auto-assign project if classifier suggested one
+	if result.ProjectID != nil {
+		if err := s.db.SetEntryProject(id, result.ProjectID); err != nil {
+			log.Printf("warning: project auto-assignment failed for %s: %v", id, err)
+		}
+	}
+
 	// Assess maturity for pipeline categories (ideas, projects, study)
 	maturity := classifier.AssessMaturity(result)
 	if maturity != "" {

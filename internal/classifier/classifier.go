@@ -10,6 +10,14 @@ import (
 	"github.com/cpuchip/brain/internal/ai"
 )
 
+// ProjectContext provides project info to the classifier for auto-assignment.
+// Defined here (not in store) to avoid circular imports.
+type ProjectContext struct {
+	ID          int
+	Name        string
+	Description string
+}
+
 // Result is the structured output from classification.
 type Result struct {
 	Category   string   `json:"category"`            // people, projects, ideas, actions, study, journal
@@ -18,6 +26,7 @@ type Result struct {
 	Fields     Fields   `json:"fields"`              // Category-specific extracted fields
 	Tags       []string `json:"tags"`                // Auto-generated tags
 	SubItems   []string `json:"sub_items,omitempty"` // extracted list items for subtask creation
+	ProjectID  *int     `json:"project_id"`          // Suggested project assignment (nil = no match)
 }
 
 // Fields holds the category-specific extracted data.
@@ -103,17 +112,19 @@ func ClassificationSchema() map[string]any {
 							"notes":       map[string]any{"type": "string"},
 						},
 					},
-					"tags":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"sub_items": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"tags":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"sub_items":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"project_id": map[string]any{"type": []string{"integer", "null"}},
 				},
-				"required": []string{"category", "confidence", "title", "fields", "tags", "sub_items"},
+				"required": []string{"category", "confidence", "title", "fields", "tags", "sub_items", "project_id"},
 			},
 		},
 	}
 }
 
 // Classify takes raw text and returns a classification result.
-func (c *Classifier) Classify(ctx context.Context, rawText string) (*Result, error) {
+// If projects is non-empty, the classifier will suggest a project_id.
+func (c *Classifier) Classify(ctx context.Context, rawText string, projects []ProjectContext) (*Result, error) {
 	// Select prompt and temperature from the active model's profile
 	prompt := systemPrompt
 	temp := 0.1
@@ -128,6 +139,11 @@ func (c *Classifier) Classify(ctx context.Context, rawText string) (*Result, err
 		}
 		noThink = p.NoThink
 		structuredOutput = p.StructuredOutput
+	}
+
+	// Append project context for auto-assignment
+	if len(projects) > 0 {
+		prompt += "\n\n" + buildProjectPrompt(projects)
 	}
 
 	// Disable thinking tokens for classification — thinking models waste
@@ -363,7 +379,8 @@ JSON SCHEMA (return exactly this structure, nothing else):
     "notes": "string or omit"
   },
   "tags": ["string"],
-  "sub_items": ["REQUIRED for any list input — one string per item"]
+  "sub_items": ["REQUIRED for any list input — one string per item"],
+  "project_id": null or integer ID from the PROJECT ASSIGNMENT list (null if no project fits)
 }`
 
 // WrapEntryText wraps raw entry text in structural delimiters to defend against
@@ -373,4 +390,21 @@ func WrapEntryText(rawText string) string {
 	return "Classify the following captured text.\n\n" +
 		"---BEGIN ENTRY---\n" + rawText + "\n---END ENTRY---\n\n" +
 		"Return only the JSON classification."
+}
+
+// buildProjectPrompt creates the prompt section for project auto-assignment.
+func buildProjectPrompt(projects []ProjectContext) string {
+	var sb strings.Builder
+	sb.WriteString("PROJECT ASSIGNMENT:\n")
+	sb.WriteString("Assign this entry to the best-matching project below, or set project_id to null if none fit.\n")
+	sb.WriteString("Only assign when the entry clearly belongs to a project. When in doubt, use null.\n\n")
+	for _, p := range projects {
+		sb.WriteString(fmt.Sprintf("  %d: %s", p.ID, p.Name))
+		if p.Description != "" {
+			sb.WriteString(fmt.Sprintf(" — %s", p.Description))
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\nSet \"project_id\" to the integer ID of the best match, or null if none fit.")
+	return sb.String()
 }

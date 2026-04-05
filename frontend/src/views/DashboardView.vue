@@ -227,7 +227,14 @@ onUnmounted(() => {
             Projects
             <span v-if="totalYourTurn > 0" class="text-amber-400 ml-1">({{ totalYourTurn }} blocked on you)</span>
           </h2>
-          <RouterLink to="/projects" class="text-xs text-sky-400 hover:text-sky-300 transition-colors">View all &rarr;</RouterLink>
+          <div class="flex items-center gap-3">
+            <RouterLink
+              v-if="stats?.unassigned_count"
+              to="/entries?category=unassigned"
+              class="text-xs px-2 py-1 rounded-full bg-indigo-900 text-indigo-300 hover:bg-indigo-800 transition-colors"
+            >📂 {{ stats.unassigned_count }} unassigned</RouterLink>
+            <RouterLink to="/projects" class="text-xs text-sky-400 hover:text-sky-300 transition-colors">View all &rarr;</RouterLink>
+          </div>
         </div>
         <div class="grid grid-cols-2 gap-2">
           <RouterLink

@@ -178,8 +178,18 @@ func (b *Bot) handleCapture(s *discordgo.Session, m *discordgo.MessageCreate, ra
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Load active projects for auto-assignment
+	var projCtx []classifier.ProjectContext
+	if projects, err := b.store.DB().ListProjects(); err == nil {
+		for _, p := range projects {
+			if p.Status == "active" {
+				projCtx = append(projCtx, classifier.ProjectContext{ID: p.ID, Name: p.Name, Description: p.Description})
+			}
+		}
+	}
+
 	// Classify
-	result, err := b.classify.Classify(ctx, rawText)
+	result, err := b.classify.Classify(ctx, rawText, projCtx)
 	if err != nil {
 		log.Printf("classification error: %v", err)
 		s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Classification failed: %v\nSaved to inbox for manual review.", err))

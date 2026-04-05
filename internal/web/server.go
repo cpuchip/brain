@@ -187,6 +187,8 @@ func (s *Server) handleListEntries(w http.ResponseWriter, r *http.Request) {
 		entries, err = s.store.DB().ListCategory(category)
 	} else if r.URL.Query().Get("needs_review") == "true" {
 		entries, err = s.store.DB().NeedsReviewEntries()
+	} else if r.URL.Query().Get("unassigned") == "true" {
+		entries, err = s.store.DB().ListUnassigned(limit)
 	} else {
 		entries, err = s.store.DB().ListAll(limit, offset)
 	}
@@ -417,7 +419,16 @@ func (s *Server) handleClassify(w http.ResponseWriter, r *http.Request) {
 	classifyCtx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
 
-	result, err := s.classify.Classify(classifyCtx, text)
+	// Load active projects for auto-assignment
+	projects, _ := s.store.DB().ListProjects()
+	var projCtx []classifier.ProjectContext
+	for _, p := range projects {
+		if p.Status == "active" {
+			projCtx = append(projCtx, classifier.ProjectContext{ID: p.ID, Name: p.Name, Description: p.Description})
+		}
+	}
+
+	result, err := s.classify.Classify(classifyCtx, text, projCtx)
 	if err != nil {
 		jsonError(w, "classification failed", err, http.StatusInternalServerError)
 		return
@@ -459,6 +470,11 @@ func (s *Server) handleClassify(w http.ResponseWriter, r *http.Request) {
 	}
 	if result.Fields.Notes != "" && entry.Body == "" {
 		entry.Body = result.Fields.Notes
+	}
+
+	// Auto-assign project if classifier suggested one and entry has no project yet
+	if result.ProjectID != nil && entry.ProjectID == nil {
+		entry.ProjectID = result.ProjectID
 	}
 
 	if err := s.store.DB().UpdateEntry(entry); err != nil {
@@ -609,10 +625,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, map[string]interface{}{
-		"categories":  stats,
-		"total":       total,
-		"vec_count":   vecCount,
-		"vec_enabled": s.store.Vec() != nil && s.store.Vec().Enabled(),
+		"categories":       stats,
+		"total":            total,
+		"unassigned_count": s.store.DB().CountUnassigned(),
+		"vec_count":        vecCount,
+		"vec_enabled":      s.store.Vec() != nil && s.store.Vec().Enabled(),
 	})
 }
 

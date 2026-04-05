@@ -16,9 +16,11 @@ const categories = ['people', 'projects', 'ideas', 'actions', 'study', 'journal'
 async function loadEntries() {
   loading.value = true
   try {
-    const params: { category?: string; needs_review?: boolean } = {}
+    const params: { category?: string; needs_review?: boolean; unassigned?: boolean } = {}
     if (activeCategory.value === 'review') {
       params.needs_review = true
+    } else if (activeCategory.value === 'unassigned') {
+      params.unassigned = true
     } else if (activeCategory.value) {
       params.category = activeCategory.value
     }
@@ -73,6 +75,14 @@ onMounted(async () => {
         :class="activeCategory === 'review' ? 'bg-amber-500 text-gray-950 border-amber-500 font-semibold' : 'border-gray-700 text-amber-400 hover:border-amber-500'"
       >
         ⚠ Review
+      </button>
+      <button
+        @click="setCategory('unassigned')"
+        class="px-3 py-1.5 rounded-lg text-sm border transition-colors"
+        :class="activeCategory === 'unassigned' ? 'bg-indigo-500 text-gray-950 border-indigo-500 font-semibold' : 'border-gray-700 text-indigo-400 hover:border-indigo-500'"
+      >
+        📂 Unassigned
+        <span v-if="stats?.unassigned_count" class="ml-1 text-xs opacity-70">({{ stats.unassigned_count }})</span>
       </button>
     </div>
 
