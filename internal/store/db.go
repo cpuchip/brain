@@ -926,6 +926,62 @@ func (d *DB) SetScenarios(entryID, scenariosJSON string) error {
 // PipelineCategories are the categories that enter the maturity pipeline.
 var PipelineCategories = []string{"ideas", "projects", "study"}
 
+// ListStaleEntries returns pipeline entries that are stale and have NOT already
+// been nudged (route_status != 'your_turn'). Each cutoff is the absolute time:
+// entries with maturity_updated_at (or created_at) before that time are considered stale.
+func (d *DB) ListStaleEntries(rawCutoff, researchedCutoff, completeCutoff time.Time) ([]*Entry, error) {
+	rawCut := rawCutoff.Format(time.RFC3339)
+	resCut := researchedCutoff.Format(time.RFC3339)
+	compCut := completeCutoff.Format(time.RFC3339)
+
+	rows, err := d.db.Query(`
+		SELECT id, title, category, body, confidence, needs_review, source,
+		       created_at, updated_at, project_id,
+		       maturity, maturity_updated_at, scratch_path, agent_route, route_status
+		FROM entries
+		WHERE category IN ('ideas', 'projects', 'study')
+		  AND COALESCE(route_status, '') NOT IN ('your_turn', 'running', 'pending')
+		  AND (
+		    (COALESCE(maturity, 'raw') = 'raw' AND COALESCE(maturity_updated_at, created_at) < ?)
+		    OR (maturity = 'researched' AND maturity_updated_at < ?)
+		    OR (route_status = 'complete' AND updated_at < ?)
+		  )
+		ORDER BY created_at ASC
+		LIMIT 10`, rawCut, resCut, compCut)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []*Entry
+	for rows.Next() {
+		e := &Entry{}
+		var needsReview int
+		var createdStr, updatedStr string
+		var projectID sql.NullInt64
+		var maturity, maturityUpdated, scratchPath, agentRoute, routeStatus sql.NullString
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
+			&createdStr, &updatedStr, &projectID,
+			&maturity, &maturityUpdated, &scratchPath, &agentRoute, &routeStatus); err != nil {
+			return nil, err
+		}
+		e.NeedsReview = needsReview != 0
+		e.Created, _ = time.Parse(time.RFC3339, createdStr)
+		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
+		if projectID.Valid {
+			v := int(projectID.Int64)
+			e.ProjectID = &v
+		}
+		e.Maturity = maturity.String
+		e.MaturityUpdated = maturityUpdated.String
+		e.ScratchPath = scratchPath.String
+		e.AgentRoute = agentRoute.String
+		e.RouteStatus = routeStatus.String
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
 // ListPipeline returns entries in pipeline categories grouped by maturity stage.
 // Returns a map of maturity stage -> entries, with entries ordered by updated_at desc.
 func (d *DB) ListPipeline(stageFilter, categoryFilter string, limitPerStage int) (map[string][]*Entry, error) {

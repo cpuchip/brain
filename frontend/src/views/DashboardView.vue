@@ -289,7 +289,11 @@ onUnmounted(() => {
               <span class="font-medium text-sm text-gray-200 truncate mr-4">{{ entry.title }}</span>
               <div class="flex items-center gap-1.5 shrink-0">
                 <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-sky-400">{{ entry.category }}</span>
-                <span class="text-xs px-2 py-0.5 rounded-full bg-amber-900 text-amber-300">Your Turn</span>
+                <span
+                  v-if="entry.agent_route === 'review'"
+                  class="text-xs px-2 py-0.5 rounded-full bg-purple-900 text-purple-300"
+                >🤖 Review</span>
+                <span v-else class="text-xs px-2 py-0.5 rounded-full bg-amber-900 text-amber-300">Your Turn</span>
               </div>
             </div>
             <div v-if="entry.body" class="text-sm text-gray-500 line-clamp-2">{{ entry.body }}</div>

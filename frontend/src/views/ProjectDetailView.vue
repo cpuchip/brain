@@ -94,7 +94,11 @@ function maturityBorderColor(stage: string) {
 
 function routeStatusIndicator(entry: Entry) {
   switch (entry.route_status) {
-    case 'your_turn': return { class: 'border-l-amber-400', badge: 'bg-amber-900 text-amber-300', label: 'Your Turn', icon: '🔔' }
+    case 'your_turn':
+      if (entry.agent_route === 'review') {
+        return { class: 'border-l-purple-400', badge: 'bg-purple-900 text-purple-300', label: 'Review', icon: '🤖' }
+      }
+      return { class: 'border-l-amber-400', badge: 'bg-amber-900 text-amber-300', label: 'Your Turn', icon: '🔔' }
     case 'running': return { class: 'border-l-blue-400', badge: 'bg-blue-900 text-blue-300', label: 'Running', icon: '⚡' }
     case 'complete': return { class: 'border-l-green-400', badge: 'bg-green-900 text-green-300', label: 'Complete', icon: '✓' }
     case 'suggested': return { class: 'border-l-gray-600', badge: 'bg-gray-800 text-gray-400', label: 'Suggested', icon: '→' }

@@ -34,6 +34,8 @@ type Pipeline struct {
 	wc        config.WorkspaceConfig
 	codeDir   string // brain code dir (scripts/brain)
 	workspace string // parent workspace root (scripture-study)
+	ctx       context.Context
+	cancel    context.CancelFunc
 }
 
 // New creates a pipeline controller.
@@ -43,6 +45,7 @@ func New(st *store.Store, pool *ai.AgentPool, cfg *config.Config, wc config.Work
 		scriptsDir := filepath.Dir(cfg.BrainCodeDir)
 		workspace = filepath.Dir(scriptsDir)
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Pipeline{
 		store:     st,
 		pool:      pool,
@@ -50,7 +53,14 @@ func New(st *store.Store, pool *ai.AgentPool, cfg *config.Config, wc config.Work
 		wc:        wc,
 		codeDir:   cfg.BrainCodeDir,
 		workspace: workspace,
+		ctx:       ctx,
+		cancel:    cancel,
 	}
+}
+
+// Stop cancels the pipeline's background goroutines (e.g., review loop).
+func (p *Pipeline) Stop() {
+	p.cancel()
 }
 
 // AdvanceAction is what to do with a pipeline entry.

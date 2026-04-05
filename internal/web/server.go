@@ -48,6 +48,7 @@ func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, p
 	}
 	if pool != nil {
 		s.pipeline = pipeline.New(st, pool, cfg, wc)
+		s.pipeline.StartReviewLoop(pipeline.DefaultReviewConfig())
 	}
 	s.routes()
 	return s
@@ -67,6 +68,9 @@ func (s *Server) ListenAndServe(addr string) error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.pipeline != nil {
+		s.pipeline.Stop()
+	}
 	if s.srv != nil {
 		return s.srv.Shutdown(ctx)
 	}
@@ -1591,7 +1595,76 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-advance: if replying to a review-nudged pipeline entry with substance,
+	// trigger the next pipeline stage asynchronously
+	if s.pipeline != nil {
+		go s.tryReplyAutoAdvance(entryID, req.Content)
+	}
+
 	jsonResponse(w, map[string]any{"id": id, "entry_id": entryID, "role": "human"})
+}
+
+// tryReplyAutoAdvance checks if a reply to a review-nudged entry should trigger
+// an automatic pipeline advance (research pass for raw, plan pass for researched).
+func (s *Server) tryReplyAutoAdvance(entryID, replyContent string) {
+	entry, err := s.store.DB().GetEntry(entryID)
+	if err != nil {
+		return
+	}
+
+	// Only auto-advance entries that were pushed back by the review agent
+	if entry.AgentRoute != "review" {
+		return
+	}
+
+	// Only pipeline categories qualify
+	if !classifier.PipelineCategories[entry.Category] {
+		return
+	}
+
+	// Need substantive reply (>50 chars) to justify burning a premium request
+	if len(strings.TrimSpace(replyContent)) < 50 {
+		return
+	}
+
+	maturity := entry.Maturity
+	if maturity == "" {
+		maturity = "raw"
+	}
+
+	var action pipeline.AdvanceAction
+	switch maturity {
+	case "raw":
+		action = pipeline.ActionAdvance // raw → researched
+	case "researched":
+		action = pipeline.ActionAdvance // researched → planned
+	default:
+		return // planned/specced don't auto-advance from reply
+	}
+
+	log.Printf("Reply auto-advance: triggering %s for entry %s (%s, %s maturity)",
+		action, entryID, entry.Title, maturity)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	result, err := s.pipeline.Advance(ctx, pipeline.AdvanceRequest{
+		EntryID:  entryID,
+		Action:   action,
+		Feedback: replyContent,
+	})
+	if err != nil {
+		log.Printf("Reply auto-advance failed for %s: %v", entryID, err)
+		// Post failure as session message so the user sees what happened
+		s.store.DB().AddSessionMessage(entryID, "agent",
+			fmt.Sprintf("Auto-advance failed: %v. You can advance manually from the pipeline controls.", err))
+		return
+	}
+
+	// Post success message
+	s.store.DB().AddSessionMessage(entryID, "agent",
+		fmt.Sprintf("Auto-advanced: %s → %s. %s", result.OldMaturity, result.NewMaturity, result.Message))
+	log.Printf("Reply auto-advance: %s advanced %s → %s", entryID, result.OldMaturity, result.NewMaturity)
 }
 
 func (s *Server) handleMarkComplete(w http.ResponseWriter, r *http.Request) {

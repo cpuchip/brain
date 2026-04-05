@@ -370,11 +370,12 @@ onMounted(load)
               <span
                 :class="[
                   'px-2 py-0.5 text-xs rounded-full font-medium',
+                  entry.route_status === 'your_turn' && entry.agent_route === 'review' ? 'bg-purple-900 text-purple-300' :
                   entry.route_status === 'your_turn' ? 'bg-amber-900 text-amber-300' :
                   entry.route_status === 'running' ? 'bg-blue-900 text-blue-300 animate-pulse' :
                   'bg-gray-800 text-gray-400'
                 ]"
-              >{{ entry.route_status === 'your_turn' ? 'Your Turn' : entry.route_status === 'running' ? 'Agent Working' : entry.route_status }}</span>
+              >{{ entry.route_status === 'your_turn' && entry.agent_route === 'review' ? '🤖 Review' : entry.route_status === 'your_turn' ? 'Your Turn' : entry.route_status === 'running' ? 'Agent Working' : entry.route_status }}</span>
               <button
                 v-if="entry.route_status !== 'complete'"
                 @click="markComplete"
