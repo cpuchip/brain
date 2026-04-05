@@ -36,6 +36,14 @@ const totalYourTurn = computed(() => {
   return Object.values(projectStats.value).reduce((sum, s) => sum + s.your_turn_count, 0)
 })
 
+const readyToExecute = computed(() => {
+  return Object.values(projectStats.value).reduce((sum, s) => sum + (s.maturity_counts['specced'] || 0), 0)
+})
+
+const awaitingVerification = computed(() => {
+  return Object.values(projectStats.value).reduce((sum, s) => sum + (s.maturity_counts['executing'] || 0), 0)
+})
+
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function loadAll() {
@@ -227,12 +235,20 @@ onUnmounted(() => {
             Projects
             <span v-if="totalYourTurn > 0" class="text-amber-400 ml-1">({{ totalYourTurn }} blocked on you)</span>
           </h2>
-          <div class="flex items-center gap-3">
+          <div class="flex items-center gap-3 flex-wrap">
             <RouterLink
               v-if="stats?.unassigned_count"
               to="/entries?category=unassigned"
               class="text-xs px-2 py-1 rounded-full bg-indigo-900 text-indigo-300 hover:bg-indigo-800 transition-colors"
             >📂 {{ stats.unassigned_count }} unassigned</RouterLink>
+            <span
+              v-if="readyToExecute"
+              class="text-xs px-2 py-1 rounded-full bg-green-900 text-green-300"
+            >▶ {{ readyToExecute }} ready to execute</span>
+            <span
+              v-if="awaitingVerification"
+              class="text-xs px-2 py-1 rounded-full bg-amber-900 text-amber-300"
+            >✓ {{ awaitingVerification }} awaiting verification</span>
             <RouterLink to="/projects" class="text-xs text-sky-400 hover:text-sky-300 transition-colors">View all &rarr;</RouterLink>
           </div>
         </div>

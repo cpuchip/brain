@@ -25,6 +25,17 @@ const feedbackEntryId = ref('')
 const feedbackAction = ref<'revise' | 'defer'>('revise')
 const feedbackText = ref('')
 
+// Execution gate state (Phase 4e)
+const executeDialog = ref(false)
+const executeEntryId = ref('')
+const executionContext = ref<{ scenarios: string[]; model: string; cost: number; prompt: string } | null>(null)
+const executeFeedback = ref('')
+const executingEntry = ref<string | null>(null)
+const verifyDialog = ref(false)
+const verifyEntryId = ref('')
+const verifyScenarios = ref<{ scenario: string; passed: boolean; notes: string }[]>([])
+const verifySubmitting = ref(false)
+
 const editForm = ref({ name: '', description: '', emoji: '', status: '', context_file: '' })
 
 const maturityStages = ['raw', 'researched', 'planned', 'specced', 'executing', 'verified'] as const
@@ -124,6 +135,14 @@ function canAdvance(entry: Entry): boolean {
 function canRevise(entry: Entry): boolean {
   const m = entry.maturity || 'raw'
   return ['researched', 'planned'].includes(m)
+}
+
+function canExecute(entry: Entry): boolean {
+  return entry.maturity === 'specced'
+}
+
+function canVerify(entry: Entry): boolean {
+  return entry.maturity === 'executing' && entry.route_status === 'your_turn'
 }
 
 watch(viewMode, (v) => localStorage.setItem('project-view-mode', v))
@@ -246,6 +265,67 @@ async function submitFeedback() {
   }
 }
 
+async function openExecuteDialog(entryId: string) {
+  executeEntryId.value = entryId
+  executeFeedback.value = ''
+  executionContext.value = null
+  executeDialog.value = true
+  try {
+    const ctx = await api.executionContext(entryId)
+    executionContext.value = ctx
+  } catch (e: any) {
+    executionContext.value = null
+  }
+}
+
+async function confirmExecute() {
+  if (!executeEntryId.value) return
+  executingEntry.value = executeEntryId.value
+  executeDialog.value = false
+  try {
+    await api.executeEntry(executeEntryId.value, executeFeedback.value || undefined)
+    await load()
+    if (selectedEntry.value?.id === executeEntryId.value) {
+      const updated = entries.value.find(e => e.id === executeEntryId.value)
+      if (updated) selectedEntry.value = updated
+    }
+  } catch (e: any) {
+    alert(e.message || 'Execute failed')
+  } finally {
+    executingEntry.value = null
+  }
+}
+
+async function openVerifyDialog(entryId: string) {
+  verifyEntryId.value = entryId
+  verifySubmitting.value = false
+  try {
+    const ctx = await api.executionContext(entryId)
+    verifyScenarios.value = (ctx.scenarios || []).map(s => ({ scenario: s, passed: false, notes: '' }))
+  } catch {
+    verifyScenarios.value = []
+  }
+  verifyDialog.value = true
+}
+
+async function submitVerification() {
+  if (!verifyEntryId.value || verifyScenarios.value.length === 0) return
+  verifySubmitting.value = true
+  try {
+    await api.verifyEntry(verifyEntryId.value, verifyScenarios.value)
+    verifyDialog.value = false
+    await load()
+    if (selectedEntry.value?.id === verifyEntryId.value) {
+      const updated = entries.value.find(e => e.id === verifyEntryId.value)
+      if (updated) selectedEntry.value = updated
+    }
+  } catch (e: any) {
+    alert(e.message || 'Verification failed')
+  } finally {
+    verifySubmitting.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -365,6 +445,106 @@ onMounted(load)
         </dialog>
       </Teleport>
 
+      <!-- Execute confirmation dialog (Phase 4e) -->
+      <Teleport to="body">
+        <dialog
+          :open="executeDialog"
+          class="fixed inset-0 z-40 flex items-center justify-center bg-transparent"
+          v-if="executeDialog"
+        >
+          <div class="fixed inset-0 bg-black/50" @click="executeDialog = false" />
+          <div class="relative bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-xl max-w-lg mx-auto w-full">
+            <h3 class="font-semibold mb-2 text-green-400">▶ Execute Entry</h3>
+            <div v-if="!executionContext" class="text-sm text-gray-500 py-4">Loading execution context...</div>
+            <template v-else>
+              <div class="space-y-3 mb-4">
+                <div class="flex items-center gap-3 text-sm">
+                  <span class="text-gray-500">Model:</span>
+                  <span class="text-gray-200 font-mono">{{ executionContext.model }}</span>
+                </div>
+                <div class="flex items-center gap-3 text-sm">
+                  <span class="text-gray-500">Cost:</span>
+                  <span class="text-gray-200">{{ executionContext.cost }} premium request{{ executionContext.cost !== 1 ? 's' : '' }}</span>
+                </div>
+                <div class="flex items-center gap-3 text-sm">
+                  <span class="text-gray-500">Scenarios:</span>
+                  <span class="text-gray-200">{{ executionContext.scenarios?.length || 0 }}</span>
+                </div>
+                <div v-if="executionContext.scenarios?.length" class="text-sm">
+                  <div class="text-gray-500 mb-1">Acceptance criteria:</div>
+                  <ul class="list-disc list-inside space-y-1 text-gray-300 text-xs bg-gray-950 rounded-lg px-3 py-2 max-h-40 overflow-y-auto">
+                    <li v-for="(s, i) in executionContext.scenarios" :key="i">{{ s }}</li>
+                  </ul>
+                </div>
+              </div>
+              <textarea
+                v-model="executeFeedback"
+                placeholder="Optional guidance for the agent..."
+                rows="2"
+                class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none mb-4"
+              />
+              <div class="flex justify-end gap-2">
+                <button @click="executeDialog = false" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
+                <button
+                  @click="confirmExecute"
+                  class="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors"
+                >Execute ▶</button>
+              </div>
+            </template>
+          </div>
+        </dialog>
+      </Teleport>
+
+      <!-- Verify dialog (Phase 4e) -->
+      <Teleport to="body">
+        <dialog
+          :open="verifyDialog"
+          class="fixed inset-0 z-40 flex items-center justify-center bg-transparent"
+          v-if="verifyDialog"
+        >
+          <div class="fixed inset-0 bg-black/50" @click="verifyDialog = false" />
+          <div class="relative bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-xl max-w-lg mx-auto w-full">
+            <h3 class="font-semibold mb-2 text-emerald-400">✓ Verify Scenarios</h3>
+            <p class="text-sm text-gray-400 mb-4">Check each scenario that passes. Failed scenarios will return the entry to planned.</p>
+            <div v-if="verifyScenarios.length === 0" class="text-sm text-gray-500 py-4">No scenarios found.</div>
+            <div v-else class="space-y-3 mb-4 max-h-80 overflow-y-auto">
+              <div
+                v-for="(s, i) in verifyScenarios"
+                :key="i"
+                :class="['border rounded-lg px-3 py-2', s.passed ? 'border-green-800 bg-green-950/30' : 'border-gray-700']"
+              >
+                <label class="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    v-model="s.passed"
+                    class="mt-1 accent-green-500"
+                  />
+                  <span class="text-sm text-gray-200">{{ s.scenario }}</span>
+                </label>
+                <input
+                  v-if="!s.passed"
+                  v-model="s.notes"
+                  placeholder="What failed? (optional)"
+                  class="mt-2 w-full bg-gray-950 border border-gray-700 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+              </div>
+            </div>
+            <div class="flex justify-between items-center">
+              <span class="text-xs text-gray-500">{{ verifyScenarios.filter(s => s.passed).length }}/{{ verifyScenarios.length }} passed</span>
+              <div class="flex gap-2">
+                <button @click="verifyDialog = false" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
+                <button
+                  @click="submitVerification"
+                  :disabled="verifySubmitting"
+                  class="px-4 py-2 text-sm rounded-lg transition-colors disabled:opacity-40"
+                  :class="verifyScenarios.every(s => s.passed) ? 'bg-emerald-600 text-white hover:bg-emerald-500' : 'bg-amber-600 text-white hover:bg-amber-500'"
+                >{{ verifyScenarios.every(s => s.passed) ? '✓ All Pass — Verify' : 'Submit (some failed)' }}</button>
+              </div>
+            </div>
+          </div>
+        </dialog>
+      </Teleport>
+
       <!-- Empty state -->
       <div v-if="entries.length === 0" class="text-center py-8">
         <div class="text-gray-600 mb-1">No entries in this project</div>
@@ -411,7 +591,7 @@ onMounted(load)
               </div>
 
               <!-- Pipeline action buttons -->
-              <div v-if="canAdvance(entry) || canRevise(entry)" class="flex gap-1.5 mt-2 pt-2 border-t border-gray-800" @click.stop>
+              <div v-if="canAdvance(entry) || canRevise(entry) || canExecute(entry) || canVerify(entry)" class="flex gap-1.5 mt-2 pt-2 border-t border-gray-800" @click.stop>
                 <button
                   v-if="canAdvance(entry)"
                   @click.stop="advanceEntry(entry.id)"
@@ -431,6 +611,17 @@ onMounted(load)
                   :disabled="advancingEntry === entry.id"
                   class="px-2 py-1 text-xs bg-gray-800 text-gray-400 rounded hover:bg-gray-700 transition-colors disabled:opacity-40"
                 >⏸ Defer</button>
+                <button
+                  v-if="canExecute(entry)"
+                  @click.stop="openExecuteDialog(entry.id)"
+                  :disabled="executingEntry === entry.id"
+                  class="px-2 py-1 text-xs bg-green-900/50 text-green-300 rounded hover:bg-green-800 transition-colors disabled:opacity-40"
+                >▶ Execute</button>
+                <button
+                  v-if="canVerify(entry)"
+                  @click.stop="openVerifyDialog(entry.id)"
+                  class="px-2 py-1 text-xs bg-emerald-900/50 text-emerald-300 rounded hover:bg-emerald-800 transition-colors"
+                >✓ Verify</button>
               </div>
             </div>
 
@@ -480,6 +671,19 @@ onMounted(load)
                   class="px-2 py-1 text-xs bg-sky-900/50 text-sky-300 rounded hover:bg-sky-800 transition-colors disabled:opacity-40"
                   title="Advance to next stage"
                 >▶</button>
+                <button
+                  v-if="canExecute(entry)"
+                  @click="openExecuteDialog(entry.id)"
+                  :disabled="executingEntry === entry.id"
+                  class="px-2 py-1 text-xs bg-green-900/50 text-green-300 rounded hover:bg-green-800 transition-colors disabled:opacity-40"
+                  title="Execute"
+                >▶</button>
+                <button
+                  v-if="canVerify(entry)"
+                  @click="openVerifyDialog(entry.id)"
+                  class="px-2 py-1 text-xs bg-emerald-900/50 text-emerald-300 rounded hover:bg-emerald-800 transition-colors"
+                  title="Verify scenarios"
+                >✓</button>
                 <button
                   v-if="canRevise(entry)"
                   @click="openFeedbackDialog(entry.id, 'revise')"
@@ -542,7 +746,7 @@ onMounted(load)
               <div v-if="selectedEntry.body" class="text-sm text-gray-300 whitespace-pre-wrap">{{ selectedEntry.body }}</div>
 
               <!-- Pipeline actions -->
-              <div v-if="canAdvance(selectedEntry) || canRevise(selectedEntry)" class="flex gap-2 pt-2 border-t border-gray-800">
+              <div v-if="canAdvance(selectedEntry) || canRevise(selectedEntry) || canExecute(selectedEntry) || canVerify(selectedEntry)" class="flex gap-2 pt-2 border-t border-gray-800">
                 <button
                   v-if="canAdvance(selectedEntry)"
                   @click="advanceEntry(selectedEntry!.id)"
@@ -561,6 +765,17 @@ onMounted(load)
                   :disabled="advancingEntry === selectedEntry!.id"
                   class="px-3 py-1.5 text-sm bg-gray-700 text-gray-300 rounded-lg hover:bg-gray-600 transition-colors disabled:opacity-40"
                 >⏸ Defer</button>
+                <button
+                  v-if="canExecute(selectedEntry)"
+                  @click="openExecuteDialog(selectedEntry!.id)"
+                  :disabled="executingEntry === selectedEntry!.id"
+                  class="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors disabled:opacity-40"
+                >▶ Execute</button>
+                <button
+                  v-if="canVerify(selectedEntry)"
+                  @click="openVerifyDialog(selectedEntry!.id)"
+                  class="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-colors"
+                >✓ Verify</button>
               </div>
 
               <!-- Conversation history -->

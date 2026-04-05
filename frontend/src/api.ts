@@ -430,4 +430,23 @@ export const api = {
   pipelineReview(entryId: string) {
     return request<{ id: string; title: string; category: string; body: string; maturity: string; maturity_notes: string; scratch_path: string; scenarios: string; tags: string[] }>(`/pipeline/review/${encodeURIComponent(entryId)}`)
   },
+
+  // Execution gate (Phase 4e)
+  executeEntry(entryId: string, feedback?: string) {
+    return request<{ id: string; message: string }>(`/entries/${encodeURIComponent(entryId)}/execute`, {
+      method: 'POST',
+      body: JSON.stringify({ feedback }),
+    })
+  },
+
+  verifyEntry(entryId: string, results: { scenario: string; passed: boolean; notes?: string }[]) {
+    return request<{ id: string; all_passed: boolean; new_maturity: string; message: string }>(`/entries/${encodeURIComponent(entryId)}/verify`, {
+      method: 'POST',
+      body: JSON.stringify({ results }),
+    })
+  },
+
+  executionContext(entryId: string) {
+    return request<{ entry_id: string; title: string; maturity: string; scenarios: string[]; model: string; cost: number; prompt: string; has_scratch: boolean }>(`/entries/${encodeURIComponent(entryId)}/execution-context`)
+  },
 }

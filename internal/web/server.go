@@ -121,6 +121,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/pipeline/advance", s.cors(s.handlePipelineAdvance))
 	s.mux.HandleFunc("GET /api/pipeline/review/{id}", s.cors(s.handlePipelineReview))
 
+	// Execution gate (Phase 4e)
+	s.mux.HandleFunc("POST /api/entries/{id}/execute", s.cors(s.handleExecute))
+	s.mux.HandleFunc("POST /api/entries/{id}/verify", s.cors(s.handleVerify))
+	s.mux.HandleFunc("GET /api/entries/{id}/execution-context", s.cors(s.handleExecutionContext))
+
 	// Projects
 	s.mux.HandleFunc("GET /api/projects", s.cors(s.handleListProjects))
 	s.mux.HandleFunc("POST /api/projects", s.cors(s.handleCreateProject))
@@ -1720,6 +1725,122 @@ func (s *Server) handleEntryContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, result)
+}
+
+// --- Execution Gate Handlers (Phase 4e) ---
+
+func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+
+	if s.pipeline == nil {
+		jsonError(w, "pipeline not available (no agent pool)", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		Feedback string `json:"feedback,omitempty"`
+	}
+	// Body is optional — allow empty
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	result, err := s.pipeline.Execute(r.Context(), pipeline.ExecuteRequest{
+		EntryID:  entryID,
+		Feedback: req.Feedback,
+	})
+	if err != nil {
+		jsonError(w, "execution failed to start", err, http.StatusBadRequest)
+		return
+	}
+
+	jsonResponse(w, result)
+}
+
+func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+
+	if s.pipeline == nil {
+		jsonError(w, "pipeline not available", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		Results []pipeline.ScenarioResult `json:"results"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request body", err, http.StatusBadRequest)
+		return
+	}
+
+	result, err := s.pipeline.Verify(pipeline.VerifyRequest{
+		EntryID: entryID,
+		Results: req.Results,
+	})
+	if err != nil {
+		jsonError(w, "verification failed", err, http.StatusBadRequest)
+		return
+	}
+
+	jsonResponse(w, result)
+}
+
+func (s *Server) handleExecutionContext(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+
+	entry, err := s.store.DB().GetEntry(entryID)
+	if err != nil {
+		jsonError(w, "entry not found", err, http.StatusNotFound)
+		return
+	}
+
+	if entry.Maturity != "specced" && entry.Maturity != "executing" {
+		jsonError(w, "entry must be specced or executing to preview execution context", nil, http.StatusBadRequest)
+		return
+	}
+
+	prompt := ""
+	if s.pipeline != nil {
+		prompt = s.pipeline.BuildExecutionContext(entry, "")
+	}
+
+	// Parse scenarios into a list for the frontend
+	scenarios := parseScenarios(entry.Scenarios)
+
+	jsonResponse(w, map[string]any{
+		"entry_id":    entryID,
+		"title":       entry.Title,
+		"maturity":    entry.Maturity,
+		"scenarios":   scenarios,
+		"model":       pipeline.ExecuteModel,
+		"cost":        1.0, // Sonnet premium request cost
+		"prompt":      prompt,
+		"has_scratch": entry.ScratchPath != "",
+	})
+}
+
+// parseScenarios splits the scenarios string into individual scenario lines.
+func parseScenarios(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var scenarios []string
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Strip leading bullet/number
+		if strings.HasPrefix(line, "- ") {
+			line = line[2:]
+		} else if strings.HasPrefix(line, "• ") {
+			line = strings.TrimPrefix(line, "• ")
+		} else if len(line) > 2 && line[0] >= '1' && line[0] <= '9' && line[1] == '.' {
+			line = strings.TrimSpace(line[2:])
+		}
+		if line != "" {
+			scenarios = append(scenarios, line)
+		}
+	}
+	return scenarios
 }
 
 func (s *Server) handleYourTurn(w http.ResponseWriter, r *http.Request) {
