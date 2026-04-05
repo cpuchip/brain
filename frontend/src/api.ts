@@ -42,6 +42,7 @@ export interface Project {
   description?: string
   status: string
   emoji?: string
+  context_file?: string
   entry_count?: number
   created_at: string
   updated_at: string
@@ -312,7 +313,7 @@ export const api = {
     return request<Project>(`/projects/${id}`)
   },
 
-  updateProject(id: number, updates: Partial<Pick<Project, 'name' | 'description' | 'status' | 'emoji'>>) {
+  updateProject(id: number, updates: Partial<Pick<Project, 'name' | 'description' | 'status' | 'emoji' | 'context_file'>>) {
     return request<Project>(`/projects/${id}`, {
       method: 'PUT',
       body: JSON.stringify(updates),
@@ -354,6 +355,10 @@ export const api = {
     return request<{ entry_id: string; status: string }>(`/entries/${encodeURIComponent(entryId)}/complete`, {
       method: 'POST',
     })
+  },
+
+  entryContext(entryId: string) {
+    return request<{ entry_id: string; title: string; category: string; maturity: string; project?: { name: string; description: string; siblings: { Title: string; Maturity: string; RouteStatus: string }[]; context_doc: boolean }; formatted?: string }>(`/entries/${encodeURIComponent(entryId)}/context`)
   },
 
   yourTurn() {

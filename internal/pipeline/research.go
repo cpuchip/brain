@@ -252,7 +252,10 @@ func (p *Pipeline) runResearch(ctx context.Context, entry *store.Entry, feedback
 		absPath = filepath.Join(p.workspace, scratchPath)
 	}
 
-	prompt := buildResearchPrompt(entry, body, absPath, feedback)
+	// Build project context if entry belongs to a project
+	projectCtx := FormatProjectContext(p.BuildProjectContext(entry))
+
+	prompt := buildResearchPrompt(entry, body, absPath, feedback, projectCtx)
 
 	// Build system message: governance doc + research instructions
 	systemMsg := "You are a research assistant for the brain pipeline.\n\n"
@@ -417,7 +420,7 @@ func (p *Pipeline) runPlan(ctx context.Context, entry *store.Entry, feedback str
 		body = entry.Title
 	}
 
-	prompt := buildPlanPrompt(entry, body, absPath, existingScratch, feedback)
+	prompt := buildPlanPrompt(entry, body, absPath, existingScratch, feedback, FormatProjectContext(p.BuildProjectContext(entry)))
 
 	// Build system message: governance doc + plan instructions
 	systemMsg := "You are a plan architect for the brain pipeline.\n\n"
@@ -479,7 +482,7 @@ Rules:
 	}, nil
 }
 
-func buildPlanPrompt(entry *store.Entry, body, scratchPath, existingScratch, feedback string) string {
+func buildPlanPrompt(entry *store.Entry, body, scratchPath, existingScratch, feedback, projectCtx string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Create a structured plan for the following brain entry:\n\n")
 	fmt.Fprintf(&sb, "**Title:** %s\n", entry.Title)
@@ -488,6 +491,11 @@ func buildPlanPrompt(entry *store.Entry, body, scratchPath, existingScratch, fee
 
 	if len(entry.Tags) > 0 {
 		fmt.Fprintf(&sb, "**Tags:** %s\n\n", strings.Join(entry.Tags, ", "))
+	}
+
+	if projectCtx != "" {
+		sb.WriteString(projectCtx)
+		sb.WriteString("\n")
 	}
 
 	if existingScratch != "" {
@@ -575,7 +583,7 @@ func (p *Pipeline) generateProposal(entry *store.Entry, scenarios []string) (str
 	return proposalPath, nil
 }
 
-func buildResearchPrompt(entry *store.Entry, body, scratchPath, feedback string) string {
+func buildResearchPrompt(entry *store.Entry, body, scratchPath, feedback, projectCtx string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Research the following captured thought:\n\n")
 	fmt.Fprintf(&sb, "**Title:** %s\n", entry.Title)
@@ -584,6 +592,11 @@ func buildResearchPrompt(entry *store.Entry, body, scratchPath, feedback string)
 
 	if len(entry.Tags) > 0 {
 		fmt.Fprintf(&sb, "**Tags:** %s\n\n", strings.Join(entry.Tags, ", "))
+	}
+
+	if projectCtx != "" {
+		sb.WriteString(projectCtx)
+		sb.WriteString("\n")
 	}
 
 	if feedback != "" {

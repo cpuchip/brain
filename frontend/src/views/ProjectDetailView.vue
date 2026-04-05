@@ -25,7 +25,7 @@ const feedbackEntryId = ref('')
 const feedbackAction = ref<'revise' | 'defer'>('revise')
 const feedbackText = ref('')
 
-const editForm = ref({ name: '', description: '', emoji: '', status: '' })
+const editForm = ref({ name: '', description: '', emoji: '', status: '', context_file: '' })
 
 const maturityStages = ['raw', 'researched', 'planned', 'specced', 'executing', 'verified'] as const
 const stageLabels: Record<string, string> = {
@@ -150,6 +150,7 @@ function startEdit() {
     description: project.value.description || '',
     emoji: project.value.emoji || '',
     status: project.value.status,
+    context_file: project.value.context_file || '',
   }
   editing.value = true
 }
@@ -163,6 +164,7 @@ async function saveEdit() {
       description: editForm.value.description || undefined,
       emoji: editForm.value.emoji || undefined,
       status: editForm.value.status,
+      context_file: editForm.value.context_file || undefined,
     })
     editing.value = false
     await load()
@@ -266,7 +268,10 @@ onMounted(load)
             </span>
           </div>
           <p v-if="project.description" class="text-sm text-gray-400">{{ project.description }}</p>
-          <div class="text-xs text-gray-600 mt-1">{{ entries.length }} entries</div>
+          <div class="flex items-center gap-3 mt-1">
+            <span class="text-xs text-gray-600">{{ entries.length }} entries</span>
+            <span v-if="project.context_file" class="text-xs text-purple-400" title="Agents receive this file as context">📄 {{ project.context_file }}</span>
+          </div>
         </div>
         <div class="flex gap-2 items-center">
           <!-- Board/List toggle -->
@@ -301,6 +306,7 @@ onMounted(load)
           <option value="paused">Paused</option>
           <option value="archived">Archived</option>
         </select>
+        <input v-model="editForm.context_file" placeholder="Context file path (e.g. .spec/context/project.md)" class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 focus:outline-none focus:ring-2 focus:ring-sky-500" />
         <div class="flex justify-end gap-2">
           <button type="button" @click="editing = false" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
           <button type="submit" :disabled="!editForm.name.trim() || saving" class="px-4 py-2 text-sm bg-sky-600 text-white rounded-lg hover:bg-sky-500 disabled:opacity-40">Save</button>

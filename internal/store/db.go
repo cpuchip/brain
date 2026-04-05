@@ -1174,6 +1174,18 @@ func (d *DB) migrateProjects() error {
 		}
 		d.db.Exec("CREATE INDEX IF NOT EXISTS idx_entries_project ON entries(project_id)")
 	}
+
+	// Add context_file column to projects if not exists
+	projCols, err := d.columnNames("projects")
+	if err != nil {
+		return err
+	}
+	if !projCols["context_file"] {
+		_, err = d.db.Exec("ALTER TABLE projects ADD COLUMN context_file TEXT")
+		if err != nil {
+			return fmt.Errorf("adding context_file to projects: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -1181,9 +1193,9 @@ func (d *DB) migrateProjects() error {
 func (d *DB) CreateProject(p *Project) (int, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := d.db.Exec(`
-		INSERT INTO projects (name, description, status, emoji, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
-		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), now, now,
+		INSERT INTO projects (name, description, status, emoji, context_file, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), nullStr(p.ContextFile), now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("creating project: %w", err)
@@ -1199,17 +1211,18 @@ func (d *DB) CreateProject(p *Project) (int, error) {
 func (d *DB) GetProject(id int) (*Project, error) {
 	p := &Project{}
 	var createdStr, updatedStr string
-	var desc, emoji sql.NullString
+	var desc, emoji, contextFile sql.NullString
 	err := d.db.QueryRow(`
-		SELECT id, name, description, status, emoji, created_at, updated_at
+		SELECT id, name, description, status, emoji, context_file, created_at, updated_at
 		FROM projects WHERE id = ?`, id).Scan(
-		&p.ID, &p.Name, &desc, &p.Status, &emoji, &createdStr, &updatedStr,
+		&p.ID, &p.Name, &desc, &p.Status, &emoji, &contextFile, &createdStr, &updatedStr,
 	)
 	if err != nil {
 		return nil, err
 	}
 	p.Description = desc.String
 	p.Emoji = emoji.String
+	p.ContextFile = contextFile.String
 	p.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
 	p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
 	return p, nil
@@ -1259,7 +1272,7 @@ func (d *DB) CountUnassigned() int {
 // ListProjects returns all projects with entry counts, ordered by status then name.
 func (d *DB) ListProjects() ([]*Project, error) {
 	rows, err := d.db.Query(`
-		SELECT p.id, p.name, p.description, p.status, p.emoji, p.created_at, p.updated_at,
+		SELECT p.id, p.name, p.description, p.status, p.emoji, p.context_file, p.created_at, p.updated_at,
 			COUNT(e.id) AS entry_count
 		FROM projects p
 		LEFT JOIN entries e ON e.project_id = p.id
@@ -1276,12 +1289,13 @@ func (d *DB) ListProjects() ([]*Project, error) {
 	for rows.Next() {
 		p := &Project{}
 		var createdStr, updatedStr string
-		var desc, emoji sql.NullString
-		if err := rows.Scan(&p.ID, &p.Name, &desc, &p.Status, &emoji, &createdStr, &updatedStr, &p.EntryCount); err != nil {
+		var desc, emoji, contextFile sql.NullString
+		if err := rows.Scan(&p.ID, &p.Name, &desc, &p.Status, &emoji, &contextFile, &createdStr, &updatedStr, &p.EntryCount); err != nil {
 			return nil, err
 		}
 		p.Description = desc.String
 		p.Emoji = emoji.String
+		p.ContextFile = contextFile.String
 		p.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
 		p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
 		projects = append(projects, p)
@@ -1293,9 +1307,9 @@ func (d *DB) ListProjects() ([]*Project, error) {
 func (d *DB) UpdateProject(p *Project) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := d.db.Exec(`
-		UPDATE projects SET name = ?, description = ?, status = ?, emoji = ?, updated_at = ?
+		UPDATE projects SET name = ?, description = ?, status = ?, emoji = ?, context_file = ?, updated_at = ?
 		WHERE id = ?`,
-		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), now, p.ID,
+		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), nullStr(p.ContextFile), now, p.ID,
 	)
 	return err
 }

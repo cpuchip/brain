@@ -317,7 +317,7 @@ func TestBuildPlanPrompt(t *testing.T) {
 	}
 
 	// Without existing scratch
-	prompt := buildPlanPrompt(entry, entry.Body, "/tmp/scratch.md", "", "")
+	prompt := buildPlanPrompt(entry, entry.Body, "/tmp/scratch.md", "", "", "")
 	if !strings.Contains(prompt, "Test Entry") {
 		t.Error("prompt missing title")
 	}
@@ -329,7 +329,7 @@ func TestBuildPlanPrompt(t *testing.T) {
 	}
 
 	// With existing scratch
-	prompt = buildPlanPrompt(entry, entry.Body, "/tmp/scratch.md", "## Research findings\nSome findings here", "focus on phase 1")
+	prompt = buildPlanPrompt(entry, entry.Body, "/tmp/scratch.md", "## Research findings\nSome findings here", "focus on phase 1", "")
 	if !strings.Contains(prompt, "Research findings") {
 		t.Error("prompt should include existing scratch content")
 	}

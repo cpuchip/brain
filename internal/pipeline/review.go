@@ -18,7 +18,7 @@ type ReviewConfig struct {
 	RawStaleAfter        time.Duration // how long before a raw entry is considered stale
 	ResearchedStaleAfter time.Duration // how long before a researched entry is stale
 	CompleteStaleAfter   time.Duration // how long before a complete (agent-done) entry is stale
-	CheckInterval        time.Duration // how often to scan
+	WakeHours            []int         // hours of day (local time) to run scans (e.g. 7, 11, 15, 19)
 	Enabled              bool
 }
 
@@ -28,36 +28,54 @@ func DefaultReviewConfig() ReviewConfig {
 		RawStaleAfter:        24 * time.Hour,
 		ResearchedStaleAfter: 48 * time.Hour,
 		CompleteStaleAfter:   24 * time.Hour,
-		CheckInterval:        4 * time.Hour,
+		WakeHours:            []int{7, 11, 15, 19},
 		Enabled:              true,
 	}
 }
 
-// StartReviewLoop launches a background goroutine that periodically scans for
-// stale pipeline entries and posts AI-generated nudge questions as session messages.
+// nextWakeTime returns the next scheduled scan time based on WakeHours.
+func nextWakeTime(now time.Time, hours []int) time.Time {
+	for _, h := range hours {
+		candidate := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
+		if candidate.After(now) {
+			return candidate
+		}
+	}
+	// All today's hours have passed — first hour tomorrow
+	tomorrow := now.AddDate(0, 0, 1)
+	return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), hours[0], 0, 0, 0, now.Location())
+}
+
+// StartReviewLoop launches a background goroutine that scans for stale pipeline
+// entries at fixed waking hours and posts AI-generated nudge questions.
 func (p *Pipeline) StartReviewLoop(cfg ReviewConfig) {
 	if !cfg.Enabled || p.pool == nil {
 		log.Printf("Pipeline review loop: disabled (enabled=%v, pool=%v)", cfg.Enabled, p.pool != nil)
 		return
 	}
+	if len(cfg.WakeHours) == 0 {
+		log.Printf("Pipeline review loop: no wake hours configured, disabling")
+		return
+	}
 
 	go func() {
-		// Initial delay — let server finish startup
-		timer := time.NewTimer(2 * time.Minute)
-		defer timer.Stop()
-
 		for {
+			next := nextWakeTime(time.Now(), cfg.WakeHours)
+			delay := time.Until(next)
+			log.Printf("Pipeline review loop: next scan at %s (in %v)", next.Format("15:04"), delay.Round(time.Minute))
+
+			timer := time.NewTimer(delay)
 			select {
 			case <-p.ctx.Done():
+				timer.Stop()
 				return
 			case <-timer.C:
 				p.runReviewScan(cfg)
-				timer.Reset(cfg.CheckInterval)
 			}
 		}
 	}()
 
-	log.Printf("Pipeline review loop: started (check every %v)", cfg.CheckInterval)
+	log.Printf("Pipeline review loop: started (wake hours: %v)", cfg.WakeHours)
 }
 
 func (p *Pipeline) runReviewScan(cfg ReviewConfig) {
@@ -121,7 +139,7 @@ func (p *Pipeline) nudgeEntry(entry *store.Entry) error {
 		}
 	}
 
-	prompt := buildNudgePrompt(entry, maturity, scratchContent, conversationCtx)
+	prompt := buildNudgePrompt(entry, maturity, scratchContent, conversationCtx, FormatProjectContext(p.BuildProjectContext(entry)))
 
 	// Use cheap model — this is a nudge, not deep work
 	agentCfg := ai.AgentConfig{
@@ -153,12 +171,16 @@ func (p *Pipeline) nudgeEntry(entry *store.Entry) error {
 	return nil
 }
 
-func buildNudgePrompt(entry *store.Entry, maturity, scratchContent, conversationCtx string) string {
+func buildNudgePrompt(entry *store.Entry, maturity, scratchContent, conversationCtx, projectCtx string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Entry: %s\n", entry.Title))
 	sb.WriteString(fmt.Sprintf("Category: %s\n", entry.Category))
 	sb.WriteString(fmt.Sprintf("Maturity: %s\n", maturity))
 	sb.WriteString(fmt.Sprintf("Body:\n%s\n", entry.Body))
+
+	if projectCtx != "" {
+		sb.WriteString(projectCtx)
+	}
 
 	if scratchContent != "" {
 		sb.WriteString(fmt.Sprintf("\nResearch notes:\n%s\n", scratchContent))

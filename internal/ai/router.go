@@ -47,9 +47,9 @@ const (
 // Default mode is "suggest" for categories with clean agent mappings,
 // "none" for categories without a natural agent.
 var DefaultRoutes = map[string]RouteRule{
-	"study":    {AgentName: "study", Mode: RouteModeSuggest, PromptTemplate: "Study this insight: {{.Body}}"},
-	"journal":  {AgentName: "journal", Mode: RouteModeSuggest, PromptTemplate: "Reflect on this: {{.Body}}"},
-	"ideas":    {AgentName: "plan", Mode: RouteModeSuggest, PromptTemplate: "Evaluate this idea: {{.Body}}"},
+	"study":    {AgentName: "study", Mode: RouteModeSuggest, PromptTemplate: "Study this insight: {{.Body}}{{if .ProjectContext}}\n{{.ProjectContext}}{{end}}"},
+	"journal":  {AgentName: "journal", Mode: RouteModeSuggest, PromptTemplate: "Reflect on this: {{.Body}}{{if .ProjectContext}}\n{{.ProjectContext}}{{end}}"},
+	"ideas":    {AgentName: "plan", Mode: RouteModeSuggest, PromptTemplate: "Evaluate this idea: {{.Body}}{{if .ProjectContext}}\n{{.ProjectContext}}{{end}}"},
 	"projects": {AgentName: "", Mode: RouteModeNone},
 	"actions":  {AgentName: "", Mode: RouteModeNone},
 	"people":   {AgentName: "", Mode: RouteModeNone},
@@ -57,8 +57,9 @@ var DefaultRoutes = map[string]RouteRule{
 
 // RoutePromptData is the data available to route prompt templates.
 type RoutePromptData struct {
-	Title string
-	Body  string
+	Title          string
+	Body           string
+	ProjectContext string // pre-formatted project context section (may be empty)
 }
 
 // RenderPrompt executes the route's prompt template with the given data.

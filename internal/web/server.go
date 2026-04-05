@@ -136,6 +136,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/entries/{id}/reply", s.cors(s.handleReply))
 	s.mux.HandleFunc("POST /api/entries/{id}/complete", s.cors(s.handleMarkComplete))
 	s.mux.HandleFunc("GET /api/entries/your-turn", s.cors(s.handleYourTurn))
+	s.mux.HandleFunc("GET /api/entries/{id}/context", s.cors(s.handleEntryContext))
 
 	// Scheduled tasks
 	s.mux.HandleFunc("GET /api/scheduled", s.cors(s.handleListScheduledTasks))
@@ -1121,9 +1122,17 @@ func (s *Server) routeEntry(entry *store.Entry, route ai.RouteRule) {
 		defer s.pool.FinishTask(entry.ID)
 
 		agent := s.pool.GetOrCreate(route.AgentName, s.wc)
+
+		// Build project context if entry belongs to a project
+		projectCtx := ""
+		if s.pipeline != nil {
+			projectCtx = pipeline.FormatProjectContext(s.pipeline.BuildProjectContext(entry))
+		}
+
 		prompt := route.RenderPrompt(ai.RoutePromptData{
-			Title: entry.Title,
-			Body:  entry.Body,
+			Title:          entry.Title,
+			Body:           entry.Body,
+			ProjectContext: projectCtx,
 		})
 
 		_ = s.store.UpdateRouteStatus(entry.ID, ai.RouteStatusRunning)
@@ -1411,6 +1420,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 		Emoji       string `json:"emoji"`
+		ContextFile string `json:"context_file"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
@@ -1426,6 +1436,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		Description: req.Description,
 		Status:      "active",
 		Emoji:       req.Emoji,
+		ContextFile: req.ContextFile,
 	}
 	id, err := s.store.DB().CreateProject(p)
 	if err != nil {
@@ -1482,6 +1493,9 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if v, ok := updates["emoji"].(string); ok {
 		existing.Emoji = v
+	}
+	if v, ok := updates["context_file"].(string); ok {
+		existing.ContextFile = v
 	}
 
 	if err := s.store.DB().UpdateProject(existing); err != nil {
@@ -1675,6 +1689,37 @@ func (s *Server) handleMarkComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]any{"entry_id": entryID, "status": "complete"})
+}
+
+func (s *Server) handleEntryContext(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+	entry, err := s.store.DB().GetEntry(entryID)
+	if err != nil {
+		jsonError(w, "entry not found", err, http.StatusNotFound)
+		return
+	}
+
+	result := map[string]any{
+		"entry_id": entryID,
+		"title":    entry.Title,
+		"category": entry.Category,
+		"maturity": entry.Maturity,
+	}
+
+	if s.pipeline != nil {
+		ctx := s.pipeline.BuildProjectContext(entry)
+		if ctx != nil {
+			result["project"] = map[string]any{
+				"name":        ctx.ProjectName,
+				"description": ctx.Description,
+				"siblings":    ctx.SiblingEntries,
+				"context_doc": ctx.ContextDoc != "",
+			}
+			result["formatted"] = pipeline.FormatProjectContext(ctx)
+		}
+	}
+
+	jsonResponse(w, result)
 }
 
 func (s *Server) handleYourTurn(w http.ResponseWriter, r *http.Request) {

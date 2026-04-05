@@ -13,6 +13,8 @@ const editing = ref(false)
 const saving = ref(false)
 const toast = ref('')
 const toastTimeout = ref<ReturnType<typeof setTimeout>>()
+const agentContext = ref('')
+const showAgentContext = ref(false)
 
 const editForm = ref({
   title: '',
@@ -55,6 +57,18 @@ async function load() {
     entry.value = e
     projects.value = p
     messages.value = m
+
+    // Load agent context if entry has a project
+    if (e.project_id) {
+      try {
+        const ctx = await api.entryContext(e.id)
+        agentContext.value = ctx.formatted || ''
+      } catch {
+        agentContext.value = ''
+      }
+    } else {
+      agentContext.value = ''
+    }
   } finally {
     loading.value = false
   }
@@ -429,6 +443,16 @@ onMounted(load)
             </div>
             <p class="text-xs text-gray-600 mt-1">Ctrl+Enter to send</p>
           </div>
+        </div>
+
+        <!-- Agent Context (project-aware) -->
+        <div v-if="entry.project_id && agentContext" class="mt-6">
+          <button @click="showAgentContext = !showAgentContext" class="text-sm font-medium text-gray-500 uppercase tracking-wider hover:text-gray-300 transition-colors flex items-center gap-1">
+            <span class="text-xs">{{ showAgentContext ? '▼' : '▶' }}</span>
+            Agent Context
+            <span class="text-xs text-gray-600 normal-case font-normal ml-1">(what the agent sees)</span>
+          </button>
+          <div v-if="showAgentContext" class="mt-2 bg-gray-950 border border-gray-800 rounded-lg p-4 text-sm text-gray-400 whitespace-pre-wrap font-mono">{{ agentContext }}</div>
         </div>
       </div>
 

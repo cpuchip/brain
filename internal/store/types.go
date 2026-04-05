@@ -11,6 +11,7 @@ type Project struct {
 	Description string    `json:"description,omitempty"`
 	Status      string    `json:"status"` // active, paused, archived
 	Emoji       string    `json:"emoji,omitempty"`
+	ContextFile string    `json:"context_file,omitempty"` // optional path to project-level context doc for agents
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 
