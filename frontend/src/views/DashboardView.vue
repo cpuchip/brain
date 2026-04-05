@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { api, type BrainStatus, type RoutableEntry, type RunningEntry, type ReviewEntry, type Stats, type Project } from '../api'
+import { api, type BrainStatus, type RoutableEntry, type RunningEntry, type ReviewEntry, type Stats, type Project, type ActivityEvent } from '../api'
 
 const status = ref<BrainStatus | null>(null)
 const stats = ref<Stats | null>(null)
@@ -10,6 +10,7 @@ const sessions = ref<string[]>([])
 const running = ref<RunningEntry[]>([])
 const routable = ref<RoutableEntry[]>([])
 const reviewEntries = ref<ReviewEntry[]>([])
+const activityEvents = ref<ActivityEvent[]>([])
 const loading = ref(true)
 const error = ref('')
 const shuttingDown = ref(false)
@@ -20,7 +21,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function loadAll() {
   try {
-    const [st, ss, run, rout, ses, rev, proj, yt] = await Promise.all([
+    const [st, ss, run, rout, ses, rev, proj, yt, act] = await Promise.all([
       api.brainStatus(),
       api.stats(),
       api.agentRunning(),
@@ -29,6 +30,7 @@ async function loadAll() {
       api.reviewQueue(),
       api.listProjects(),
       api.yourTurn(),
+      api.activity(15),
     ])
     status.value = st
     stats.value = ss
@@ -38,6 +40,7 @@ async function loadAll() {
     reviewEntries.value = rev.entries
     projects.value = proj
     yourTurnEntries.value = yt.entries
+    activityEvents.value = act
     error.value = ''
   } catch (e: any) {
     if (shuttingDown.value) return
@@ -336,6 +339,41 @@ onUnmounted(() => {
             to="/review"
             class="block text-center py-2 text-xs text-sky-400 hover:text-sky-300 transition-colors"
           >+ {{ reviewEntries.length - 3 }} more</RouterLink>
+        </div>
+      </div>
+
+      <!-- Section: Activity Feed -->
+      <div v-if="activityEvents.length > 0">
+        <h2 class="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">Recent Activity</h2>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg divide-y divide-gray-800">
+          <div
+            v-for="event in activityEvents"
+            :key="event.id + event.type"
+            class="px-4 py-2.5 flex items-center gap-3"
+          >
+            <span class="text-xs shrink-0"
+              :class="{
+                'text-emerald-400': event.type === 'entry_created',
+                'text-blue-400': event.type === 'entry_routed',
+                'text-purple-400': event.type === 'agent_completed',
+                'text-amber-400': event.type === 'your_turn',
+                'text-gray-500': event.type === 'entry_updated',
+              }">
+              {{ event.type === 'entry_created' ? '＋' :
+                 event.type === 'entry_routed' ? '→' :
+                 event.type === 'agent_completed' ? '✓' :
+                 event.type === 'your_turn' ? '↩' : '·' }}
+            </span>
+            <RouterLink
+              v-if="event.entry_id"
+              :to="`/entries/${event.entry_id}`"
+              class="text-sm text-gray-300 hover:text-sky-400 transition-colors truncate"
+            >{{ event.title }}</RouterLink>
+            <span v-else class="text-sm text-gray-300 truncate">{{ event.title }}</span>
+            <span class="text-xs text-gray-600 shrink-0 ml-auto">
+              {{ new Date(event.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) }}
+            </span>
+          </div>
         </div>
       </div>
     </template>

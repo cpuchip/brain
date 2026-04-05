@@ -56,7 +56,10 @@ func (d *DB) migrate() error {
 	if err := d.migrateProjects(); err != nil {
 		return err
 	}
-	return d.migrateSessionMessages()
+	if err := d.migrateSessionMessages(); err != nil {
+		return err
+	}
+	return d.migrateScheduledTasks()
 }
 
 const schema = `
@@ -1322,4 +1325,285 @@ func (d *DB) ListSessionMessages(entryID string) ([]*SessionMessage, error) {
 		msgs = append(msgs, m)
 	}
 	return msgs, nil
+}
+
+// --- Scheduled Tasks ---
+
+func (d *DB) migrateScheduledTasks() error {
+	_, err := d.db.Exec(`
+		CREATE TABLE IF NOT EXISTS scheduled_tasks (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT NOT NULL UNIQUE,
+			description TEXT,
+			schedule    TEXT NOT NULL,
+			project_id  INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+			agent_name  TEXT NOT NULL,
+			prompt      TEXT NOT NULL,
+			status      TEXT NOT NULL DEFAULT 'active',
+			last_run_at TEXT,
+			next_run_at TEXT,
+			created_at  TEXT NOT NULL,
+			updated_at  TEXT NOT NULL
+		)`)
+	if err != nil {
+		return fmt.Errorf("creating scheduled_tasks table: %w", err)
+	}
+
+	_, err = d.db.Exec(`
+		CREATE TABLE IF NOT EXISTS task_runs (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_id    INTEGER NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE,
+			status     TEXT NOT NULL DEFAULT 'running',
+			entry_id   TEXT,
+			output     TEXT,
+			error      TEXT,
+			started_at TEXT NOT NULL,
+			ended_at   TEXT
+		)`)
+	if err != nil {
+		return fmt.Errorf("creating task_runs table: %w", err)
+	}
+
+	d.db.Exec("CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id)")
+	return nil
+}
+
+// CreateScheduledTask creates a new scheduled task.
+func (d *DB) CreateScheduledTask(task *ScheduledTask) (*ScheduledTask, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := d.db.Exec(`
+		INSERT INTO scheduled_tasks (name, description, schedule, project_id, agent_name, prompt, status, next_run_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		task.Name, task.Description, task.Schedule, task.ProjectID, task.AgentName, task.Prompt, "active", nil, now, now)
+	if err != nil {
+		return nil, fmt.Errorf("creating scheduled task: %w", err)
+	}
+	id, _ := result.LastInsertId()
+	return d.GetScheduledTask(int(id))
+}
+
+// GetScheduledTask returns a scheduled task by ID.
+func (d *DB) GetScheduledTask(id int) (*ScheduledTask, error) {
+	row := d.db.QueryRow(`
+		SELECT id, name, description, schedule, project_id, agent_name, prompt, status, last_run_at, next_run_at, created_at, updated_at
+		FROM scheduled_tasks WHERE id = ?`, id)
+	return scanScheduledTask(row)
+}
+
+// ListScheduledTasks returns all scheduled tasks.
+func (d *DB) ListScheduledTasks() ([]*ScheduledTask, error) {
+	rows, err := d.db.Query(`
+		SELECT id, name, description, schedule, project_id, agent_name, prompt, status, last_run_at, next_run_at, created_at, updated_at
+		FROM scheduled_tasks ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []*ScheduledTask
+	for rows.Next() {
+		t, err := scanScheduledTaskRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
+}
+
+// ListActiveScheduledTasks returns tasks with status "active".
+func (d *DB) ListActiveScheduledTasks() ([]*ScheduledTask, error) {
+	rows, err := d.db.Query(`
+		SELECT id, name, description, schedule, project_id, agent_name, prompt, status, last_run_at, next_run_at, created_at, updated_at
+		FROM scheduled_tasks WHERE status = 'active' ORDER BY next_run_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tasks []*ScheduledTask
+	for rows.Next() {
+		t, err := scanScheduledTaskRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, nil
+}
+
+// UpdateScheduledTask updates a scheduled task's fields.
+func (d *DB) UpdateScheduledTask(id int, name, description, schedule, agentName, prompt, status string, projectID *int) (*ScheduledTask, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := d.db.Exec(`
+		UPDATE scheduled_tasks SET name=?, description=?, schedule=?, agent_name=?, prompt=?, status=?, project_id=?, updated_at=?
+		WHERE id=?`,
+		name, description, schedule, agentName, prompt, status, projectID, now, id)
+	if err != nil {
+		return nil, fmt.Errorf("updating scheduled task: %w", err)
+	}
+	return d.GetScheduledTask(id)
+}
+
+// DeleteScheduledTask deletes a scheduled task and its run history.
+func (d *DB) DeleteScheduledTask(id int) error {
+	_, err := d.db.Exec("DELETE FROM scheduled_tasks WHERE id = ?", id)
+	return err
+}
+
+// SetTaskLastRun updates a task's last_run_at and next_run_at timestamps.
+func (d *DB) SetTaskLastRun(id int, lastRun, nextRun time.Time) error {
+	_, err := d.db.Exec(`
+		UPDATE scheduled_tasks SET last_run_at=?, next_run_at=?, updated_at=? WHERE id=?`,
+		lastRun.UTC().Format(time.RFC3339), nextRun.UTC().Format(time.RFC3339),
+		time.Now().UTC().Format(time.RFC3339), id)
+	return err
+}
+
+// CreateTaskRun records a new task run.
+func (d *DB) CreateTaskRun(taskID int) (*TaskRun, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := d.db.Exec(`
+		INSERT INTO task_runs (task_id, status, started_at) VALUES (?, 'running', ?)`,
+		taskID, now)
+	if err != nil {
+		return nil, fmt.Errorf("creating task run: %w", err)
+	}
+	id, _ := result.LastInsertId()
+	return &TaskRun{
+		ID:        int(id),
+		TaskID:    taskID,
+		Status:    "running",
+		StartedAt: time.Now().UTC(),
+	}, nil
+}
+
+// CompleteTaskRun marks a task run as complete or failed.
+func (d *DB) CompleteTaskRun(id int, status, entryID, output, errMsg string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := d.db.Exec(`
+		UPDATE task_runs SET status=?, entry_id=?, output=?, error=?, ended_at=? WHERE id=?`,
+		status, entryID, output, errMsg, now, id)
+	return err
+}
+
+// ListTaskRuns returns runs for a task, most recent first, limited.
+func (d *DB) ListTaskRuns(taskID, limit int) ([]*TaskRun, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := d.db.Query(`
+		SELECT id, task_id, status, entry_id, output, error, started_at, ended_at
+		FROM task_runs WHERE task_id = ? ORDER BY started_at DESC LIMIT ?`, taskID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var runs []*TaskRun
+	for rows.Next() {
+		r := &TaskRun{}
+		var entryID, output, errMsg, endedAt *string
+		var startedStr string
+		if err := rows.Scan(&r.ID, &r.TaskID, &r.Status, &entryID, &output, &errMsg, &startedStr, &endedAt); err != nil {
+			return nil, err
+		}
+		r.StartedAt, _ = time.Parse(time.RFC3339, startedStr)
+		if entryID != nil {
+			r.EntryID = *entryID
+		}
+		if output != nil {
+			r.Output = *output
+		}
+		if errMsg != nil {
+			r.Error = *errMsg
+		}
+		if endedAt != nil {
+			t, _ := time.Parse(time.RFC3339, *endedAt)
+			r.EndedAt = &t
+		}
+		runs = append(runs, r)
+	}
+	return runs, nil
+}
+
+// RecentActivity returns recent events across all entries/tasks for the dashboard.
+func (d *DB) RecentActivity(limit int) ([]*ActivityEvent, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := d.db.Query(`
+		SELECT id, title, category, project_id, created_at, updated_at, route_status, agent_route
+		FROM entries ORDER BY updated_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []*ActivityEvent
+	for rows.Next() {
+		var id, title, category, updatedStr, createdStr string
+		var projectID *int
+		var routeStatus, agentRoute *string
+		if err := rows.Scan(&id, &title, &category, &projectID, &createdStr, &updatedStr, &routeStatus, &agentRoute); err != nil {
+			return nil, err
+		}
+		ts, _ := time.Parse(time.RFC3339, updatedStr)
+
+		eventType := "entry_updated"
+		if createdStr == updatedStr {
+			eventType = "entry_created"
+		} else if routeStatus != nil {
+			switch *routeStatus {
+			case "complete":
+				eventType = "agent_completed"
+			case "running":
+				eventType = "entry_routed"
+			case "your_turn":
+				eventType = "your_turn"
+			}
+		}
+		events = append(events, &ActivityEvent{
+			ID:        id,
+			Type:      eventType,
+			Title:     title,
+			EntryID:   id,
+			ProjectID: projectID,
+			Timestamp: ts,
+		})
+	}
+	return events, nil
+}
+
+// --- scan helpers ---
+
+type scannable interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanScheduledTask(row scannable) (*ScheduledTask, error) {
+	t := &ScheduledTask{}
+	var desc, lastRun, nextRun *string
+	var createdStr, updatedStr string
+	if err := row.Scan(&t.ID, &t.Name, &desc, &t.Schedule, &t.ProjectID, &t.AgentName, &t.Prompt, &t.Status, &lastRun, &nextRun, &createdStr, &updatedStr); err != nil {
+		return nil, err
+	}
+	if desc != nil {
+		t.Description = *desc
+	}
+	t.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+	t.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
+	if lastRun != nil {
+		lr, _ := time.Parse(time.RFC3339, *lastRun)
+		t.LastRunAt = &lr
+	}
+	if nextRun != nil {
+		nr, _ := time.Parse(time.RFC3339, *nextRun)
+		t.NextRunAt = &nr
+	}
+	return t, nil
+}
+
+func scanScheduledTaskRow(rows *sql.Rows) (*ScheduledTask, error) {
+	return scanScheduledTask(rows)
 }

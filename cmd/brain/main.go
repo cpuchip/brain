@@ -21,6 +21,7 @@ import (
 	"github.com/cpuchip/brain/internal/lmstudio"
 	brainmcp "github.com/cpuchip/brain/internal/mcp"
 	"github.com/cpuchip/brain/internal/relay"
+	"github.com/cpuchip/brain/internal/scheduler"
 	"github.com/cpuchip/brain/internal/store"
 	"github.com/cpuchip/brain/internal/web"
 	"github.com/joho/godotenv"
@@ -233,6 +234,11 @@ func run() error {
 				log.Printf("warning: web server error: %v", err)
 			}
 		}()
+
+		// Start scheduler for recurring tasks
+		sched := scheduler.New(st.DB(), srv)
+		sched.Start()
+		defer sched.Stop()
 	}
 
 	// Start relay transport (WebSocket to ibeco.me)

@@ -12,6 +12,8 @@ const router = createRouter({
     { path: '/projects/:id', component: () => import('./views/ProjectDetailView.vue') },
     { path: '/entries', component: () => import('./views/EntriesView.vue') },
     { path: '/entries/:id', component: () => import('./views/EntryDetailView.vue') },
+    { path: '/scheduled', component: () => import('./views/ScheduledView.vue') },
+    { path: '/library', component: () => import('./views/LibraryView.vue') },
     { path: '/review', component: () => import('./views/ReviewView.vue') },
     { path: '/search', component: () => import('./views/SearchView.vue') },
   ],

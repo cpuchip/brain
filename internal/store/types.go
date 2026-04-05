@@ -117,3 +117,41 @@ type AuditRecord struct {
 	FilePath    string    `json:"file_path,omitempty" yaml:"file_path"`
 	Tags        []string  `json:"tags,omitempty" yaml:"tags,omitempty"`
 }
+
+// ScheduledTask defines a recurring brain task.
+type ScheduledTask struct {
+	ID          int        `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description,omitempty"`
+	Schedule    string     `json:"schedule"` // cron-like: "daily", "weekly:monday", "hourly", or cron expr
+	ProjectID   *int       `json:"project_id,omitempty"`
+	AgentName   string     `json:"agent_name"` // which agent handles this
+	Prompt      string     `json:"prompt"`     // what to do
+	Status      string     `json:"status"`     // active, paused
+	LastRunAt   *time.Time `json:"last_run_at,omitempty"`
+	NextRunAt   *time.Time `json:"next_run_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// TaskRun records a single execution of a scheduled task.
+type TaskRun struct {
+	ID        int        `json:"id"`
+	TaskID    int        `json:"task_id"`
+	Status    string     `json:"status"`             // running, complete, failed
+	EntryID   string     `json:"entry_id,omitempty"` // entry created by this run
+	Output    string     `json:"output,omitempty"`
+	Error     string     `json:"error,omitempty"`
+	StartedAt time.Time  `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
+}
+
+// ActivityEvent is a recent event for the dashboard activity feed.
+type ActivityEvent struct {
+	ID        string    `json:"id"`
+	Type      string    `json:"type"` // entry_created, entry_routed, agent_completed, task_run, project_created
+	Title     string    `json:"title"`
+	EntryID   string    `json:"entry_id,omitempty"`
+	ProjectID *int      `json:"project_id,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+}

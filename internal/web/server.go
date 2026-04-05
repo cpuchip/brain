@@ -7,7 +7,10 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cpuchip/brain/internal/ai"
@@ -128,6 +131,23 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/entries/{id}/reply", s.cors(s.handleReply))
 	s.mux.HandleFunc("POST /api/entries/{id}/complete", s.cors(s.handleMarkComplete))
 	s.mux.HandleFunc("GET /api/entries/your-turn", s.cors(s.handleYourTurn))
+
+	// Scheduled tasks
+	s.mux.HandleFunc("GET /api/scheduled", s.cors(s.handleListScheduledTasks))
+	s.mux.HandleFunc("POST /api/scheduled", s.cors(s.handleCreateScheduledTask))
+	s.mux.HandleFunc("GET /api/scheduled/{id}", s.cors(s.handleGetScheduledTask))
+	s.mux.HandleFunc("PUT /api/scheduled/{id}", s.cors(s.handleUpdateScheduledTask))
+	s.mux.HandleFunc("DELETE /api/scheduled/{id}", s.cors(s.handleDeleteScheduledTask))
+	s.mux.HandleFunc("GET /api/scheduled/{id}/runs", s.cors(s.handleListTaskRuns))
+	s.mux.HandleFunc("POST /api/scheduled/{id}/run", s.cors(s.handleTriggerTaskRun))
+
+	// Library (agents, skills, docs)
+	s.mux.HandleFunc("GET /api/library/agents", s.cors(s.handleLibraryAgents))
+	s.mux.HandleFunc("GET /api/library/skills", s.cors(s.handleLibrarySkills))
+	s.mux.HandleFunc("GET /api/library/memory", s.cors(s.handleLibraryMemory))
+
+	// Activity feed
+	s.mux.HandleFunc("GET /api/activity", s.cors(s.handleActivity))
 
 	// Dashboard operations
 	s.mux.HandleFunc("POST /api/entries/{id}/dismiss-route", s.cors(s.handleDismissRoute))
@@ -1098,6 +1118,35 @@ func (s *Server) routeEntry(entry *store.Entry, route ai.RouteRule) {
 	}()
 }
 
+// CreateAndRouteEntry creates a new entry and routes it to an agent. Used by the scheduler.
+func (s *Server) CreateAndRouteEntry(title, body, category, agentName string, projectID *int) (string, error) {
+	entry := &store.Entry{
+		Title:        title,
+		Category:     category,
+		Body:         body,
+		OriginalBody: body,
+		Source:       "scheduler",
+		ProjectID:    projectID,
+	}
+	id, err := s.store.DB().InsertEntry(entry)
+	if err != nil {
+		return "", fmt.Errorf("creating entry: %w", err)
+	}
+	entry.ID = id
+
+	// Route to the specified agent
+	if s.pool != nil && agentName != "" {
+		route := ai.RouteRule{
+			AgentName:      agentName,
+			Mode:           ai.RouteModeSuggest,
+			PromptTemplate: "{{.Body}}",
+		}
+		s.routeEntry(entry, route)
+	}
+
+	return id, nil
+}
+
 func (s *Server) handleAgentRoutable(w http.ResponseWriter, r *http.Request) {
 	type routableEntry struct {
 		ID        string `json:"id"`
@@ -1555,4 +1604,303 @@ func (s *Server) handleYourTurn(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	jsonResponse(w, map[string]any{"entries": result})
+}
+
+// --- Scheduled Tasks Handlers ---
+
+func (s *Server) handleListScheduledTasks(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.store.DB().ListScheduledTasks()
+	if err != nil {
+		jsonError(w, "listing scheduled tasks", err, http.StatusInternalServerError)
+		return
+	}
+	if tasks == nil {
+		tasks = []*store.ScheduledTask{}
+	}
+	jsonResponse(w, tasks)
+}
+
+func (s *Server) handleCreateScheduledTask(w http.ResponseWriter, r *http.Request) {
+	var req store.ScheduledTask
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" || req.Schedule == "" || req.AgentName == "" || req.Prompt == "" {
+		jsonError(w, "name, schedule, agent_name, and prompt are required", nil, http.StatusBadRequest)
+		return
+	}
+	task, err := s.store.DB().CreateScheduledTask(&req)
+	if err != nil {
+		jsonError(w, "creating scheduled task", err, http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	jsonResponse(w, task)
+}
+
+func (s *Server) handleGetScheduledTask(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "invalid id", err, http.StatusBadRequest)
+		return
+	}
+	task, err := s.store.DB().GetScheduledTask(id)
+	if err != nil {
+		jsonError(w, "task not found", err, http.StatusNotFound)
+		return
+	}
+	jsonResponse(w, task)
+}
+
+func (s *Server) handleUpdateScheduledTask(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "invalid id", err, http.StatusBadRequest)
+		return
+	}
+
+	existing, err := s.store.DB().GetScheduledTask(id)
+	if err != nil {
+		jsonError(w, "task not found", err, http.StatusNotFound)
+		return
+	}
+
+	var updates map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+
+	name := existing.Name
+	description := existing.Description
+	schedule := existing.Schedule
+	agentName := existing.AgentName
+	prompt := existing.Prompt
+	status := existing.Status
+	projectID := existing.ProjectID
+
+	if v, ok := updates["name"].(string); ok {
+		name = v
+	}
+	if v, ok := updates["description"].(string); ok {
+		description = v
+	}
+	if v, ok := updates["schedule"].(string); ok {
+		schedule = v
+	}
+	if v, ok := updates["agent_name"].(string); ok {
+		agentName = v
+	}
+	if v, ok := updates["prompt"].(string); ok {
+		prompt = v
+	}
+	if v, ok := updates["status"].(string); ok {
+		status = v
+	}
+	if v, ok := updates["project_id"]; ok {
+		if v == nil {
+			projectID = nil
+		} else if f, ok := v.(float64); ok {
+			pid := int(f)
+			projectID = &pid
+		}
+	}
+
+	task, err := s.store.DB().UpdateScheduledTask(id, name, description, schedule, agentName, prompt, status, projectID)
+	if err != nil {
+		jsonError(w, "updating task", err, http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, task)
+}
+
+func (s *Server) handleDeleteScheduledTask(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "invalid id", err, http.StatusBadRequest)
+		return
+	}
+	if err := s.store.DB().DeleteScheduledTask(id); err != nil {
+		jsonError(w, "deleting task", err, http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleListTaskRuns(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "invalid id", err, http.StatusBadRequest)
+		return
+	}
+	runs, err := s.store.DB().ListTaskRuns(id, 20)
+	if err != nil {
+		jsonError(w, "listing runs", err, http.StatusInternalServerError)
+		return
+	}
+	if runs == nil {
+		runs = []*store.TaskRun{}
+	}
+	jsonResponse(w, runs)
+}
+
+func (s *Server) handleTriggerTaskRun(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "invalid id", err, http.StatusBadRequest)
+		return
+	}
+	task, err := s.store.DB().GetScheduledTask(id)
+	if err != nil {
+		jsonError(w, "task not found", err, http.StatusNotFound)
+		return
+	}
+
+	// Create run record
+	run, err := s.store.DB().CreateTaskRun(task.ID)
+	if err != nil {
+		jsonError(w, "creating run", err, http.StatusInternalServerError)
+		return
+	}
+
+	// Execute in background
+	go func() {
+		title := fmt.Sprintf("[Scheduled] %s", task.Name)
+		entryID, err := s.CreateAndRouteEntry(title, task.Prompt, "ideas", task.AgentName, task.ProjectID)
+		if err != nil {
+			_ = s.store.DB().CompleteTaskRun(run.ID, "failed", "", "", err.Error())
+			return
+		}
+		_ = s.store.DB().CompleteTaskRun(run.ID, "complete", entryID, "Entry created and routed", "")
+
+		now := time.Now().UTC()
+		_ = s.store.DB().SetTaskLastRun(task.ID, now, now.Add(24*time.Hour))
+	}()
+
+	jsonResponse(w, map[string]any{"run_id": run.ID, "status": "started"})
+}
+
+// --- Library Handlers ---
+
+func (s *Server) handleLibraryAgents(w http.ResponseWriter, r *http.Request) {
+	type agentInfo struct {
+		Name        string `json:"name"`
+		Description string `json:"description,omitempty"`
+	}
+
+	var agents []agentInfo
+	for name, def := range s.wc.Agents {
+		agents = append(agents, agentInfo{
+			Name:        name,
+			Description: def.Description,
+		})
+	}
+	if agents == nil {
+		agents = []agentInfo{}
+	}
+	jsonResponse(w, agents)
+}
+
+func (s *Server) handleLibrarySkills(w http.ResponseWriter, r *http.Request) {
+	type skillInfo struct {
+		Name        string `json:"name"`
+		Description string `json:"description,omitempty"`
+	}
+
+	var skills []skillInfo
+	if s.wc.SkillsDir != "" {
+		entries, err := os.ReadDir(s.wc.SkillsDir)
+		if err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				si := skillInfo{Name: entry.Name()}
+				// Try to read SKILL.md for description
+				skillFile := filepath.Join(s.wc.SkillsDir, entry.Name(), "SKILL.md")
+				if data, err := os.ReadFile(skillFile); err == nil {
+					content := string(data)
+					// Extract first non-heading paragraph line
+					lines := strings.Split(content, "\n")
+					for _, line := range lines {
+						trimmed := strings.TrimSpace(line)
+						if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "---") {
+							continue
+						}
+						si.Description = trimmed
+						if len(si.Description) > 200 {
+							si.Description = si.Description[:200] + "…"
+						}
+						break
+					}
+				}
+				skills = append(skills, si)
+			}
+		}
+	}
+	if skills == nil {
+		skills = []skillInfo{}
+	}
+	jsonResponse(w, skills)
+}
+
+func (s *Server) handleLibraryMemory(w http.ResponseWriter, r *http.Request) {
+	type memoryFile struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+		Size int64  `json:"size"`
+	}
+
+	var files []memoryFile
+
+	// Look for .spec/memory/ in the workspace
+	if s.cfg.BrainCodeDir != "" {
+		scriptsDir := filepath.Dir(s.cfg.BrainCodeDir)
+		workspaceDir := filepath.Dir(scriptsDir)
+		memDir := filepath.Join(workspaceDir, ".spec", "memory")
+		entries, err := os.ReadDir(memDir)
+		if err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() {
+					continue
+				}
+				info, err := entry.Info()
+				if err != nil {
+					continue
+				}
+				files = append(files, memoryFile{
+					Name: entry.Name(),
+					Path: filepath.Join(".spec", "memory", entry.Name()),
+					Size: info.Size(),
+				})
+			}
+		}
+	}
+	if files == nil {
+		files = []memoryFile{}
+	}
+	jsonResponse(w, files)
+}
+
+// --- Activity Feed ---
+
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	limit := 20
+	if limitStr != "" {
+		if v, err := strconv.Atoi(limitStr); err == nil && v > 0 && v <= 100 {
+			limit = v
+		}
+	}
+
+	events, err := s.store.DB().RecentActivity(limit)
+	if err != nil {
+		jsonError(w, "loading activity", err, http.StatusInternalServerError)
+		return
+	}
+	if events == nil {
+		events = []*store.ActivityEvent{}
+	}
+	jsonResponse(w, events)
 }

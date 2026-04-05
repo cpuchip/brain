@@ -41,6 +41,12 @@ onMounted(loadCounts)
           <RouterLink to="/entries" class="text-gray-400 hover:text-white" active-class="!text-white font-medium">
             Entries
           </RouterLink>
+          <RouterLink to="/scheduled" class="text-gray-400 hover:text-white" active-class="!text-white font-medium">
+            Scheduled
+          </RouterLink>
+          <RouterLink to="/library" class="text-gray-400 hover:text-white" active-class="!text-white font-medium">
+            Library
+          </RouterLink>
           <RouterLink to="/review" class="text-gray-400 hover:text-white relative" active-class="!text-white font-medium">
             Review
             <span

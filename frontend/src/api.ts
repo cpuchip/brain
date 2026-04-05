@@ -55,6 +55,57 @@ export interface SessionMessage {
   created_at: string
 }
 
+export interface ScheduledTask {
+  id: number
+  name: string
+  description?: string
+  schedule: string
+  project_id?: number | null
+  agent_name: string
+  prompt: string
+  status: string
+  last_run_at?: string | null
+  next_run_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface TaskRun {
+  id: number
+  task_id: number
+  status: string
+  entry_id?: string
+  output?: string
+  error?: string
+  started_at: string
+  ended_at?: string | null
+}
+
+export interface ActivityEvent {
+  id: string
+  type: string
+  title: string
+  entry_id?: string
+  project_id?: number | null
+  timestamp: string
+}
+
+export interface AgentInfo {
+  name: string
+  description?: string
+}
+
+export interface SkillInfo {
+  name: string
+  description?: string
+}
+
+export interface MemoryFile {
+  name: string
+  path: string
+  size: number
+}
+
 export interface Stats {
   categories: Record<string, number>
   total: number
@@ -301,5 +352,59 @@ export const api = {
 
   yourTurn() {
     return request<{ entries: { id: string; title: string; category: string; agent_route: string; body: string; updated_at: string }[] }>('/entries/your-turn')
+  },
+
+  // Scheduled tasks
+  listScheduledTasks() {
+    return request<ScheduledTask[]>('/scheduled')
+  },
+
+  createScheduledTask(data: { name: string; description?: string; schedule: string; agent_name: string; prompt: string; project_id?: number | null }) {
+    return request<ScheduledTask>('/scheduled', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
+
+  getScheduledTask(id: number) {
+    return request<ScheduledTask>(`/scheduled/${id}`)
+  },
+
+  updateScheduledTask(id: number, updates: Partial<Pick<ScheduledTask, 'name' | 'description' | 'schedule' | 'agent_name' | 'prompt' | 'status' | 'project_id'>>) {
+    return request<ScheduledTask>(`/scheduled/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    })
+  },
+
+  deleteScheduledTask(id: number) {
+    return request<void>(`/scheduled/${id}`, { method: 'DELETE' })
+  },
+
+  listTaskRuns(taskId: number) {
+    return request<TaskRun[]>(`/scheduled/${taskId}/runs`)
+  },
+
+  triggerTaskRun(taskId: number) {
+    return request<{ run_id: number; status: string }>(`/scheduled/${taskId}/run`, { method: 'POST' })
+  },
+
+  // Library
+  libraryAgents() {
+    return request<AgentInfo[]>('/library/agents')
+  },
+
+  librarySkills() {
+    return request<SkillInfo[]>('/library/skills')
+  },
+
+  libraryMemory() {
+    return request<MemoryFile[]>('/library/memory')
+  },
+
+  // Activity feed
+  activity(limit?: number) {
+    const params = limit ? `?limit=${limit}` : ''
+    return request<ActivityEvent[]>(`/activity${params}`)
   },
 }
