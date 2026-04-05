@@ -340,9 +340,43 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Pipeline fields — update via dedicated DB methods after the main update
+	var setMaturity, setMaturityNotes string
+	var hasMaturity bool
+	if v, ok := updates["maturity"].(string); ok {
+		setMaturity = v
+		hasMaturity = true
+	}
+	if v, ok := updates["maturity_notes"].(string); ok {
+		setMaturityNotes = v
+	}
+	var setRouteStatus string
+	var hasRouteStatus bool
+	if v, ok := updates["route_status"].(string); ok {
+		setRouteStatus = v
+		hasRouteStatus = true
+	}
+
 	if err := s.store.DB().UpdateEntry(existing); err != nil {
 		jsonError(w, "updating entry", err, http.StatusInternalServerError)
 		return
+	}
+
+	if hasMaturity {
+		if err := s.store.DB().SetMaturity(id, setMaturity, setMaturityNotes); err != nil {
+			jsonError(w, "setting maturity", err, http.StatusInternalServerError)
+			return
+		}
+		existing.Maturity = setMaturity
+		existing.MaturityNotes = setMaturityNotes
+	}
+
+	if hasRouteStatus {
+		if err := s.store.DB().UpdateRouteStatus(id, setRouteStatus); err != nil {
+			jsonError(w, "setting route status", err, http.StatusInternalServerError)
+			return
+		}
+		existing.RouteStatus = setRouteStatus
 	}
 
 	// Re-embed
