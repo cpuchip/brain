@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { renderMarkdown } from '../composables/useMarkdown'
 
 const props = defineProps<{
@@ -11,6 +12,7 @@ const emit = defineEmits<{
   close: []
 }>()
 
+const router = useRouter()
 const content = ref('')
 const loading = ref(false)
 const error = ref('')
@@ -37,6 +39,21 @@ watch(() => [props.open, props.filePath], async () => {
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') emit('close')
 }
+
+function openInReader() {
+  emit('close')
+  router.push({ path: '/library', query: { file: props.filePath } })
+}
+
+function handleContentClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (target.classList.contains('file-link') && target.dataset.filePath) {
+    e.preventDefault()
+    // Navigate to the file in the full reader instead of trying to load in sidebar
+    emit('close')
+    router.push({ path: '/library', query: { file: target.dataset.filePath } })
+  }
+}
 </script>
 
 <template>
@@ -56,15 +73,22 @@ function onKeydown(e: KeyboardEvent) {
         <!-- Header -->
         <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700 shrink-0">
           <span class="text-sm text-gray-300 font-mono truncate mr-4">{{ filePath }}</span>
-          <button
-            @click="emit('close')"
-            class="text-gray-500 hover:text-gray-300 text-lg leading-none px-2 py-1 rounded hover:bg-gray-800 transition-colors"
-            aria-label="Close"
-          >✕</button>
+          <div class="flex items-center gap-2 shrink-0">
+            <button
+              @click="openInReader"
+              class="text-xs text-sky-400 hover:text-sky-300 px-2 py-1 rounded hover:bg-gray-800 transition-colors"
+              title="Open in Library reader"
+            >Open in Reader →</button>
+            <button
+              @click="emit('close')"
+              class="text-gray-500 hover:text-gray-300 text-lg leading-none px-2 py-1 rounded hover:bg-gray-800 transition-colors"
+              aria-label="Close"
+            >✕</button>
+          </div>
         </div>
 
         <!-- Content -->
-        <div class="flex-1 overflow-auto p-6">
+        <div class="flex-1 overflow-auto p-6" @click="handleContentClick">
           <div v-if="loading" class="text-gray-500 text-sm">Loading...</div>
           <div v-else-if="error" class="text-red-400 text-sm">{{ error }}</div>
           <div

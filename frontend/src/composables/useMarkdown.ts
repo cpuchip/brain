@@ -21,7 +21,8 @@ md.renderer.rules.link_open = function(tokens: any, idx: any, options: any, env:
 
 // File path pattern: workspace-relative paths like .spec/..., study/..., scripts/..., etc.
 // Matches paths with forward slashes (we normalize backslashes before matching).
-const FILE_PATH_RE = /(?:^|\s|["'(])((\.spec|study|scripts|docs|lessons|journal|becoming|books|callings|data|teaching|yt|\.github|private-brain|public)\/[\w./_-]+(?:\.(?:md|yaml|yml|json|go|ts|vue|js|txt|sql|css|html))?)/g
+// The lookbehind includes > (for paths inside <code> tags from markdown-it) and backtick.
+const FILE_PATH_RE = /(?:^|\s|["'(>\x60])((\.spec|study|scripts|docs|lessons|journal|becoming|books|callings|data|teaching|yt|\.github|private-brain|public)\/[\w./_-]+(?:\.(?:md|yaml|yml|json|go|ts|vue|js|txt|sql|css|html))?)/g
 
 // Post-process rendered HTML to detect file paths and make them clickable.
 // Normalizes backslashes to forward slashes first (Windows agent messages use \).

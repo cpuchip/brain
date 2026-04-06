@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { api, type AgentInfo, type SkillInfo, type MemoryFile, type FileTreeNode } from '../api'
 import { renderMarkdown } from '../composables/useMarkdown'
 import { useFilePanel } from '../composables/useFilePanel'
 import TreeNode from '../components/TreeNode.vue'
 
+const route = useRoute()
+const router = useRouter()
 const { wideLayout } = useFilePanel()
 
 type Tab = 'files' | 'agents' | 'skills' | 'memory'
@@ -96,8 +99,22 @@ function toggleDir(path: string) {
   }
 }
 
-async function openFile(path: string) {
+// Navigation history
+const fileHistory = ref<string[]>([])
+const historyIndex = ref(-1)
+const canGoBack = computed(() => historyIndex.value > 0)
+const canGoForward = computed(() => historyIndex.value < fileHistory.value.length - 1)
+
+async function openFile(path: string, pushHistory = true) {
   currentFilePath.value = path
+  if (pushHistory) {
+    // Trim forward history and push new entry
+    fileHistory.value = fileHistory.value.slice(0, historyIndex.value + 1)
+    fileHistory.value.push(path)
+    historyIndex.value = fileHistory.value.length - 1
+  }
+  // Update URL query param without full navigation
+  router.replace({ query: { ...route.query, file: path } })
   fileLoading.value = true
   fileError.value = ''
   fileContent.value = ''
@@ -110,10 +127,56 @@ async function openFile(path: string) {
   }
 }
 
+function goBack() {
+  if (!canGoBack.value) return
+  historyIndex.value--
+  openFile(fileHistory.value[historyIndex.value]!, false)
+}
+
+function goForward() {
+  if (!canGoForward.value) return
+  historyIndex.value++
+  openFile(fileHistory.value[historyIndex.value]!, false)
+}
+
+// Click handler for file-link anchors in rendered content
+function handleContentClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (target.classList.contains('file-link') && target.dataset.filePath) {
+    e.preventDefault()
+    openFile(target.dataset.filePath)
+  }
+}
+
 onMounted(() => {
   loadAll()
   loadFileTree()
+  // Deep link: open file from query param
+  const filePath = route.query.file as string
+  if (filePath) {
+    openFileFromQuery(filePath)
+  }
 })
+
+// Watch for query param changes while already on the Library page
+watch(() => route.query.file, (newFile) => {
+  if (newFile && typeof newFile === 'string' && newFile !== currentFilePath.value) {
+    openFileFromQuery(newFile)
+  }
+})
+
+function openFileFromQuery(filePath: string) {
+  openFile(filePath)
+  // Expand parent dirs so the file is visible in tree
+  const parts = filePath.split('/')
+  let dir = ''
+  for (let i = 0; i < parts.length - 1; i++) {
+    dir = dir ? dir + '/' + parts[i]! : parts[i]!
+    expandedDirs.value.add(dir)
+  }
+  // Ensure files tab is active
+  activeTab.value = 'files'
+}
 </script>
 
 <template>
@@ -181,10 +244,22 @@ onMounted(() => {
           Select a file to view
         </div>
         <template v-else>
-          <div class="px-4 py-2 border-b border-gray-800 shrink-0">
-            <span class="text-xs text-gray-400 font-mono">{{ currentFilePath }}</span>
+          <div class="px-4 py-2 border-b border-gray-800 shrink-0 flex items-center gap-2">
+            <button
+              @click="goBack"
+              :disabled="!canGoBack"
+              class="text-gray-500 hover:text-gray-300 disabled:opacity-30 disabled:cursor-default text-sm px-1"
+              title="Back"
+            >←</button>
+            <button
+              @click="goForward"
+              :disabled="!canGoForward"
+              class="text-gray-500 hover:text-gray-300 disabled:opacity-30 disabled:cursor-default text-sm px-1"
+              title="Forward"
+            >→</button>
+            <span class="text-xs text-gray-400 font-mono truncate">{{ currentFilePath }}</span>
           </div>
-          <div class="flex-1 overflow-auto p-6">
+          <div class="flex-1 overflow-auto p-6" @click="handleContentClick">
             <div v-if="fileLoading" class="text-gray-500 text-sm">Loading...</div>
             <div v-else-if="fileError" class="text-red-400 text-sm">{{ fileError }}</div>
             <div
