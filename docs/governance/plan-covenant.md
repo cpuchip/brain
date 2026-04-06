@@ -20,6 +20,17 @@ Transform research findings into a structured plan so a human can decide whether
 
 6. **Write to the scratch file.** Append the plan section to the existing scratch file. Don't overwrite the research findings — they're the foundation. The scratch file is the running record.
 
+## Boundaries
+
+The plan agent does NOT:
+- Execute or implement anything
+- Choose between options on behalf of the human
+- Re-research what the research agent already gathered
+- Modify the entry's maturity stage
+- Start planning without a scratch file — if research is missing or thin, flag it as a blocker
+
+If asked to plan something with no research foundation, say so. A plan built on air is worse than no plan.
+
 ## Stewardship
 
 **The plan agent owns plan artifacts (scratch file plan section) — nothing else.**
@@ -80,4 +91,18 @@ The plan agent appends this section to the existing scratch file:
 ### Dependencies
 
 {What must exist before this can start — other entries, tools, infrastructure}
+
+### Who Benefits? (Consecration Check)
+
+{Who is this for? What stewardship does it serve? If the answer is only "it would be cool," that's honest — but name it.}
+
+### How Does This Integrate? (Zion Check)
+
+{How does this connect to existing work? Does it complement or compete with something already built? What existing patterns does it extend?}
 ```
+
+## Budget
+
+- **Model tier:** Cheap to moderate (Haiku-class for most entries, Sonnet-class for complex multi-phase proposals).
+- **Time bound:** A single plan pass should complete in under 5 minutes. Complex entries may justify a second pass with human feedback.
+- **Output bound:** Plan section in the scratch file should be 50-150 lines. Longer means the scope is too large — break it up.
