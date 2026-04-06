@@ -449,4 +449,10 @@ export const api = {
   executionContext(entryId: string) {
     return request<{ entry_id: string; title: string; maturity: string; scenarios: string[]; model: string; cost: number; prompt: string; has_scratch: boolean }>(`/entries/${encodeURIComponent(entryId)}/execution-context`)
   },
+
+  async readFile(path: string): Promise<string> {
+    const res = await fetch(`/api/files/read?path=${encodeURIComponent(path)}`)
+    if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`)
+    return res.text()
+  },
 }

@@ -164,6 +164,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/entries/{id}/dismiss-route", s.cors(s.handleDismissRoute))
 	s.mux.HandleFunc("POST /api/shutdown", s.cors(s.handleShutdown))
 
+	// File serving (workspace file viewer)
+	s.mux.HandleFunc("GET /api/files/read", s.cors(s.handleFileRead))
+
 	// CORS preflight
 	s.mux.HandleFunc("OPTIONS /", s.handleCORSPreflight)
 
@@ -1356,6 +1359,67 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(500 * time.Millisecond)
 		s.shutdownCh <- struct{}{}
 	}()
+}
+
+// handleFileRead serves workspace files with path traversal protection.
+func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
+	relPath := r.URL.Query().Get("path")
+	if relPath == "" {
+		http.Error(w, "path parameter required", http.StatusBadRequest)
+		return
+	}
+
+	// Normalize path separators for cross-platform safety
+	relPath = filepath.FromSlash(relPath)
+
+	// Security: clean the path
+	cleaned := filepath.Clean(relPath)
+
+	// Reject absolute paths
+	if filepath.IsAbs(cleaned) {
+		http.Error(w, "invalid path", http.StatusForbidden)
+		return
+	}
+
+	// Reject path traversal
+	if strings.Contains(cleaned, "..") {
+		http.Error(w, "invalid path", http.StatusForbidden)
+		return
+	}
+
+	// Compute workspace root from BrainCodeDir (scripts/brain → scripture-study)
+	workspaceRoot := ""
+	if s.cfg.BrainCodeDir != "" {
+		scriptsDir := filepath.Dir(s.cfg.BrainCodeDir)
+		workspaceRoot = filepath.Dir(scriptsDir)
+	}
+	if workspaceRoot == "" {
+		http.Error(w, "workspace root not configured", http.StatusInternalServerError)
+		return
+	}
+
+	fullPath := filepath.Join(workspaceRoot, cleaned)
+
+	// Double-check resolved path is under workspace root
+	absRoot, _ := filepath.Abs(workspaceRoot)
+	absPath, _ := filepath.Abs(fullPath)
+	if !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) && absPath != absRoot {
+		http.Error(w, "access denied", http.StatusForbidden)
+		return
+	}
+
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "file not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "read error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write(data)
 }
 
 // --- Helpers ---

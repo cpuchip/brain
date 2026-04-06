@@ -2,6 +2,9 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, type Entry, type SubTask, type Project, type SessionMessage } from '../api'
+import { useAutoExpand } from '../composables/useAutoExpand'
+import { renderMarkdown } from '../composables/useMarkdown'
+import FileViewer from '../components/FileViewer.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -199,6 +202,25 @@ async function deleteSubTask(st: SubTask) {
 // Session messages / iterative turns
 const replyText = ref('')
 const replying = ref(false)
+const replyTextarea = ref<HTMLTextAreaElement | null>(null)
+const { resize: resizeTextarea } = useAutoExpand(replyTextarea, 300)
+
+// File viewer state
+const fileViewerOpen = ref(false)
+const fileViewerPath = ref('')
+
+function openFileViewer(path: string) {
+  fileViewerPath.value = path
+  fileViewerOpen.value = true
+}
+
+function handleMessageClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (target.classList.contains('file-link') && target.dataset.filePath) {
+    e.preventDefault()
+    openFileViewer(target.dataset.filePath)
+  }
+}
 
 const hasConversation = computed(() => messages.value.length > 0)
 
@@ -421,7 +443,11 @@ onMounted(load)
                 </span>
                 <span class="text-xs text-gray-600">{{ new Date(msg.created_at).toLocaleString() }}</span>
               </div>
-              <div class="whitespace-pre-wrap text-gray-300">{{ msg.content }}</div>
+              <div
+                class="prose prose-invert prose-sm max-w-none text-gray-300"
+                v-html="renderMarkdown(msg.content)"
+                @click="handleMessageClick"
+              />
             </div>
           </div>
 
@@ -429,11 +455,14 @@ onMounted(load)
           <div v-if="entry.route_status && entry.route_status !== 'complete'" class="mt-3">
             <div class="flex gap-2">
               <textarea
+                ref="replyTextarea"
                 v-model="replyText"
+                @input="resizeTextarea"
                 @keydown.ctrl.enter="sendReply"
                 placeholder="Reply with feedback..."
                 rows="2"
-                class="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
+                class="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                style="overflow-y: hidden"
               />
               <button
                 @click="sendReply"
@@ -533,6 +562,13 @@ onMounted(load)
           </button>
         </div>
       </div>
+
+      <!-- File Viewer Modal -->
+      <FileViewer
+        :open="fileViewerOpen"
+        :file-path="fileViewerPath"
+        @close="fileViewerOpen = false"
+      />
     </div>
   </div>
 </template>
