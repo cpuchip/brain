@@ -6,6 +6,19 @@ const md = new MarkdownIt({
   breaks: true,    // newlines become <br>
 })
 
+// External links (http/https) open in a new tab
+const defaultLinkOpen = md.renderer.rules.link_open || function(tokens: any, idx: any, options: any, _env: any, self: any) {
+  return self.renderToken(tokens, idx, options)
+}
+md.renderer.rules.link_open = function(tokens: any, idx: any, options: any, env: any, self: any) {
+  const href = tokens[idx].attrGet('href')
+  if (href && /^https?:\/\//.test(href)) {
+    tokens[idx].attrSet('target', '_blank')
+    tokens[idx].attrSet('rel', 'noopener noreferrer')
+  }
+  return defaultLinkOpen(tokens, idx, options, env, self)
+}
+
 // File path pattern: workspace-relative paths like .spec/..., study/..., scripts/..., etc.
 // Matches paths with forward slashes (we normalize backslashes before matching).
 const FILE_PATH_RE = /(?:^|\s|["'(])((\.spec|study|scripts|docs|lessons|journal|becoming|books|callings|data|teaching|yt|\.github|private-brain|public)\/[\w./_-]+(?:\.(?:md|yaml|yml|json|go|ts|vue|js|txt|sql|css|html))?)/g

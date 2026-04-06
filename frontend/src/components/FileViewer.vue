@@ -34,10 +34,6 @@ watch(() => [props.open, props.filePath], async () => {
   }
 }, { immediate: true })
 
-function onBackdropClick(e: MouseEvent) {
-  if (e.target === e.currentTarget) emit('close')
-}
-
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') emit('close')
 }
@@ -46,40 +42,36 @@ function onKeydown(e: KeyboardEvent) {
 <template>
   <Teleport to="body">
     <Transition
-      enter-active-class="transition-opacity duration-200"
-      leave-active-class="transition-opacity duration-150"
-      enter-from-class="opacity-0"
-      leave-to-class="opacity-0"
+      enter-active-class="transition-transform duration-200 ease-out"
+      leave-active-class="transition-transform duration-150 ease-in"
+      enter-from-class="translate-x-full"
+      leave-to-class="translate-x-full"
     >
       <div
         v-if="open"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-        @click="onBackdropClick"
+        class="fixed top-0 right-0 h-full w-[45vw] min-w-[400px] max-w-[800px] z-40 flex flex-col bg-gray-900 border-l border-gray-700 shadow-2xl"
         @keydown="onKeydown"
         tabindex="-1"
-        ref="backdrop"
       >
-        <div class="bg-gray-900 border border-gray-700 rounded-xl w-[80vw] h-[80vh] flex flex-col shadow-2xl">
-          <!-- Header -->
-          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700 shrink-0">
-            <span class="text-sm text-gray-300 font-mono truncate mr-4">{{ filePath }}</span>
-            <button
-              @click="emit('close')"
-              class="text-gray-500 hover:text-gray-300 text-lg leading-none px-1"
-              aria-label="Close"
-            >✕</button>
-          </div>
+        <!-- Header -->
+        <div class="flex items-center justify-between px-4 py-3 border-b border-gray-700 shrink-0">
+          <span class="text-sm text-gray-300 font-mono truncate mr-4">{{ filePath }}</span>
+          <button
+            @click="emit('close')"
+            class="text-gray-500 hover:text-gray-300 text-lg leading-none px-2 py-1 rounded hover:bg-gray-800 transition-colors"
+            aria-label="Close"
+          >✕</button>
+        </div>
 
-          <!-- Content -->
-          <div class="flex-1 overflow-auto p-6">
-            <div v-if="loading" class="text-gray-500 text-sm">Loading...</div>
-            <div v-else-if="error" class="text-red-400 text-sm">{{ error }}</div>
-            <div
-              v-else
-              class="prose prose-invert prose-sm max-w-none"
-              v-html="renderMarkdown(content)"
-            />
-          </div>
+        <!-- Content -->
+        <div class="flex-1 overflow-auto p-6">
+          <div v-if="loading" class="text-gray-500 text-sm">Loading...</div>
+          <div v-else-if="error" class="text-red-400 text-sm">{{ error }}</div>
+          <div
+            v-else
+            class="prose prose-invert prose-sm max-w-none"
+            v-html="renderMarkdown(content)"
+          />
         </div>
       </div>
     </Transition>
