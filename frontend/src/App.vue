@@ -2,6 +2,9 @@
 import { ref, onMounted } from 'vue'
 import { RouterLink, RouterView } from 'vue-router'
 import { api, type Stats } from './api'
+import { useFilePanel } from './composables/useFilePanel'
+
+const { filePanelOpen } = useFilePanel()
 
 const stats = ref<Stats | null>(null)
 const reviewCount = ref(0)
@@ -63,7 +66,10 @@ onMounted(loadCounts)
     </nav>
 
     <!-- Content -->
-    <main class="flex-1 max-w-4xl w-full mx-auto px-4 py-6">
+    <main
+      class="flex-1 w-full px-4 py-6 transition-all duration-200"
+      :class="filePanelOpen ? 'mr-[45vw]' : 'max-w-4xl mx-auto'"
+    >
       <RouterView />
     </main>
   </div>

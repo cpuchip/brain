@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, type Entry, type SubTask, type Project, type SessionMessage } from '../api'
 import { useAutoExpand } from '../composables/useAutoExpand'
 import { renderMarkdown } from '../composables/useMarkdown'
+import { useFilePanel } from '../composables/useFilePanel'
 import FileViewer from '../components/FileViewer.vue'
 
 const route = useRoute()
@@ -206,6 +207,7 @@ const replyTextarea = ref<HTMLTextAreaElement | null>(null)
 const { resize: resizeTextarea } = useAutoExpand(replyTextarea, 300)
 
 // File viewer state
+const { filePanelOpen } = useFilePanel()
 const fileViewerOpen = ref(false)
 const fileViewerPath = ref('')
 
@@ -213,6 +215,8 @@ function openFileViewer(path: string) {
   fileViewerPath.value = path
   fileViewerOpen.value = true
 }
+
+watch(fileViewerOpen, (v) => { filePanelOpen.value = v })
 
 function handleMessageClick(e: MouseEvent) {
   const target = e.target as HTMLElement
@@ -251,10 +255,11 @@ async function markComplete() {
 }
 
 onMounted(load)
+onUnmounted(() => { filePanelOpen.value = false })
 </script>
 
 <template>
-  <div class="relative transition-[margin] duration-200" :style="fileViewerOpen ? 'margin-right: 45vw' : ''">
+  <div class="relative">
     <!-- Toast -->
     <Transition enter-active-class="transition-opacity duration-200" leave-active-class="transition-opacity duration-150"
       enter-from-class="opacity-0" leave-to-class="opacity-0">
