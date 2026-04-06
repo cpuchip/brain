@@ -254,7 +254,7 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="relative">
+  <div class="relative transition-[margin] duration-200" :style="fileViewerOpen ? 'margin-right: 45vw' : ''">
     <!-- Toast -->
     <Transition enter-active-class="transition-opacity duration-200" leave-active-class="transition-opacity duration-150"
       enter-from-class="opacity-0" leave-to-class="opacity-0">

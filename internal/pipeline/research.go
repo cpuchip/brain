@@ -312,13 +312,94 @@ Token budget guidance:
 		return nil, fmt.Errorf("setting maturity: %w", err)
 	}
 
+	// Build a richer message: summarize open questions from the scratch file
+	message := fmt.Sprintf("Research pass complete. Findings at %s", scratchPath)
+	if summary := extractQuestionSummary(absPath); summary != "" {
+		message += "\n\n" + summary
+	}
+
 	return &AdvanceResult{
 		EntryID:     entry.ID,
 		OldMaturity: entry.Maturity,
 		NewMaturity: "researched",
 		ScratchPath: scratchPath,
-		Message:     fmt.Sprintf("Research pass complete. Findings at %s", scratchPath),
+		Message:     message,
 	}, nil
+}
+
+// extractQuestionSummary reads the scratch file and extracts the "Open Questions"
+// section into a compact summary for the auto-advance message.
+func extractQuestionSummary(filePath string) string {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var questions []string
+	var categories []string
+	inQuestions := false
+	currentCategory := ""
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect "Open Questions" heading (## or ###)
+		if strings.Contains(strings.ToLower(trimmed), "open question") && strings.HasPrefix(trimmed, "#") {
+			inQuestions = true
+			continue
+		}
+
+		// Stop at the next heading of equal or higher level
+		if inQuestions && strings.HasPrefix(trimmed, "## ") && !strings.Contains(strings.ToLower(trimmed), "open question") {
+			break
+		}
+
+		if !inQuestions {
+			continue
+		}
+
+		// Sub-category heading (### or **)
+		if strings.HasPrefix(trimmed, "### ") || (strings.HasPrefix(trimmed, "**") && strings.HasSuffix(trimmed, "**")) {
+			cat := strings.TrimPrefix(trimmed, "### ")
+			cat = strings.Trim(cat, "*")
+			if cat != "" {
+				currentCategory = cat
+				if !containsString(categories, currentCategory) {
+					categories = append(categories, currentCategory)
+				}
+			}
+			continue
+		}
+
+		// Numbered question line
+		if len(trimmed) > 2 && trimmed[0] >= '0' && trimmed[0] <= '9' && strings.Contains(trimmed[:3], ".") {
+			questions = append(questions, trimmed)
+			if currentCategory != "" && !containsString(categories, currentCategory) {
+				categories = append(categories, currentCategory)
+			}
+		}
+	}
+
+	if len(questions) == 0 {
+		return ""
+	}
+
+	summary := fmt.Sprintf("**%d open questions** for you", len(questions))
+	if len(categories) > 0 {
+		summary += " about " + strings.Join(categories, ", ")
+	}
+	summary += ". Your answers will drive the planning phase."
+	return summary
+}
+
+func containsString(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // buildMCPDefs returns MCP server definitions from config for agent use.
