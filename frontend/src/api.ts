@@ -112,12 +112,14 @@ export interface FileTreeNode {
   name: string
   path: string
   is_dir: boolean
+  is_git_repo?: boolean
   children?: FileTreeNode[]
 }
 
 export interface GitFileStatus {
   path: string
   status: 'new' | 'modified' | 'deleted' | 'renamed'
+  repo: string
 }
 
 export interface Stats {

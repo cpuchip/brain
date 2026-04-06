@@ -1473,10 +1473,11 @@ func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type TreeNode struct {
-		Name     string      `json:"name"`
-		Path     string      `json:"path"`
-		IsDir    bool        `json:"is_dir"`
-		Children []*TreeNode `json:"children,omitempty"`
+		Name      string      `json:"name"`
+		Path      string      `json:"path"`
+		IsDir     bool        `json:"is_dir"`
+		IsGitRepo bool        `json:"is_git_repo,omitempty"`
+		Children  []*TreeNode `json:"children,omitempty"`
 	}
 
 	// Skip directories that are too large or not useful
@@ -1511,6 +1512,10 @@ func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
 				if skipDirs[name] {
 					continue
 				}
+				// Check if this directory is a git repo
+				if _, err := os.Stat(filepath.Join(dir, name, ".git")); err == nil {
+					node.IsGitRepo = true
+				}
 				node.Children = buildTree(filepath.Join(dir, name), relPath, depth+1)
 			}
 			nodes = append(nodes, node)
@@ -1539,43 +1544,55 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 	type GitFileStatus struct {
 		Path   string `json:"path"`
 		Status string `json:"status"` // "new", "modified", "deleted", "renamed"
+		Repo   string `json:"repo"`   // relative path to repo root, "." for workspace root
 	}
 
-	cmd := exec.Command("git", "status", "--porcelain")
-	cmd.Dir = workspaceRoot
-	out, err := cmd.Output()
-	if err != nil {
-		jsonError(w, "git status failed", err, http.StatusInternalServerError)
-		return
-	}
-
+	repos := discoverGitRepos(workspaceRoot)
 	var files []GitFileStatus
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if len(line) < 4 {
-			continue
+	for _, repo := range repos {
+		repoDir := workspaceRoot
+		if repo != "." {
+			repoDir = filepath.Join(workspaceRoot, filepath.FromSlash(repo))
 		}
-		xy := line[:2]
-		path := strings.TrimSpace(line[3:])
-		// Handle renames: "R  old -> new"
-		if idx := strings.Index(path, " -> "); idx >= 0 {
-			path = path[idx+4:]
-		}
-		path = filepath.ToSlash(path)
 
-		var status string
-		switch {
-		case xy == "??" || xy[0] == 'A' || xy[1] == 'A':
-			status = "new"
-		case xy[0] == 'D' || xy[1] == 'D':
-			status = "deleted"
-		case xy[0] == 'R' || xy[1] == 'R':
-			status = "renamed"
-		default:
-			status = "modified"
+		cmd := exec.Command("git", "status", "--porcelain")
+		cmd.Dir = repoDir
+		out, err := cmd.Output()
+		if err != nil {
+			continue // skip repos where git status fails
 		}
-		files = append(files, GitFileStatus{Path: path, Status: status})
+
+		scanner := bufio.NewScanner(strings.NewReader(string(out)))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if len(line) < 4 {
+				continue
+			}
+			xy := line[:2]
+			path := strings.TrimSpace(line[3:])
+			if idx := strings.Index(path, " -> "); idx >= 0 {
+				path = path[idx+4:]
+			}
+			path = filepath.ToSlash(path)
+
+			// Prefix with repo path for non-root repos
+			if repo != "." {
+				path = repo + "/" + path
+			}
+
+			var status string
+			switch {
+			case xy == "??" || xy[0] == 'A' || xy[1] == 'A':
+				status = "new"
+			case xy[0] == 'D' || xy[1] == 'D':
+				status = "deleted"
+			case xy[0] == 'R' || xy[1] == 'R':
+				status = "renamed"
+			default:
+				status = "modified"
+			}
+			files = append(files, GitFileStatus{Path: path, Status: status, Repo: repo})
+		}
 	}
 
 	if files == nil {
@@ -1621,12 +1638,18 @@ func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use filepath.ToSlash for git command (git uses forward slashes)
-	gitPath := filepath.ToSlash(cleaned)
+	// Find which git repo owns this file
+	repos := discoverGitRepos(workspaceRoot)
+	repoRoot, repoRelPath := findRepoForPath(repos, filepath.ToSlash(cleaned))
+	gitDir := workspaceRoot
+	if repoRoot != "." {
+		gitDir = filepath.Join(workspaceRoot, filepath.FromSlash(repoRoot))
+	}
+	gitPath := repoRelPath
 
 	// Try tracked file diff first: git diff HEAD -- <path>
 	cmd := exec.Command("git", "diff", "HEAD", "--", gitPath)
-	cmd.Dir = workspaceRoot
+	cmd.Dir = gitDir
 	out, err := cmd.Output()
 	if err == nil && len(out) > 0 {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -1636,7 +1659,7 @@ func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 
 	// For untracked (new) files: git diff --no-index /dev/null <path>
 	cmd = exec.Command("git", "diff", "--no-index", "/dev/null", gitPath)
-	cmd.Dir = workspaceRoot
+	cmd.Dir = gitDir
 	out, _ = cmd.CombinedOutput()
 	if len(out) > 0 {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -1647,6 +1670,67 @@ func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
 	// No diff available
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
+}
+
+// discoverGitRepos walks the workspace root looking for .git directories
+// and returns a list of repo paths relative to the workspace root.
+// The workspace root itself is included as ".".
+func discoverGitRepos(workspaceRoot string) []string {
+	repos := []string{"."}
+	// Walk up to depth 3 looking for nested .git directories
+	entries, err := os.ReadDir(workspaceRoot)
+	if err != nil {
+		return repos
+	}
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		checkGitRepo(workspaceRoot, e.Name(), &repos, 1)
+	}
+	return repos
+}
+
+func checkGitRepo(root string, relPath string, repos *[]string, depth int) {
+	if depth > 3 {
+		return
+	}
+	dir := filepath.Join(root, filepath.FromSlash(relPath))
+	// Check if this directory has a .git
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		*repos = append(*repos, relPath)
+		return // Don't recurse into nested repos
+	}
+	// Otherwise recurse into children
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		checkGitRepo(root, relPath+"/"+e.Name(), repos, depth+1)
+	}
+}
+
+// findRepoForPath finds the longest matching repo prefix for a workspace-relative file path.
+// Returns the repo root and the file path relative to that repo.
+func findRepoForPath(repos []string, filePath string) (repoRoot string, relPath string) {
+	best := "."
+	for _, repo := range repos {
+		if repo == "." {
+			continue
+		}
+		prefix := repo + "/"
+		if strings.HasPrefix(filePath, prefix) && len(repo) > len(best) {
+			best = repo
+		}
+	}
+	if best == "." {
+		return ".", filePath
+	}
+	return best, strings.TrimPrefix(filePath, best+"/")
 }
 
 // --- Helpers ---

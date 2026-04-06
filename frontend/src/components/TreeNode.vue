@@ -67,6 +67,7 @@ const statusClass = computed(() => {
     >
       <span class="text-[10px] transition-transform" :class="isExpanded ? 'rotate-90' : ''">▶</span>
       <span class="font-medium truncate">{{ node.name }}</span>
+      <span v-if="node.is_git_repo" class="text-[9px] text-violet-400 ml-0.5" title="Git repository">⎇</span>
       <span v-if="nodeStatus" class="ml-auto text-[10px]" :class="statusClass">●</span>
     </button>
 
