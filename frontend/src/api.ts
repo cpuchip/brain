@@ -115,6 +115,11 @@ export interface FileTreeNode {
   children?: FileTreeNode[]
 }
 
+export interface GitFileStatus {
+  path: string
+  status: 'new' | 'modified' | 'deleted' | 'renamed'
+}
+
 export interface Stats {
   categories: Record<string, number>
   total: number
@@ -466,5 +471,9 @@ export const api = {
 
   async fileTree(root: string = '.'): Promise<FileTreeNode[]> {
     return request<FileTreeNode[]>(`/files/tree?root=${encodeURIComponent(root)}`)
+  },
+
+  gitStatus() {
+    return request<GitFileStatus[]>('/git/status')
   },
 }

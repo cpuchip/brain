@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -170,6 +172,9 @@ func (s *Server) routes() {
 	// File serving (workspace file viewer)
 	s.mux.HandleFunc("GET /api/files/read", s.cors(s.handleFileRead))
 	s.mux.HandleFunc("GET /api/files/tree", s.cors(s.handleFileTree))
+
+	// Git status
+	s.mux.HandleFunc("GET /api/git/status", s.cors(s.handleGitStatus))
 
 	// WebSocket (live push updates)
 	s.mux.HandleFunc("GET /ws", s.handleWebSocket)
@@ -1517,6 +1522,65 @@ func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
 		tree = []*TreeNode{}
 	}
 	jsonResponse(w, tree)
+}
+
+func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
+	workspaceRoot := ""
+	if s.cfg.BrainCodeDir != "" {
+		scriptsDir := filepath.Dir(s.cfg.BrainCodeDir)
+		workspaceRoot = filepath.Dir(scriptsDir)
+	}
+	if workspaceRoot == "" {
+		jsonError(w, "workspace root not configured", nil, http.StatusInternalServerError)
+		return
+	}
+
+	type GitFileStatus struct {
+		Path   string `json:"path"`
+		Status string `json:"status"` // "new", "modified", "deleted", "renamed"
+	}
+
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = workspaceRoot
+	out, err := cmd.Output()
+	if err != nil {
+		jsonError(w, "git status failed", err, http.StatusInternalServerError)
+		return
+	}
+
+	var files []GitFileStatus
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) < 4 {
+			continue
+		}
+		xy := line[:2]
+		path := strings.TrimSpace(line[3:])
+		// Handle renames: "R  old -> new"
+		if idx := strings.Index(path, " -> "); idx >= 0 {
+			path = path[idx+4:]
+		}
+		path = filepath.ToSlash(path)
+
+		var status string
+		switch {
+		case xy == "??" || xy[0] == 'A' || xy[1] == 'A':
+			status = "new"
+		case xy[0] == 'D' || xy[1] == 'D':
+			status = "deleted"
+		case xy[0] == 'R' || xy[1] == 'R':
+			status = "renamed"
+		default:
+			status = "modified"
+		}
+		files = append(files, GitFileStatus{Path: path, Status: status})
+	}
+
+	if files == nil {
+		files = []GitFileStatus{}
+	}
+	jsonResponse(w, files)
 }
 
 // --- Helpers ---

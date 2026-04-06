@@ -13,7 +13,10 @@ const { wideLayout } = useFilePanel()
 type Tab = 'files' | 'agents' | 'skills' | 'memory'
 
 const activeTab = ref<Tab>('files')
-watch(activeTab, (tab) => { wideLayout.value = tab === 'files' }, { immediate: true })
+watch(activeTab, (tab) => {
+  wideLayout.value = tab === 'files'
+  if (tab === 'files') loadGitStatus()
+}, { immediate: true })
 onUnmounted(() => { wideLayout.value = false })
 const agents = ref<AgentInfo[]>([])
 const skills = ref<SkillInfo[]>([])
@@ -31,8 +34,39 @@ const fileLoading = ref(false)
 const fileError = ref('')
 const searchFilter = ref('')
 
+// Git status
+const gitStatusMap = ref(new Map<string, string>())
+const gitStatusCounts = computed(() => {
+  const counts = { new: 0, modified: 0, deleted: 0, renamed: 0 }
+  for (const status of gitStatusMap.value.values()) {
+    if (status in counts) counts[status as keyof typeof counts]++
+  }
+  return counts
+})
+const hasGitChanges = computed(() => gitStatusMap.value.size > 0)
+const showOnlyChanged = ref(false)
+
 const filteredTree = computed(() => {
-  if (!searchFilter.value) return fileTree.value
+  let tree = fileTree.value
+  if (showOnlyChanged.value && gitStatusMap.value.size > 0) {
+    const changedPaths = gitStatusMap.value
+    function filterChanged(nodes: FileTreeNode[]): FileTreeNode[] {
+      const result: FileTreeNode[] = []
+      for (const node of nodes) {
+        if (node.is_dir && node.children) {
+          const filtered = filterChanged(node.children)
+          if (filtered.length > 0) {
+            result.push({ ...node, children: filtered })
+          }
+        } else if (changedPaths.has(node.path)) {
+          result.push(node)
+        }
+      }
+      return result
+    }
+    tree = filterChanged(tree)
+  }
+  if (!searchFilter.value) return tree
   const q = searchFilter.value.toLowerCase()
   function filterNodes(nodes: FileTreeNode[]): FileTreeNode[] {
     const result: FileTreeNode[] = []
@@ -48,7 +82,7 @@ const filteredTree = computed(() => {
     }
     return result
   }
-  return filterNodes(fileTree.value)
+  return filterNodes(tree)
 })
 
 async function loadAll() {
@@ -87,6 +121,19 @@ async function loadFileTree() {
     // non-critical
   } finally {
     fileTreeLoading.value = false
+  }
+}
+
+async function loadGitStatus() {
+  try {
+    const statuses = await api.gitStatus()
+    const map = new Map<string, string>()
+    for (const s of statuses) {
+      map.set(s.path, s.status)
+    }
+    gitStatusMap.value = map
+  } catch {
+    // non-critical — git might not be available
   }
 }
 
@@ -151,6 +198,7 @@ function handleContentClick(e: MouseEvent) {
 onMounted(() => {
   loadAll()
   loadFileTree()
+  loadGitStatus()
   // Deep link: open file from query param
   const filePath = route.query.file as string
   if (filePath) {
@@ -220,6 +268,18 @@ function openFileFromQuery(filePath: string) {
             class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-gray-200 focus:outline-none focus:border-sky-500"
           />
         </div>
+        <!-- Git status summary bar -->
+        <button
+          v-if="hasGitChanges"
+          @click="showOnlyChanged = !showOnlyChanged"
+          class="px-3 py-1.5 text-xs border-b border-gray-800 flex items-center gap-2 hover:bg-gray-800/50 transition-colors"
+          :class="showOnlyChanged ? 'bg-gray-800 text-gray-200' : 'text-gray-500'"
+        >
+          <span v-if="gitStatusCounts.new" class="text-emerald-400">{{ gitStatusCounts.new }} new</span>
+          <span v-if="gitStatusCounts.modified" class="text-yellow-400">{{ gitStatusCounts.modified }} modified</span>
+          <span v-if="gitStatusCounts.deleted" class="text-red-400">{{ gitStatusCounts.deleted }} deleted</span>
+          <span class="ml-auto text-gray-600">{{ showOnlyChanged ? '✕' : '⏎' }}</span>
+        </button>
         <div class="flex-1 overflow-auto py-1">
           <div v-if="fileTreeLoading" class="text-gray-500 text-sm px-3 py-2">Loading...</div>
           <div v-else-if="filteredTree.length === 0" class="text-gray-600 text-sm px-3 py-2">No files found</div>
@@ -231,6 +291,7 @@ function openFileFromQuery(filePath: string) {
               :depth="0"
               :expanded-dirs="expandedDirs"
               :current-path="currentFilePath"
+              :git-status="gitStatusMap"
               @toggle-dir="toggleDir"
               @open-file="openFile"
             />
