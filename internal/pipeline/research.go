@@ -128,9 +128,21 @@ func (p *Pipeline) Advance(ctx context.Context, req AdvanceRequest) (*AdvanceRes
 
 	switch req.Action {
 	case ActionAdvance:
-		return p.advance(ctx, entry, oldMaturity, req)
+		result, err := p.advance(ctx, entry, oldMaturity, req)
+		if err != nil {
+			p.recordFailure(entry, oldMaturity, err)
+			return nil, err
+		}
+		p.store.DB().ResetFailureCount(entry.ID)
+		return result, nil
 	case ActionRevise:
-		return p.revise(ctx, entry, oldMaturity, req)
+		result, err := p.revise(ctx, entry, oldMaturity, req)
+		if err != nil {
+			p.recordFailure(entry, oldMaturity, err)
+			return nil, err
+		}
+		p.store.DB().ResetFailureCount(entry.ID)
+		return result, nil
 	case ActionReject:
 		return p.reject(entry, oldMaturity)
 	case ActionDefer:
@@ -235,6 +247,24 @@ func (p *Pipeline) deferEntry(entry *store.Entry, oldMaturity string) (*AdvanceR
 		NewMaturity: oldMaturity,
 		Message:     "Deferred — will revisit later",
 	}, nil
+}
+
+// recordFailure tracks a pipeline failure: increments the counter, posts a session message,
+// and escalates if the entry has failed too many times.
+func (p *Pipeline) recordFailure(entry *store.Entry, stage string, err error) {
+	reason := err.Error()
+	count, countErr := p.store.DB().IncrementFailureCount(entry.ID, reason)
+	if countErr != nil {
+		log.Printf("warning: failed to increment failure count for %s: %v", entry.ID, countErr)
+	}
+
+	msg := fmt.Sprintf("⚠️ %s pass failed: %v\n\nYou can:\n- **Advance** to retry\n- **Revise** with feedback\n- **Reject** to start over\n- **Defer** to revisit later", stage, err)
+	if count >= 3 {
+		msg += fmt.Sprintf("\n\n🔴 This entry has failed %d consecutive times. Something structural may be wrong.", count)
+	}
+
+	p.store.DB().AddSessionMessage(entry.ID, "system", msg)
+	p.notify("message.new", entry.ID, nil)
 }
 
 // runResearch executes the research pass for an entry.

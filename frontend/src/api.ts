@@ -35,6 +35,9 @@ export interface Entry {
   premium_requests_used?: number
   // Pipeline maturity
   maturity?: string
+  // Failure tracking
+  failure_count?: number
+  last_failure_reason?: string
 }
 
 export interface Project {

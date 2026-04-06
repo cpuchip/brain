@@ -325,6 +325,9 @@ subscribe('entry.updated', (evt) => {
             <span>· {{ Math.round(entry.confidence * 100) }}%</span>
             <span v-if="entry.premium_requests_used" class="text-xs text-emerald-400" title="Premium requests consumed by pipeline agents">🎟️ {{ entry.premium_requests_used.toFixed(2) }}</span>
             <span v-if="entry.needs_review" class="text-amber-400">⚠ Needs review</span>
+            <span v-if="entry.failure_count" class="text-xs text-red-400" :title="entry.last_failure_reason || 'Pipeline failure'">
+              🔴 {{ entry.failure_count }} failure{{ entry.failure_count === 1 ? '' : 's' }}
+            </span>
           </div>
         </div>
         <div class="flex gap-2 shrink-0">

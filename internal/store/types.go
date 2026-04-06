@@ -83,6 +83,10 @@ type Entry struct {
 	Scenarios       string `json:"scenarios,omitempty" yaml:"scenarios,omitempty"` // JSON array of testable scenarios
 	MaturityNotes   string `json:"maturity_notes,omitempty" yaml:"maturity_notes,omitempty"`
 
+	// Failure tracking (pipeline atonement)
+	FailureCount      int    `json:"failure_count,omitempty" yaml:"failure_count,omitempty"`
+	LastFailureReason string `json:"last_failure_reason,omitempty" yaml:"last_failure_reason,omitempty"`
+
 	// Sub-tasks (loaded separately from subtasks table)
 	SubTasks []SubTask `json:"subtasks,omitempty" yaml:"subtasks,omitempty"`
 }

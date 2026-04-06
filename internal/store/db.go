@@ -62,7 +62,10 @@ func (d *DB) migrate() error {
 	if err := d.migrateScheduledTasks(); err != nil {
 		return err
 	}
-	return d.migratePremiumRequests()
+	if err := d.migratePremiumRequests(); err != nil {
+		return err
+	}
+	return d.migrateFailureCount()
 }
 
 const schema = `
@@ -486,6 +489,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	var originalBody sql.NullString
 	var maturity, maturityUpdated, scratchPath, scenarios, maturityNotes sql.NullString
 	var projectID sql.NullInt64
+	var failureCount sql.NullInt64
+	var lastFailureReason sql.NullString
 
 	err := d.db.QueryRow(`
 		SELECT id, title, category, body, confidence, needs_review, source,
@@ -498,7 +503,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 			premium_requests_used,
 			original_body,
 			maturity, maturity_updated_at, scratch_path, scenarios, maturity_notes,
-			project_id
+			project_id,
+			failure_count, last_failure_reason
 		FROM entries WHERE id = ?`, id).Scan(
 		&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
 		&createdStr, &updatedStr,
@@ -511,6 +517,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		&originalBody,
 		&maturity, &maturityUpdated, &scratchPath, &scenarios, &maturityNotes,
 		&projectID,
+		&failureCount, &lastFailureReason,
 	)
 	if err != nil {
 		return nil, err
@@ -546,6 +553,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		v := int(projectID.Int64)
 		e.ProjectID = &v
 	}
+	e.FailureCount = int(failureCount.Int64)
+	e.LastFailureReason = lastFailureReason.String
 
 	// Load tags
 	rows, err := d.db.Query(`SELECT tag FROM tags WHERE entry_id = ?`, id)
@@ -1579,6 +1588,51 @@ func (d *DB) IncrementPremiumRequests(entryID string, cost float64) error {
 	_, err := d.db.Exec(
 		"UPDATE entries SET premium_requests_used = COALESCE(premium_requests_used, 0) + ?, updated_at = ? WHERE id = ?",
 		cost, time.Now().UTC().Format(time.RFC3339), entryID,
+	)
+	return err
+}
+
+// migrateFailureCount adds pipeline failure tracking columns.
+func (d *DB) migrateFailureCount() error {
+	cols, err := d.columnNames("entries")
+	if err != nil {
+		return err
+	}
+	if cols["failure_count"] {
+		return nil // already migrated
+	}
+	for _, stmt := range []string{
+		"ALTER TABLE entries ADD COLUMN failure_count INTEGER DEFAULT 0",
+		"ALTER TABLE entries ADD COLUMN last_failure_reason TEXT",
+	} {
+		if _, err := d.db.Exec(stmt); err != nil {
+			return fmt.Errorf("failure_count migration: %w", err)
+		}
+	}
+	return nil
+}
+
+// IncrementFailureCount atomically increments failure_count and stores the reason.
+// Returns the new count.
+func (d *DB) IncrementFailureCount(entryID, reason string) (int, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := d.db.Exec(
+		"UPDATE entries SET failure_count = COALESCE(failure_count, 0) + 1, last_failure_reason = ?, updated_at = ? WHERE id = ?",
+		reason, now, entryID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	var count int
+	err = d.db.QueryRow("SELECT COALESCE(failure_count, 0) FROM entries WHERE id = ?", entryID).Scan(&count)
+	return count, err
+}
+
+// ResetFailureCount clears the failure counter on successful advance.
+func (d *DB) ResetFailureCount(entryID string) error {
+	_, err := d.db.Exec(
+		"UPDATE entries SET failure_count = 0, last_failure_reason = NULL, updated_at = ? WHERE id = ?",
+		time.Now().UTC().Format(time.RFC3339), entryID,
 	)
 	return err
 }

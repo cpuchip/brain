@@ -233,8 +233,17 @@ Token budget guidance:
 		}
 		log.Printf("Execution failed for %s: %v", entry.ID, err)
 		p.store.DB().SetMaturity(entry.ID, "specced", fmt.Sprintf("Execution failed: %v", err))
-		p.store.DB().AddSessionMessage(entry.ID, "agent",
-			fmt.Sprintf("Execution failed: %v\n\nEntry returned to specced. You can retry or revise the plan.", err))
+
+		// Track failure count and escalate if needed
+		count, countErr := p.store.DB().IncrementFailureCount(entry.ID, err.Error())
+		if countErr != nil {
+			log.Printf("warning: failed to increment failure count for %s: %v", entry.ID, countErr)
+		}
+		msg := fmt.Sprintf("Execution failed: %v\n\nEntry returned to specced. You can retry or revise the plan.", err)
+		if count >= 3 {
+			msg += fmt.Sprintf("\n\n🔴 This entry has failed %d consecutive times. Something structural may be wrong.", count)
+		}
+		p.store.DB().AddSessionMessage(entry.ID, "agent", msg)
 		p.notify("entry.updated", entry.ID, map[string]string{"maturity": "specced"})
 		p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
 		return
@@ -244,6 +253,9 @@ Token budget guidance:
 	if err := p.store.DB().IncrementPremiumRequests(entry.ID, agentCfg.PremiumRequestCost); err != nil {
 		log.Printf("warning: failed to track cost for %s: %v", entry.ID, err)
 	}
+
+	// Reset failure count on success
+	p.store.DB().ResetFailureCount(entry.ID)
 
 	log.Printf("Execution complete for %s (%d chars response)", entry.ID, len(response))
 
