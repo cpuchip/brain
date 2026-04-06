@@ -149,6 +149,7 @@ async function reclassify(category: string) {
 // AI Classify
 const classifying = ref(false)
 const togglingAutoContinue = ref(false)
+const togglingNotebook = ref(false)
 async function classify() {
   if (!entry.value || classifying.value) return
   classifying.value = true
@@ -175,6 +176,21 @@ async function toggleAutoContinue() {
     showToast('Failed to toggle auto-continue')
   } finally {
     togglingAutoContinue.value = false
+  }
+}
+
+async function toggleNotebook() {
+  if (!entry.value || togglingNotebook.value) return
+  togglingNotebook.value = true
+  try {
+    const newVal = !entry.value.notebook
+    await api.setNotebook(entry.value.id, newVal)
+    entry.value.notebook = newVal
+    showToast(newVal ? '📓 Moved to notebook — outside pipeline' : '📓 Removed from notebook — back in pipeline')
+  } catch {
+    showToast('Failed to toggle notebook')
+  } finally {
+    togglingNotebook.value = false
   }
 }
 
@@ -344,9 +360,13 @@ subscribe('entry.updated', (evt) => {
             <span v-if="entry.failure_count" class="text-xs text-red-400" :title="entry.last_failure_reason || 'Pipeline failure'">
               🔴 {{ entry.failure_count }} failure{{ entry.failure_count === 1 ? '' : 's' }}
             </span>
-            <label v-if="entry.maturity" class="inline-flex items-center gap-1.5 text-xs cursor-pointer select-none" :title="entry.auto_continue ? 'Delegation mode — stages advance automatically' : 'Sabbath mode — pause for review after each stage'">
+            <label v-if="entry.maturity && !entry.notebook" class="inline-flex items-center gap-1.5 text-xs cursor-pointer select-none" :title="entry.auto_continue ? 'Delegation mode — stages advance automatically' : 'Sabbath mode — pause for review after each stage'">
               <input type="checkbox" :checked="entry.auto_continue" :disabled="togglingAutoContinue" @change="toggleAutoContinue" class="accent-violet-500 w-3.5 h-3.5">
               <span :class="entry.auto_continue ? 'text-violet-400' : 'text-gray-500'">{{ entry.auto_continue ? '⚡ Auto' : '🕊️ Sabbath' }}</span>
+            </label>
+            <label class="inline-flex items-center gap-1.5 text-xs cursor-pointer select-none" :title="entry.notebook ? 'Notebook mode — searchable but outside pipeline' : 'Pipeline mode — enters research/execute workflow'">
+              <input type="checkbox" :checked="entry.notebook" :disabled="togglingNotebook" @change="toggleNotebook" class="accent-amber-500 w-3.5 h-3.5">
+              <span :class="entry.notebook ? 'text-amber-400' : 'text-gray-500'">{{ entry.notebook ? '📓 Notebook' : '🔄 Pipeline' }}</span>
             </label>
           </div>
         </div>
@@ -450,7 +470,7 @@ subscribe('entry.updated', (evt) => {
         <div v-if="hasConversation || entry.agent_output" class="mt-6">
           <div class="flex items-center justify-between mb-3">
             <h3 class="text-sm font-medium text-gray-500 uppercase tracking-wider">Conversation</h3>
-            <div v-if="entry.route_status && entry.route_status !== 'complete'" class="flex gap-2">
+            <div v-if="entry.route_status && entry.route_status !== 'complete' && !entry.notebook" class="flex gap-2">
               <span
                 :class="[
                   'px-2 py-0.5 text-xs rounded-full font-medium',
@@ -500,7 +520,7 @@ subscribe('entry.updated', (evt) => {
           </div>
 
           <!-- Reply input -->
-          <div v-if="entry.route_status && entry.route_status !== 'complete'" class="mt-3">
+          <div v-if="entry.route_status && entry.route_status !== 'complete' && !entry.notebook" class="mt-3">
             <div class="flex gap-2">
               <textarea
                 ref="replyTextarea"

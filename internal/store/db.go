@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -68,7 +69,10 @@ func (d *DB) migrate() error {
 	if err := d.migrateFailureCount(); err != nil {
 		return err
 	}
-	return d.migrateAutoContinue()
+	if err := d.migrateAutoContinue(); err != nil {
+		return err
+	}
+	return d.migrateNotebook()
 }
 
 const schema = `
@@ -328,7 +332,7 @@ func (d *DB) ListByRouteStatus(status string) ([]*Entry, error) {
 	rows, err := d.db.Query(`
 		SELECT id, title, category, body, confidence, source, created_at, updated_at,
 			agent_route, route_status, agent_output, tokens_used
-		FROM entries WHERE route_status = ? ORDER BY updated_at DESC`, status)
+		FROM entries WHERE route_status = ? AND COALESCE(notebook, 0) = 0 ORDER BY updated_at DESC`, status)
 	if err != nil {
 		return nil, err
 	}
@@ -495,6 +499,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	var failureCount sql.NullInt64
 	var lastFailureReason sql.NullString
 	var autoContinue sql.NullBool
+	var notebook sql.NullBool
 
 	err := d.db.QueryRow(`
 		SELECT id, title, category, body, confidence, needs_review, source,
@@ -509,7 +514,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 			maturity, maturity_updated_at, scratch_path, scenarios, maturity_notes,
 			project_id,
 			failure_count, last_failure_reason,
-			auto_continue
+			auto_continue,
+			notebook
 		FROM entries WHERE id = ?`, id).Scan(
 		&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
 		&createdStr, &updatedStr,
@@ -524,6 +530,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		&projectID,
 		&failureCount, &lastFailureReason,
 		&autoContinue,
+		&notebook,
 	)
 	if err != nil {
 		return nil, err
@@ -562,6 +569,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	e.FailureCount = int(failureCount.Int64)
 	e.LastFailureReason = lastFailureReason.String
 	e.AutoContinue = autoContinue.Valid && autoContinue.Bool
+	e.Notebook = notebook.Valid && notebook.Bool
 
 	// Load tags
 	rows, err := d.db.Query(`SELECT tag FROM tags WHERE entry_id = ?`, id)
@@ -979,6 +987,7 @@ func (d *DB) ListStaleEntries(rawCutoff, researchedCutoff, completeCutoff time.T
 		       maturity, maturity_updated_at, scratch_path, agent_route, route_status
 		FROM entries
 		WHERE category IN ('ideas', 'projects', 'study')
+		  AND COALESCE(notebook, 0) = 0
 		  AND COALESCE(route_status, '') NOT IN ('your_turn', 'running', 'pending')
 		  AND (
 		    (COALESCE(maturity, 'raw') = 'raw' AND COALESCE(maturity_updated_at, created_at) < ?)
@@ -1427,11 +1436,11 @@ func (d *DB) GetProjectStats(projectID int) (*ProjectStats, error) {
 	}
 
 	// Your-turn count
-	d.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE project_id = ? AND route_status = 'your_turn'`,
+	d.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE project_id = ? AND route_status = 'your_turn' AND COALESCE(notebook, 0) = 0`,
 		projectID).Scan(&stats.YourTurnCount)
 
 	// Running count
-	d.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE project_id = ? AND route_status = 'running'`,
+	d.db.QueryRow(`SELECT COUNT(*) FROM entries WHERE project_id = ? AND route_status = 'running' AND COALESCE(notebook, 0) = 0`,
 		projectID).Scan(&stats.RunningCount)
 
 	return stats, nil
@@ -1666,6 +1675,55 @@ func (d *DB) SetAutoContinue(entryID string, autoContinue bool) error {
 		autoContinue, time.Now().UTC().Format(time.RFC3339), entryID,
 	)
 	return err
+}
+
+// migrateNotebook adds the notebook column for non-pipeline entries.
+func (d *DB) migrateNotebook() error {
+	cols, err := d.columnNames("entries")
+	if err != nil {
+		return err
+	}
+	if cols["notebook"] {
+		return nil // already migrated
+	}
+	if _, err := d.db.Exec("ALTER TABLE entries ADD COLUMN notebook BOOLEAN DEFAULT FALSE"); err != nil {
+		return fmt.Errorf("notebook migration: %w", err)
+	}
+	return nil
+}
+
+// SetNotebook sets the notebook flag for an entry.
+func (d *DB) SetNotebook(entryID string, notebook bool) error {
+	_, err := d.db.Exec(
+		"UPDATE entries SET notebook = ?, updated_at = ? WHERE id = ?",
+		notebook, time.Now().UTC().Format(time.RFC3339), entryID,
+	)
+	return err
+}
+
+// BulkSetNotebook sets the notebook flag for multiple entries at once.
+func (d *DB) BulkSetNotebook(entryIDs []string, notebook bool) (int, error) {
+	if len(entryIDs) == 0 {
+		return 0, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	placeholders := make([]string, len(entryIDs))
+	args := make([]interface{}, 0, len(entryIDs)+2)
+	args = append(args, notebook, now)
+	for i, id := range entryIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	query := fmt.Sprintf(
+		"UPDATE entries SET notebook = ?, updated_at = ? WHERE id IN (%s)",
+		strings.Join(placeholders, ","),
+	)
+	result, err := d.db.Exec(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := result.RowsAffected()
+	return int(n), nil
 }
 
 // CreateScheduledTask creates a new scheduled task.

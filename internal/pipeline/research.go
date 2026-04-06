@@ -121,6 +121,10 @@ func (p *Pipeline) Advance(ctx context.Context, req AdvanceRequest) (*AdvanceRes
 		return nil, fmt.Errorf("entry %s (category: %s) is not a pipeline category", req.EntryID, entry.Category)
 	}
 
+	if entry.Notebook {
+		return nil, fmt.Errorf("entry %s is in notebook mode — remove from notebook to use the pipeline", req.EntryID)
+	}
+
 	oldMaturity := entry.Maturity
 	if oldMaturity == "" {
 		oldMaturity = "raw"

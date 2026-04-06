@@ -40,6 +40,8 @@ export interface Entry {
   last_failure_reason?: string
   // Auto-continue mode
   auto_continue?: boolean
+  // Notebook mode
+  notebook?: boolean
 }
 
 export interface Project {
@@ -200,7 +202,7 @@ export const api = {
     return request<Entry>(`/entries/${encodeURIComponent(id)}`)
   },
 
-  createEntry(data: { title: string; body: string; category?: string; tags?: string[]; source?: string }) {
+  createEntry(data: { title: string; body: string; category?: string; tags?: string[]; source?: string; notebook?: boolean }) {
     return request<Entry>('/entries', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -363,6 +365,20 @@ export const api = {
     return request<{ entry_id: string; auto_continue: boolean }>(`/entries/${encodeURIComponent(entryId)}/auto-continue`, {
       method: 'PUT',
       body: JSON.stringify({ auto_continue: autoContinue }),
+    })
+  },
+
+  setNotebook(entryId: string, notebook: boolean) {
+    return request<{ entry_id: string; notebook: boolean }>(`/entries/${encodeURIComponent(entryId)}/notebook`, {
+      method: 'PUT',
+      body: JSON.stringify({ notebook }),
+    })
+  },
+
+  bulkSetNotebook(entryIds: string[], notebook: boolean) {
+    return request<{ updated: number; notebook: boolean }>('/entries/bulk-notebook', {
+      method: 'POST',
+      body: JSON.stringify({ entry_ids: entryIds, notebook }),
     })
   },
 

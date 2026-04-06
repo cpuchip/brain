@@ -131,6 +131,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/entries/{id}/verify", s.cors(s.handleVerify))
 	s.mux.HandleFunc("GET /api/entries/{id}/execution-context", s.cors(s.handleExecutionContext))
 	s.mux.HandleFunc("PUT /api/entries/{id}/auto-continue", s.cors(s.handleSetAutoContinue))
+	s.mux.HandleFunc("PUT /api/entries/{id}/notebook", s.cors(s.handleSetNotebook))
+	s.mux.HandleFunc("POST /api/entries/bulk-notebook", s.cors(s.handleBulkSetNotebook))
 
 	// Projects
 	s.mux.HandleFunc("GET /api/projects", s.cors(s.handleListProjects))
@@ -246,6 +248,7 @@ type createEntryRequest struct {
 	Body     string   `json:"body"`
 	Tags     []string `json:"tags"`
 	Source   string   `json:"source"`
+	Notebook bool     `json:"notebook"`
 }
 
 func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
@@ -286,6 +289,14 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry.ID = id
+
+	// Set notebook flag if requested
+	if req.Notebook {
+		if err := s.store.DB().SetNotebook(id, true); err != nil {
+			log.Printf("warning: failed to set notebook for %s: %v", id, err)
+		}
+		entry.Notebook = true
+	}
 
 	// Embed in vector store
 	if s.store.Vec() != nil && s.store.Vec().Enabled() {
@@ -2252,6 +2263,46 @@ func (s *Server) handleSetAutoContinue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, map[string]any{"entry_id": entryID, "auto_continue": req.AutoContinue})
+}
+
+func (s *Server) handleSetNotebook(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+
+	var req struct {
+		Notebook bool `json:"notebook"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.DB().SetNotebook(entryID, req.Notebook); err != nil {
+		jsonError(w, "setting notebook", err, http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]any{"entry_id": entryID, "notebook": req.Notebook})
+}
+
+func (s *Server) handleBulkSetNotebook(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		EntryIDs []string `json:"entry_ids"`
+		Notebook bool     `json:"notebook"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+	if len(req.EntryIDs) == 0 {
+		jsonError(w, "entry_ids required", nil, http.StatusBadRequest)
+		return
+	}
+
+	count, err := s.store.DB().BulkSetNotebook(req.EntryIDs, req.Notebook)
+	if err != nil {
+		jsonError(w, "bulk set notebook", err, http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]any{"updated": count, "notebook": req.Notebook})
 }
 
 // parseScenarios splits the scenarios string into individual scenario lines.

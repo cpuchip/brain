@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, type Entry, type Stats, type Project } from '../api'
 
@@ -10,6 +10,45 @@ const stats = ref<Stats | null>(null)
 const projects = ref<Project[]>([])
 const loading = ref(true)
 const activeCategory = ref('')
+
+// Bulk selection
+const selectMode = ref(false)
+const selectedIds = ref(new Set<string>())
+const bulkWorking = ref(false)
+
+const selectedCount = computed(() => selectedIds.value.size)
+
+function toggleSelect(id: string) {
+  const s = new Set(selectedIds.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  selectedIds.value = s
+}
+
+function toggleSelectAll() {
+  if (selectedIds.value.size === entries.value.length) {
+    selectedIds.value = new Set()
+  } else {
+    selectedIds.value = new Set(entries.value.map(e => e.id))
+  }
+}
+
+function exitSelectMode() {
+  selectMode.value = false
+  selectedIds.value = new Set()
+}
+
+async function bulkNotebook(notebook: boolean) {
+  if (selectedIds.value.size === 0 || bulkWorking.value) return
+  bulkWorking.value = true
+  try {
+    await api.bulkSetNotebook([...selectedIds.value], notebook)
+    exitSelectMode()
+    await loadEntries()
+  } finally {
+    bulkWorking.value = false
+  }
+}
 
 const categories = ['people', 'projects', 'ideas', 'actions', 'study', 'journal', 'inbox']
 
@@ -48,7 +87,14 @@ onMounted(async () => {
 
 <template>
   <div>
-    <h1 class="text-xl font-bold mb-4">Entries</h1>
+    <div class="flex items-center justify-between mb-4">
+      <h1 class="text-xl font-bold">Entries</h1>
+      <button
+        @click="selectMode ? exitSelectMode() : (selectMode = true)"
+        class="text-xs px-3 py-1 rounded-lg border transition-colors"
+        :class="selectMode ? 'border-sky-500 text-sky-400' : 'border-gray-700 text-gray-500 hover:text-gray-300'"
+      >{{ selectMode ? 'Cancel' : 'Select' }}</button>
+    </div>
 
     <!-- Category tabs -->
     <div class="flex gap-2 flex-wrap mb-6">
@@ -92,27 +138,40 @@ onMounted(async () => {
       No entries{{ activeCategory ? ` in "${activeCategory}"` : '' }}.
     </div>
     <div v-else class="space-y-2">
-      <RouterLink
+      <!-- Select all toggle -->
+      <div v-if="selectMode" class="flex items-center gap-2 px-4 py-1 text-xs text-gray-500">
+        <input type="checkbox" :checked="selectedIds.size === entries.length && entries.length > 0" @change="toggleSelectAll" class="accent-sky-500 w-3.5 h-3.5">
+        <span>{{ selectedIds.size === entries.length ? 'Deselect all' : 'Select all' }}</span>
+      </div>
+      <div
         v-for="entry in entries"
         :key="entry.id"
-        :to="`/entries/${entry.id}`"
-        class="block bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 hover:border-sky-600 transition-colors"
+        class="flex items-start gap-2"
       >
-        <div class="flex items-center justify-between mb-1">
-          <div class="flex items-center gap-2 min-w-0">
-            <span
-              v-if="(entry.category === 'actions' && entry.action_done) || (entry.category === 'projects' && entry.status === 'done')"
-              class="shrink-0 w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs"
-            >✓</span>
-            <span class="font-medium text-sm truncate"
-              :class="{ 'line-through text-gray-500': (entry.category === 'actions' && entry.action_done) || (entry.category === 'projects' && entry.status === 'done') }"
-            >{{ entry.title }}</span>
+        <label v-if="selectMode" class="pt-3.5 pl-1 cursor-pointer shrink-0">
+          <input type="checkbox" :checked="selectedIds.has(entry.id)" @change="toggleSelect(entry.id)" class="accent-sky-500 w-4 h-4">
+        </label>
+        <RouterLink
+          :to="`/entries/${entry.id}`"
+          class="flex-1 block bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 hover:border-sky-600 transition-colors"
+          :class="{ 'opacity-60': entry.notebook }"
+        >
+          <div class="flex items-center justify-between mb-1">
+            <div class="flex items-center gap-2 min-w-0">
+              <span
+                v-if="(entry.category === 'actions' && entry.action_done) || (entry.category === 'projects' && entry.status === 'done')"
+                class="shrink-0 w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs"
+              >✓</span>
+              <span class="font-medium text-sm truncate"
+                :class="{ 'line-through text-gray-500': (entry.category === 'actions' && entry.action_done) || (entry.category === 'projects' && entry.status === 'done') }"
+              >{{ entry.title }}</span>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <span v-if="entry.notebook" class="text-xs px-2 py-0.5 rounded-full bg-amber-900 text-amber-400">📓</span>
+              <span v-if="entry.status" class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-amber-400">{{ entry.status }}</span>
+              <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-sky-400">{{ entry.category }}</span>
+            </div>
           </div>
-          <div class="flex items-center gap-1.5 shrink-0">
-            <span v-if="entry.status" class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-amber-400">{{ entry.status }}</span>
-            <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-sky-400">{{ entry.category }}</span>
-          </div>
-        </div>
         <div class="text-sm text-gray-500 line-clamp-2">{{ entry.body?.slice(0, 200) }}</div>
         <div class="flex items-center gap-2 mt-1">
           <span
@@ -132,6 +191,31 @@ onMounted(async () => {
           </span>
         </div>
       </RouterLink>
+      </div>
     </div>
+
+    <!-- Bulk action bar -->
+    <Teleport to="body">
+      <Transition
+        enter-active-class="transition-all duration-200"
+        leave-active-class="transition-all duration-150"
+        enter-from-class="translate-y-full opacity-0"
+        leave-to-class="translate-y-full opacity-0"
+      >
+        <div v-if="selectMode && selectedCount > 0" class="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 border border-gray-700 rounded-xl px-5 py-3 shadow-2xl flex items-center gap-4 z-50">
+          <span class="text-sm text-gray-300">{{ selectedCount }} selected</span>
+          <button
+            @click="bulkNotebook(true)"
+            :disabled="bulkWorking"
+            class="text-sm bg-amber-600 text-white px-3 py-1.5 rounded-lg hover:bg-amber-500 disabled:opacity-40 transition-colors"
+          >📓 Move to Notebook</button>
+          <button
+            @click="bulkNotebook(false)"
+            :disabled="bulkWorking"
+            class="text-sm bg-gray-700 text-gray-300 px-3 py-1.5 rounded-lg hover:bg-gray-600 disabled:opacity-40 transition-colors"
+          >🔄 Back to Pipeline</button>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>

@@ -90,6 +90,9 @@ type Entry struct {
 	// Auto-continue mode (delegation vs sabbath path)
 	AutoContinue bool `json:"auto_continue,omitempty" yaml:"auto_continue,omitempty"`
 
+	// Notebook mode (opted out of pipeline)
+	Notebook bool `json:"notebook,omitempty" yaml:"notebook,omitempty"`
+
 	// Sub-tasks (loaded separately from subtasks table)
 	SubTasks []SubTask `json:"subtasks,omitempty" yaml:"subtasks,omitempty"`
 }

@@ -65,6 +65,10 @@ func (p *Pipeline) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteRes
 		return nil, fmt.Errorf("entry must be specced to execute (currently: %s)", maturity)
 	}
 
+	if entry.Notebook {
+		return nil, fmt.Errorf("entry is in notebook mode — remove from notebook to execute")
+	}
+
 	if strings.TrimSpace(entry.Scenarios) == "" {
 		return nil, fmt.Errorf("entry has no scenarios — cannot execute without acceptance criteria")
 	}

@@ -4,6 +4,7 @@ import { api, type Entry, type Stats } from '../api'
 
 const text = ref('')
 const submitting = ref(false)
+const asNotebook = ref(false)
 const recentEntries = ref<Entry[]>([])
 const stats = ref<Stats | null>(null)
 
@@ -16,6 +17,7 @@ async function capture() {
       title: body.substring(0, 60),
       body,
       source: 'web',
+      notebook: asNotebook.value || undefined,
     })
     text.value = ''
     // Auto-classify in background
@@ -68,7 +70,11 @@ onMounted(load)
         placeholder="Capture a thought... (Ctrl+Enter to save)"
         autofocus
       ></textarea>
-      <div class="flex justify-end">
+      <div class="flex items-center justify-between">
+        <label class="inline-flex items-center gap-1.5 text-xs cursor-pointer select-none text-gray-500">
+          <input type="checkbox" v-model="asNotebook" class="accent-amber-500 w-3.5 h-3.5">
+          <span :class="asNotebook ? 'text-amber-400' : ''">📓 Save as notebook</span>
+        </label>
         <button
           @click="capture"
           :disabled="!text.trim() || submitting"
