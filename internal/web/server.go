@@ -173,8 +173,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/files/read", s.cors(s.handleFileRead))
 	s.mux.HandleFunc("GET /api/files/tree", s.cors(s.handleFileTree))
 
-	// Git status
+	// Git status & diff
 	s.mux.HandleFunc("GET /api/git/status", s.cors(s.handleGitStatus))
+	s.mux.HandleFunc("GET /api/git/diff", s.cors(s.handleGitDiff))
 
 	// WebSocket (live push updates)
 	s.mux.HandleFunc("GET /ws", s.handleWebSocket)
@@ -1581,6 +1582,71 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 		files = []GitFileStatus{}
 	}
 	jsonResponse(w, files)
+}
+
+func (s *Server) handleGitDiff(w http.ResponseWriter, r *http.Request) {
+	relPath := r.URL.Query().Get("path")
+	if relPath == "" {
+		http.Error(w, "path parameter required", http.StatusBadRequest)
+		return
+	}
+
+	// Path safety: same as handleFileRead
+	relPath = filepath.FromSlash(relPath)
+	cleaned := filepath.Clean(relPath)
+	if filepath.IsAbs(cleaned) {
+		http.Error(w, "invalid path", http.StatusForbidden)
+		return
+	}
+	if strings.Contains(cleaned, "..") {
+		http.Error(w, "invalid path", http.StatusForbidden)
+		return
+	}
+
+	workspaceRoot := ""
+	if s.cfg.BrainCodeDir != "" {
+		scriptsDir := filepath.Dir(s.cfg.BrainCodeDir)
+		workspaceRoot = filepath.Dir(scriptsDir)
+	}
+	if workspaceRoot == "" {
+		http.Error(w, "workspace root not configured", http.StatusInternalServerError)
+		return
+	}
+
+	fullPath := filepath.Join(workspaceRoot, cleaned)
+	absRoot, _ := filepath.Abs(workspaceRoot)
+	absPath, _ := filepath.Abs(fullPath)
+	if !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) && absPath != absRoot {
+		http.Error(w, "access denied", http.StatusForbidden)
+		return
+	}
+
+	// Use filepath.ToSlash for git command (git uses forward slashes)
+	gitPath := filepath.ToSlash(cleaned)
+
+	// Try tracked file diff first: git diff HEAD -- <path>
+	cmd := exec.Command("git", "diff", "HEAD", "--", gitPath)
+	cmd.Dir = workspaceRoot
+	out, err := cmd.Output()
+	if err == nil && len(out) > 0 {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write(out)
+		return
+	}
+
+	// For untracked (new) files: git diff --no-index /dev/null <path>
+	cmd = exec.Command("git", "diff", "--no-index", "/dev/null", gitPath)
+	cmd.Dir = workspaceRoot
+	out, _ = cmd.CombinedOutput()
+	if len(out) > 0 {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write(out)
+		return
+	}
+
+	// No diff available
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
 }
 
 // --- Helpers ---

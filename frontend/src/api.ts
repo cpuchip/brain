@@ -476,4 +476,10 @@ export const api = {
   gitStatus() {
     return request<GitFileStatus[]>('/git/status')
   },
+
+  async gitDiff(path: string): Promise<string> {
+    const res = await fetch(`/api/git/diff?path=${encodeURIComponent(path)}`)
+    if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`)
+    return res.text()
+  },
 }

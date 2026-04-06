@@ -4,6 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { api, type AgentInfo, type SkillInfo, type MemoryFile, type FileTreeNode } from '../api'
 import { renderMarkdown } from '../composables/useMarkdown'
 import { useFilePanel } from '../composables/useFilePanel'
+import { html as diff2html } from 'diff2html'
+import { ColorSchemeType } from 'diff2html/lib/types'
+import 'diff2html/bundles/css/diff2html.min.css'
 import TreeNode from '../components/TreeNode.vue'
 
 const route = useRoute()
@@ -45,6 +48,41 @@ const gitStatusCounts = computed(() => {
 })
 const hasGitChanges = computed(() => gitStatusMap.value.size > 0)
 const showOnlyChanged = ref(false)
+
+// Diff viewer state
+const showDiff = ref(false)
+const diffContent = ref('')
+const diffLoading = ref(false)
+const diffMode = ref<'line-by-line' | 'side-by-side'>('line-by-line')
+const currentFileChanged = computed(() => gitStatusMap.value.has(currentFilePath.value))
+
+const renderedDiff = computed(() => {
+  if (!diffContent.value) return ''
+  return diff2html(diffContent.value, {
+    outputFormat: diffMode.value,
+    drawFileList: false,
+    matching: 'lines',
+    colorScheme: ColorSchemeType.DARK,
+  })
+})
+
+async function loadDiff() {
+  diffLoading.value = true
+  try {
+    diffContent.value = await api.gitDiff(currentFilePath.value)
+  } catch {
+    diffContent.value = ''
+  } finally {
+    diffLoading.value = false
+  }
+}
+
+function toggleDiff() {
+  showDiff.value = !showDiff.value
+  if (showDiff.value && !diffContent.value) {
+    loadDiff()
+  }
+}
 
 const filteredTree = computed(() => {
   let tree = fileTree.value
@@ -154,6 +192,8 @@ const canGoForward = computed(() => historyIndex.value < fileHistory.value.lengt
 
 async function openFile(path: string, pushHistory = true) {
   currentFilePath.value = path
+  showDiff.value = false
+  diffContent.value = ''
   if (pushHistory) {
     // Trim forward history and push new entry
     fileHistory.value = fileHistory.value.slice(0, historyIndex.value + 1)
@@ -319,10 +359,33 @@ function openFileFromQuery(filePath: string) {
               title="Forward"
             >→</button>
             <span class="text-xs text-gray-400 font-mono truncate">{{ currentFilePath }}</span>
+            <button
+              v-if="currentFileChanged"
+              @click="toggleDiff"
+              class="ml-auto text-xs px-2 py-0.5 rounded transition-colors"
+              :class="showDiff
+                ? 'bg-yellow-900/50 text-yellow-300'
+                : 'text-gray-500 hover:text-gray-300'"
+            >
+              {{ showDiff ? '✕ Diff' : 'Δ Diff' }}
+            </button>
+            <button
+              v-if="showDiff"
+              @click="diffMode = diffMode === 'line-by-line' ? 'side-by-side' : 'line-by-line'"
+              class="text-xs text-gray-500 hover:text-gray-300 px-1"
+              :title="diffMode === 'line-by-line' ? 'Side by side' : 'Line by line'"
+            >
+              {{ diffMode === 'line-by-line' ? '⇔' : '⇕' }}
+            </button>
           </div>
           <div class="flex-1 overflow-auto p-6" @click="handleContentClick">
             <div v-if="fileLoading" class="text-gray-500 text-sm">Loading...</div>
             <div v-else-if="fileError" class="text-red-400 text-sm">{{ fileError }}</div>
+            <template v-else-if="showDiff">
+              <div v-if="diffLoading" class="text-gray-500 text-sm">Loading diff...</div>
+              <div v-else-if="!diffContent" class="text-gray-600 text-sm">No changes</div>
+              <div v-else class="diff-container" v-html="renderedDiff" />
+            </template>
             <div
               v-else
               class="prose prose-invert prose-sm max-w-none"
