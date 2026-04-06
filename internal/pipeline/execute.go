@@ -227,6 +227,10 @@ Token budget guidance:
 
 	response, err := agent.Ask(ctx, prompt)
 	if err != nil {
+		// Still track cost even on failure — the premium request was consumed
+		if costErr := p.store.DB().IncrementPremiumRequests(entry.ID, agentCfg.PremiumRequestCost); costErr != nil {
+			log.Printf("warning: failed to track cost for %s: %v", entry.ID, costErr)
+		}
 		log.Printf("Execution failed for %s: %v", entry.ID, err)
 		p.store.DB().SetMaturity(entry.ID, "specced", fmt.Sprintf("Execution failed: %v", err))
 		p.store.DB().AddSessionMessage(entry.ID, "agent",
@@ -234,6 +238,11 @@ Token budget guidance:
 		p.notify("entry.updated", entry.ID, map[string]string{"maturity": "specced"})
 		p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
 		return
+	}
+
+	// Track premium request cost
+	if err := p.store.DB().IncrementPremiumRequests(entry.ID, agentCfg.PremiumRequestCost); err != nil {
+		log.Printf("warning: failed to track cost for %s: %v", entry.ID, err)
 	}
 
 	log.Printf("Execution complete for %s (%d chars response)", entry.ID, len(response))

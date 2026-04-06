@@ -59,7 +59,10 @@ func (d *DB) migrate() error {
 	if err := d.migrateSessionMessages(); err != nil {
 		return err
 	}
-	return d.migrateScheduledTasks()
+	if err := d.migrateScheduledTasks(); err != nil {
+		return err
+	}
+	return d.migratePremiumRequests()
 }
 
 const schema = `
@@ -479,6 +482,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	var mood, gratitude sql.NullString
 	var agentRoute, routeStatus, agentOutput sql.NullString
 	var tokensUsed sql.NullInt64
+	var premiumRequestsUsed sql.NullFloat64
 	var originalBody sql.NullString
 	var maturity, maturityUpdated, scratchPath, scenarios, maturityNotes sql.NullString
 	var projectID sql.NullInt64
@@ -491,6 +495,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 			due_date, action_done, scripture_refs, insight,
 			mood, gratitude,
 			agent_route, route_status, agent_output, tokens_used,
+			premium_requests_used,
 			original_body,
 			maturity, maturity_updated_at, scratch_path, scenarios, maturity_notes,
 			project_id
@@ -502,6 +507,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		&dueDate, &actionDone, &scriptureRefs, &insight,
 		&mood, &gratitude,
 		&agentRoute, &routeStatus, &agentOutput, &tokensUsed,
+		&premiumRequestsUsed,
 		&originalBody,
 		&maturity, &maturityUpdated, &scratchPath, &scenarios, &maturityNotes,
 		&projectID,
@@ -529,6 +535,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	e.RouteStatus = routeStatus.String
 	e.AgentOutput = agentOutput.String
 	e.TokensUsed = tokensUsed.Int64
+	e.PremiumRequestsUsed = premiumRequestsUsed.Float64
 	e.OriginalBody = originalBody.String
 	e.Maturity = maturity.String
 	e.MaturityUpdated = maturityUpdated.String
@@ -1418,7 +1425,7 @@ func (d *DB) GetProjectStats(projectID int) (*ProjectStats, error) {
 func (d *DB) ListEntriesByProject(projectID int) ([]*Entry, error) {
 	rows, err := d.db.Query(`
 		SELECT id, title, category, body, confidence, needs_review, source, created_at, updated_at,
-			agent_route, route_status, maturity, project_id
+			agent_route, route_status, maturity, project_id, premium_requests_used
 		FROM entries WHERE project_id = ? ORDER BY created_at DESC`, projectID)
 	if err != nil {
 		return nil, err
@@ -1432,8 +1439,9 @@ func (d *DB) ListEntriesByProject(projectID int) ([]*Entry, error) {
 		var createdStr, updatedStr string
 		var agentRoute, routeStatus, maturity sql.NullString
 		var pid sql.NullInt64
+		var premiumCost sql.NullFloat64
 		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
-			&createdStr, &updatedStr, &agentRoute, &routeStatus, &maturity, &pid); err != nil {
+			&createdStr, &updatedStr, &agentRoute, &routeStatus, &maturity, &pid, &premiumCost); err != nil {
 			return nil, err
 		}
 		e.NeedsReview = needsReview != 0
@@ -1449,6 +1457,7 @@ func (d *DB) ListEntriesByProject(projectID int) ([]*Entry, error) {
 			v := int(pid.Int64)
 			e.ProjectID = &v
 		}
+		e.PremiumRequestsUsed = premiumCost.Float64
 		entries = append(entries, e)
 	}
 	return entries, nil
@@ -1550,6 +1559,28 @@ func (d *DB) migrateScheduledTasks() error {
 
 	d.db.Exec("CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id)")
 	return nil
+}
+
+// migratePremiumRequests adds the premium_requests_used column to entries.
+func (d *DB) migratePremiumRequests() error {
+	cols, err := d.columnNames("entries")
+	if err != nil {
+		return err
+	}
+	if cols["premium_requests_used"] {
+		return nil // already migrated
+	}
+	_, err = d.db.Exec("ALTER TABLE entries ADD COLUMN premium_requests_used REAL DEFAULT 0")
+	return err
+}
+
+// IncrementPremiumRequests atomically adds cost to an entry's premium_requests_used.
+func (d *DB) IncrementPremiumRequests(entryID string, cost float64) error {
+	_, err := d.db.Exec(
+		"UPDATE entries SET premium_requests_used = COALESCE(premium_requests_used, 0) + ?, updated_at = ? WHERE id = ?",
+		cost, time.Now().UTC().Format(time.RFC3339), entryID,
+	)
+	return err
 }
 
 // CreateScheduledTask creates a new scheduled task.

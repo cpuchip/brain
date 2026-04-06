@@ -322,6 +322,11 @@ Token budget guidance:
 		return nil, fmt.Errorf("research agent failed: %w", err)
 	}
 
+	// Track premium request cost
+	if err := p.store.DB().IncrementPremiumRequests(entry.ID, agentCfg.PremiumRequestCost); err != nil {
+		log.Printf("warning: failed to track cost for %s: %v", entry.ID, err)
+	}
+
 	log.Printf("Research pass complete for %s (%d chars response)", entry.ID, len(response))
 
 	// Update entry maturity and scratch path
@@ -562,6 +567,11 @@ Rules:
 	response, err := agent.Ask(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("plan agent failed: %w", err)
+	}
+
+	// Track premium request cost
+	if err := p.store.DB().IncrementPremiumRequests(entry.ID, agentCfg.PremiumRequestCost); err != nil {
+		log.Printf("warning: failed to track cost for %s: %v", entry.ID, err)
 	}
 
 	log.Printf("Plan pass complete for %s (%d chars response)", entry.ID, len(response))

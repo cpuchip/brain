@@ -156,6 +156,11 @@ func (p *Pipeline) nudgeEntry(entry *store.Entry) error {
 		return fmt.Errorf("review agent failed: %w", err)
 	}
 
+	// Track premium request cost (Haiku = 0.33)
+	if err := p.store.DB().IncrementPremiumRequests(entry.ID, 0.33); err != nil {
+		log.Printf("warning: failed to track cost for %s: %v", entry.ID, err)
+	}
+
 	// Post the nudge as a session message
 	if _, err := p.store.DB().AddSessionMessage(entry.ID, "agent", response); err != nil {
 		return fmt.Errorf("posting nudge message: %w", err)

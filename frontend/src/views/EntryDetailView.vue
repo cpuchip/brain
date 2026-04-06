@@ -323,6 +323,7 @@ subscribe('entry.updated', (evt) => {
             <span>{{ new Date(entry.created_at).toLocaleString() }}</span>
             <span>· {{ entry.source }}</span>
             <span>· {{ Math.round(entry.confidence * 100) }}%</span>
+            <span v-if="entry.premium_requests_used" class="text-xs text-emerald-400" title="Premium requests consumed by pipeline agents">🎟️ {{ entry.premium_requests_used.toFixed(2) }}</span>
             <span v-if="entry.needs_review" class="text-amber-400">⚠ Needs review</span>
           </div>
         </div>

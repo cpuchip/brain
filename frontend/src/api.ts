@@ -32,6 +32,7 @@ export interface Entry {
   route_status?: string
   agent_output?: string
   tokens_used?: number
+  premium_requests_used?: number
   // Pipeline maturity
   maturity?: string
 }

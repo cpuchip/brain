@@ -80,6 +80,10 @@ const boardStages = computed(() => {
   return stages
 })
 
+const totalPremiumRequests = computed(() => {
+  return entries.value.reduce((sum, e) => sum + (e.premium_requests_used || 0), 0)
+})
+
 function maturityColor(stage: string) {
   switch (stage) {
     case 'raw': return 'bg-gray-700 text-gray-300'
@@ -362,6 +366,7 @@ subscribe('entry.created', () => {
           <p v-if="project.description" class="text-sm text-gray-400">{{ project.description }}</p>
           <div class="flex items-center gap-3 mt-1">
             <span class="text-xs text-gray-600">{{ entries.length }} entries</span>
+            <span v-if="totalPremiumRequests > 0" class="text-xs text-emerald-400" title="Total premium requests consumed across all entries">🎟️ {{ totalPremiumRequests.toFixed(2) }} premium requests</span>
             <span v-if="project.context_file" class="text-xs text-purple-400" title="Agents receive this file as context">📄 {{ project.context_file }}</span>
           </div>
         </div>

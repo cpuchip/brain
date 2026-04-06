@@ -70,10 +70,11 @@ type Entry struct {
 	OriginalBody string `json:"original_body,omitempty" yaml:"-"`
 
 	// Agent routing (populated post-classification)
-	AgentRoute  string `json:"agent_route,omitempty" yaml:"agent_route,omitempty"`
-	RouteStatus string `json:"route_status,omitempty" yaml:"route_status,omitempty"`
-	AgentOutput string `json:"agent_output,omitempty" yaml:"agent_output,omitempty"`
-	TokensUsed  int64  `json:"tokens_used,omitempty" yaml:"tokens_used,omitempty"`
+	AgentRoute          string  `json:"agent_route,omitempty" yaml:"agent_route,omitempty"`
+	RouteStatus         string  `json:"route_status,omitempty" yaml:"route_status,omitempty"`
+	AgentOutput         string  `json:"agent_output,omitempty" yaml:"agent_output,omitempty"`
+	TokensUsed          int64   `json:"tokens_used,omitempty" yaml:"tokens_used,omitempty"`
+	PremiumRequestsUsed float64 `json:"premium_requests_used,omitempty" yaml:"premium_requests_used,omitempty"`
 
 	// Pipeline maturity (populated post-classification for ideas/projects/study)
 	Maturity        string `json:"maturity,omitempty" yaml:"maturity,omitempty"`                       // raw, researched, planned, specced, executing, verified
