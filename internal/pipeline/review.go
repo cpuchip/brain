@@ -167,6 +167,9 @@ func (p *Pipeline) nudgeEntry(entry *store.Entry) error {
 		return fmt.Errorf("setting agent_route: %w", err)
 	}
 
+	p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
+	p.notify("entry.updated", entry.ID, map[string]string{"route_status": "your_turn"})
+
 	log.Printf("Pipeline review: nudged %s (%s, %s maturity)", entry.ID, entry.Title, maturity)
 	return nil
 }

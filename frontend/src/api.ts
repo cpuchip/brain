@@ -107,6 +107,13 @@ export interface MemoryFile {
   size: number
 }
 
+export interface FileTreeNode {
+  name: string
+  path: string
+  is_dir: boolean
+  children?: FileTreeNode[]
+}
+
 export interface Stats {
   categories: Record<string, number>
   total: number
@@ -454,5 +461,9 @@ export const api = {
     const res = await fetch(`/api/files/read?path=${encodeURIComponent(path)}`)
     if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`)
     return res.text()
+  },
+
+  async fileTree(root: string = '.'): Promise<FileTreeNode[]> {
+    return request<FileTreeNode[]>(`/files/tree?root=${encodeURIComponent(root)}`)
   },
 }

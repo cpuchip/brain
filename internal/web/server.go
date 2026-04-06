@@ -27,6 +27,7 @@ type Server struct {
 	classify   *classifier.Classifier
 	pool       *ai.AgentPool
 	pipeline   *pipeline.Pipeline
+	hub        *Hub
 	wc         config.WorkspaceConfig
 	mux        *http.ServeMux
 	srv        *http.Server
@@ -41,6 +42,7 @@ func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, p
 		cfg:        cfg,
 		classify:   cl,
 		pool:       pool,
+		hub:        NewHub(),
 		wc:         wc,
 		mux:        http.NewServeMux(),
 		frontendFS: frontendFS,
@@ -48,6 +50,7 @@ func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, p
 	}
 	if pool != nil {
 		s.pipeline = pipeline.New(st, pool, cfg, wc)
+		s.pipeline.SetNotifier(s.hub)
 		s.pipeline.StartReviewLoop(pipeline.DefaultReviewConfig())
 	}
 	s.routes()
@@ -166,6 +169,10 @@ func (s *Server) routes() {
 
 	// File serving (workspace file viewer)
 	s.mux.HandleFunc("GET /api/files/read", s.cors(s.handleFileRead))
+	s.mux.HandleFunc("GET /api/files/tree", s.cors(s.handleFileTree))
+
+	// WebSocket (live push updates)
+	s.mux.HandleFunc("GET /ws", s.handleWebSocket)
 
 	// CORS preflight
 	s.mux.HandleFunc("OPTIONS /", s.handleCORSPreflight)
@@ -284,6 +291,8 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
+	s.hub.Broadcast(Event{Type: "entry.created", EntryID: id, Data: entry})
+
 	w.WriteHeader(http.StatusCreated)
 	jsonResponse(w, entry)
 }
@@ -392,6 +401,8 @@ func (s *Server) handleUpdateEntry(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
+
+	s.hub.Broadcast(Event{Type: "entry.updated", EntryID: id, Data: existing})
 
 	jsonResponse(w, existing)
 }
@@ -1422,6 +1433,92 @@ func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+// handleFileTree returns a recursive directory tree as JSON.
+// GET /api/files/tree?root=.spec
+func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
+	rootParam := r.URL.Query().Get("root")
+	if rootParam == "" {
+		rootParam = "."
+	}
+
+	// Security: same validation as handleFileRead
+	cleaned := filepath.Clean(filepath.FromSlash(rootParam))
+	if filepath.IsAbs(cleaned) || strings.Contains(cleaned, "..") {
+		http.Error(w, "invalid path", http.StatusForbidden)
+		return
+	}
+
+	workspaceRoot := ""
+	if s.cfg.BrainCodeDir != "" {
+		scriptsDir := filepath.Dir(s.cfg.BrainCodeDir)
+		workspaceRoot = filepath.Dir(scriptsDir)
+	}
+	if workspaceRoot == "" {
+		http.Error(w, "workspace root not configured", http.StatusInternalServerError)
+		return
+	}
+
+	fullPath := filepath.Join(workspaceRoot, cleaned)
+	absRoot, _ := filepath.Abs(workspaceRoot)
+	absPath, _ := filepath.Abs(fullPath)
+	if !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) && absPath != absRoot {
+		http.Error(w, "access denied", http.StatusForbidden)
+		return
+	}
+
+	type TreeNode struct {
+		Name     string      `json:"name"`
+		Path     string      `json:"path"`
+		IsDir    bool        `json:"is_dir"`
+		Children []*TreeNode `json:"children,omitempty"`
+	}
+
+	// Skip directories that are too large or not useful
+	skipDirs := map[string]bool{
+		"node_modules": true, ".git": true, "dist": true,
+		"__pycache__": true, ".venv": true, "vendor": true,
+		"gospel-library": true, "private-brain": true,
+	}
+
+	var buildTree func(dir string, relPrefix string, depth int) []*TreeNode
+	buildTree = func(dir string, relPrefix string, depth int) []*TreeNode {
+		if depth > 6 {
+			return nil
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil
+		}
+		var nodes []*TreeNode
+		for _, e := range entries {
+			name := e.Name()
+			if strings.HasPrefix(name, ".") && name != ".spec" && name != ".github" {
+				continue
+			}
+			relPath := filepath.ToSlash(filepath.Join(relPrefix, name))
+			node := &TreeNode{
+				Name:  name,
+				Path:  relPath,
+				IsDir: e.IsDir(),
+			}
+			if e.IsDir() {
+				if skipDirs[name] {
+					continue
+				}
+				node.Children = buildTree(filepath.Join(dir, name), relPath, depth+1)
+			}
+			nodes = append(nodes, node)
+		}
+		return nodes
+	}
+
+	tree := buildTree(fullPath, cleaned, 0)
+	if tree == nil {
+		tree = []*TreeNode{}
+	}
+	jsonResponse(w, tree)
+}
+
 // --- Helpers ---
 
 func jsonResponse(w http.ResponseWriter, data interface{}) {
@@ -1469,6 +1566,8 @@ func (s *Server) handlePipelineAdvance(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "pipeline advance failed", err, http.StatusBadRequest)
 		return
 	}
+
+	s.hub.Broadcast(Event{Type: "entry.updated", EntryID: req.EntryID, Data: result})
 
 	jsonResponse(w, result)
 }
@@ -1718,6 +1817,8 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		go s.tryReplyAutoAdvance(entryID, req.Content)
 	}
 
+	s.hub.Broadcast(Event{Type: "message.new", EntryID: entryID, Data: map[string]any{"id": id, "role": "human", "content": req.Content}})
+
 	jsonResponse(w, map[string]any{"id": id, "entry_id": entryID, "role": "human"})
 }
 
@@ -1775,12 +1876,14 @@ func (s *Server) tryReplyAutoAdvance(entryID, replyContent string) {
 		// Post failure as session message so the user sees what happened
 		s.store.DB().AddSessionMessage(entryID, "agent",
 			fmt.Sprintf("Auto-advance failed: %v. You can advance manually from the pipeline controls.", err))
+		s.hub.Broadcast(Event{Type: "message.new", EntryID: entryID})
 		return
 	}
 
 	// Post success message
 	s.store.DB().AddSessionMessage(entryID, "agent",
 		fmt.Sprintf("Auto-advanced: %s → %s. %s", result.OldMaturity, result.NewMaturity, result.Message))
+	s.hub.Broadcast(Event{Type: "entry.updated", EntryID: entryID, Data: result})
 	log.Printf("Reply auto-advance: %s advanced %s → %s", entryID, result.OldMaturity, result.NewMaturity)
 }
 
@@ -1791,6 +1894,9 @@ func (s *Server) handleMarkComplete(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "marking complete", err, http.StatusInternalServerError)
 		return
 	}
+
+	s.hub.Broadcast(Event{Type: "entry.updated", EntryID: entryID, Data: map[string]any{"route_status": "complete"}})
+
 	jsonResponse(w, map[string]any{"entry_id": entryID, "status": "complete"})
 }
 

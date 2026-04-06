@@ -4,7 +4,7 @@ import { RouterLink, RouterView } from 'vue-router'
 import { api, type Stats } from './api'
 import { useFilePanel } from './composables/useFilePanel'
 
-const { filePanelOpen } = useFilePanel()
+const { filePanelOpen, wideLayout } = useFilePanel()
 
 const stats = ref<Stats | null>(null)
 const reviewCount = ref(0)
@@ -68,7 +68,7 @@ onMounted(loadCounts)
     <!-- Content -->
     <main
       class="flex-1 w-full px-4 py-6 transition-all duration-200"
-      :class="filePanelOpen ? 'mr-[45vw]' : 'max-w-4xl mx-auto'"
+      :class="filePanelOpen ? 'mr-[45vw]' : wideLayout ? 'max-w-6xl mx-auto' : 'max-w-4xl mx-auto'"
     >
       <RouterView />
     </main>

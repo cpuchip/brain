@@ -83,6 +83,9 @@ func (p *Pipeline) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteRes
 		fmt.Sprintf("Execution started. Agent will work through %d scenarios.",
 			countScenarios(entry.Scenarios)))
 
+	p.notify("entry.updated", entry.ID, map[string]string{"maturity": "executing"})
+	p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
+
 	// Fire and forget — execution runs in background
 	go p.runExecute(entry, req.Feedback)
 
@@ -129,6 +132,9 @@ func (p *Pipeline) Verify(req VerifyRequest) (*VerifyResult, error) {
 		p.store.DB().AddSessionMessage(entry.ID, "agent",
 			fmt.Sprintf("Verified! All %d scenarios passed.", len(req.Results)))
 
+		p.notify("entry.updated", entry.ID, map[string]string{"maturity": "verified"})
+		p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
+
 		return &VerifyResult{
 			EntryID:     entry.ID,
 			AllPassed:   true,
@@ -145,6 +151,9 @@ func (p *Pipeline) Verify(req VerifyRequest) (*VerifyResult, error) {
 		return nil, fmt.Errorf("setting maturity back to planned: %w", err)
 	}
 	p.store.DB().AddSessionMessage(entry.ID, "agent", "Verification failed. Returned to planned.\n\n"+feedback)
+
+	p.notify("entry.updated", entry.ID, map[string]string{"maturity": "planned"})
+	p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
 
 	return &VerifyResult{
 		EntryID:     entry.ID,
@@ -222,6 +231,8 @@ Token budget guidance:
 		p.store.DB().SetMaturity(entry.ID, "specced", fmt.Sprintf("Execution failed: %v", err))
 		p.store.DB().AddSessionMessage(entry.ID, "agent",
 			fmt.Sprintf("Execution failed: %v\n\nEntry returned to specced. You can retry or revise the plan.", err))
+		p.notify("entry.updated", entry.ID, map[string]string{"maturity": "specced"})
+		p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
 		return
 	}
 
@@ -237,6 +248,9 @@ Token budget guidance:
 
 	// Set route_status to your_turn so it shows up for Michael
 	p.store.DB().UpdateRouteStatus(entry.ID, "your_turn")
+
+	p.notify("entry.updated", entry.ID, map[string]string{"maturity": "executing", "route_status": "your_turn"})
+	p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
 }
 
 // loadScratchContent reads the scratch file for an entry from disk.

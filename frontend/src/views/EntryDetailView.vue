@@ -5,6 +5,7 @@ import { api, type Entry, type SubTask, type Project, type SessionMessage } from
 import { useAutoExpand } from '../composables/useAutoExpand'
 import { renderMarkdown } from '../composables/useMarkdown'
 import { useFilePanel } from '../composables/useFilePanel'
+import { useWebSocket } from '../composables/useWebSocket'
 import FileViewer from '../components/FileViewer.vue'
 
 const route = useRoute()
@@ -256,6 +257,24 @@ async function markComplete() {
 
 onMounted(load)
 onUnmounted(() => { filePanelOpen.value = false })
+
+// Live updates via WebSocket
+const { subscribe } = useWebSocket()
+const currentId = computed(() => route.params.id as string)
+
+subscribe('message.new', (evt) => {
+  if (evt.entry_id === currentId.value) {
+    // Refresh messages when a new one arrives
+    api.listMessages(currentId.value).then(m => { messages.value = m })
+  }
+})
+
+subscribe('entry.updated', (evt) => {
+  if (evt.entry_id === currentId.value) {
+    // Refresh the entry when it's updated
+    api.getEntry(currentId.value).then(e => { entry.value = e })
+  }
+})
 </script>
 
 <template>

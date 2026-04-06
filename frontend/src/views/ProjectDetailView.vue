@@ -2,6 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, type Project, type Entry, type SessionMessage } from '../api'
+import { useWebSocket } from '../composables/useWebSocket'
 
 const route = useRoute()
 const router = useRouter()
@@ -327,6 +328,17 @@ async function submitVerification() {
 }
 
 onMounted(load)
+
+// Live updates — refresh entries when any entry changes
+const { subscribe } = useWebSocket()
+subscribe('entry.updated', () => {
+  const id = Number(route.params.id)
+  if (id) api.projectEntries(id).then(e => { entries.value = e })
+})
+subscribe('entry.created', () => {
+  const id = Number(route.params.id)
+  if (id) api.projectEntries(id).then(e => { entries.value = e })
+})
 </script>
 
 <template>

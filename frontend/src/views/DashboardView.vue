@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { api, type BrainStatus, type RoutableEntry, type RunningEntry, type ReviewEntry, type Stats, type Project, type ActivityEvent } from '../api'
+import { useWebSocket } from '../composables/useWebSocket'
 
 const status = ref<BrainStatus | null>(null)
 const stats = ref<Stats | null>(null)
@@ -142,6 +143,12 @@ onMounted(() => {
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
 })
+
+// Live updates — refresh immediately on WebSocket events
+const { subscribe } = useWebSocket()
+subscribe('entry.updated', () => loadAll())
+subscribe('entry.created', () => loadAll())
+subscribe('message.new', () => loadAll())
 </script>
 
 <template>

@@ -27,15 +27,35 @@ const ResearchModel = "claude-haiku-4.5"
 const PlanModel = "claude-sonnet-4"
 
 // Pipeline orchestrates maturity transitions for brain entries.
+// Notifier receives push events from the pipeline. Implemented by the web
+// hub to broadcast over WebSocket.
+type Notifier interface {
+	Notify(eventType, entryID string, data any)
+}
+
 type Pipeline struct {
 	store     *store.Store
 	pool      *ai.AgentPool
 	cfg       *config.Config
 	wc        config.WorkspaceConfig
+	notifier  Notifier
 	codeDir   string // brain code dir (scripts/brain)
 	workspace string // parent workspace root (scripture-study)
 	ctx       context.Context
 	cancel    context.CancelFunc
+}
+
+// SetNotifier configures a push notification sink (typically the WebSocket hub).
+func (p *Pipeline) SetNotifier(n Notifier) {
+	p.notifier = n
+}
+
+// notify sends a push event if a notifier is configured.
+func (p *Pipeline) notify(eventType, entryID string, data any) {
+	if p.notifier == nil {
+		return
+	}
+	p.notifier.Notify(eventType, entryID, data)
 }
 
 // New creates a pipeline controller.
@@ -312,6 +332,8 @@ Token budget guidance:
 		return nil, fmt.Errorf("setting maturity: %w", err)
 	}
 
+	p.notify("entry.updated", entry.ID, map[string]string{"maturity": "researched"})
+
 	// Build a richer message: summarize open questions from the scratch file
 	message := fmt.Sprintf("Research pass complete. Findings at %s", scratchPath)
 	if summary := extractQuestionSummary(absPath); summary != "" {
@@ -553,6 +575,8 @@ Rules:
 	if err := p.store.DB().SetMaturity(entry.ID, "planned", ""); err != nil {
 		return nil, fmt.Errorf("setting maturity: %w", err)
 	}
+
+	p.notify("entry.updated", entry.ID, map[string]string{"maturity": "planned"})
 
 	return &AdvanceResult{
 		EntryID:     entry.ID,
