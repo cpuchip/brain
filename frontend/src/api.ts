@@ -38,6 +38,8 @@ export interface Entry {
   // Failure tracking
   failure_count?: number
   last_failure_reason?: string
+  // Auto-continue mode
+  auto_continue?: boolean
 }
 
 export interface Project {
@@ -354,6 +356,13 @@ export const api = {
     return request<{ entry_id: string; project_id: number | null }>(`/entries/${encodeURIComponent(entryId)}/project`, {
       method: 'PUT',
       body: JSON.stringify({ project_id: projectId }),
+    })
+  },
+
+  setAutoContinue(entryId: string, autoContinue: boolean) {
+    return request<{ entry_id: string; auto_continue: boolean }>(`/entries/${encodeURIComponent(entryId)}/auto-continue`, {
+      method: 'PUT',
+      body: JSON.stringify({ auto_continue: autoContinue }),
     })
   },
 

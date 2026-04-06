@@ -65,7 +65,10 @@ func (d *DB) migrate() error {
 	if err := d.migratePremiumRequests(); err != nil {
 		return err
 	}
-	return d.migrateFailureCount()
+	if err := d.migrateFailureCount(); err != nil {
+		return err
+	}
+	return d.migrateAutoContinue()
 }
 
 const schema = `
@@ -491,6 +494,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	var projectID sql.NullInt64
 	var failureCount sql.NullInt64
 	var lastFailureReason sql.NullString
+	var autoContinue sql.NullBool
 
 	err := d.db.QueryRow(`
 		SELECT id, title, category, body, confidence, needs_review, source,
@@ -504,7 +508,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 			original_body,
 			maturity, maturity_updated_at, scratch_path, scenarios, maturity_notes,
 			project_id,
-			failure_count, last_failure_reason
+			failure_count, last_failure_reason,
+			auto_continue
 		FROM entries WHERE id = ?`, id).Scan(
 		&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
 		&createdStr, &updatedStr,
@@ -518,6 +523,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		&maturity, &maturityUpdated, &scratchPath, &scenarios, &maturityNotes,
 		&projectID,
 		&failureCount, &lastFailureReason,
+		&autoContinue,
 	)
 	if err != nil {
 		return nil, err
@@ -555,6 +561,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	}
 	e.FailureCount = int(failureCount.Int64)
 	e.LastFailureReason = lastFailureReason.String
+	e.AutoContinue = autoContinue.Valid && autoContinue.Bool
 
 	// Load tags
 	rows, err := d.db.Query(`SELECT tag FROM tags WHERE entry_id = ?`, id)
@@ -1633,6 +1640,30 @@ func (d *DB) ResetFailureCount(entryID string) error {
 	_, err := d.db.Exec(
 		"UPDATE entries SET failure_count = 0, last_failure_reason = NULL, updated_at = ? WHERE id = ?",
 		time.Now().UTC().Format(time.RFC3339), entryID,
+	)
+	return err
+}
+
+// migrateAutoContinue adds the auto_continue column for pipeline delegation mode.
+func (d *DB) migrateAutoContinue() error {
+	cols, err := d.columnNames("entries")
+	if err != nil {
+		return err
+	}
+	if cols["auto_continue"] {
+		return nil // already migrated
+	}
+	if _, err := d.db.Exec("ALTER TABLE entries ADD COLUMN auto_continue BOOLEAN DEFAULT FALSE"); err != nil {
+		return fmt.Errorf("auto_continue migration: %w", err)
+	}
+	return nil
+}
+
+// SetAutoContinue sets the auto_continue flag for a pipeline entry.
+func (d *DB) SetAutoContinue(entryID string, autoContinue bool) error {
+	_, err := d.db.Exec(
+		"UPDATE entries SET auto_continue = ?, updated_at = ? WHERE id = ?",
+		autoContinue, time.Now().UTC().Format(time.RFC3339), entryID,
 	)
 	return err
 }

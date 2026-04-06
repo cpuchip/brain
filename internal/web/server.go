@@ -130,6 +130,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/entries/{id}/execute", s.cors(s.handleExecute))
 	s.mux.HandleFunc("POST /api/entries/{id}/verify", s.cors(s.handleVerify))
 	s.mux.HandleFunc("GET /api/entries/{id}/execution-context", s.cors(s.handleExecutionContext))
+	s.mux.HandleFunc("PUT /api/entries/{id}/auto-continue", s.cors(s.handleSetAutoContinue))
 
 	// Projects
 	s.mux.HandleFunc("GET /api/projects", s.cors(s.handleListProjects))
@@ -2233,6 +2234,24 @@ func (s *Server) handleExecutionContext(w http.ResponseWriter, r *http.Request) 
 		"prompt":      prompt,
 		"has_scratch": entry.ScratchPath != "",
 	})
+}
+
+func (s *Server) handleSetAutoContinue(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+
+	var req struct {
+		AutoContinue bool `json:"auto_continue"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.DB().SetAutoContinue(entryID, req.AutoContinue); err != nil {
+		jsonError(w, "setting auto_continue", err, http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, map[string]any{"entry_id": entryID, "auto_continue": req.AutoContinue})
 }
 
 // parseScenarios splits the scenarios string into individual scenario lines.

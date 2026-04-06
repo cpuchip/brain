@@ -87,6 +87,9 @@ type Entry struct {
 	FailureCount      int    `json:"failure_count,omitempty" yaml:"failure_count,omitempty"`
 	LastFailureReason string `json:"last_failure_reason,omitempty" yaml:"last_failure_reason,omitempty"`
 
+	// Auto-continue mode (delegation vs sabbath path)
+	AutoContinue bool `json:"auto_continue,omitempty" yaml:"auto_continue,omitempty"`
+
 	// Sub-tasks (loaded separately from subtasks table)
 	SubTasks []SubTask `json:"subtasks,omitempty" yaml:"subtasks,omitempty"`
 }

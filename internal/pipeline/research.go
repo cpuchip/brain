@@ -134,6 +134,7 @@ func (p *Pipeline) Advance(ctx context.Context, req AdvanceRequest) (*AdvanceRes
 			return nil, err
 		}
 		p.store.DB().ResetFailureCount(entry.ID)
+		p.maybeAutoContinue(entry, result)
 		return result, nil
 	case ActionRevise:
 		result, err := p.revise(ctx, entry, oldMaturity, req)
@@ -142,6 +143,7 @@ func (p *Pipeline) Advance(ctx context.Context, req AdvanceRequest) (*AdvanceRes
 			return nil, err
 		}
 		p.store.DB().ResetFailureCount(entry.ID)
+		p.maybeAutoContinue(entry, result)
 		return result, nil
 	case ActionReject:
 		return p.reject(entry, oldMaturity)
@@ -247,6 +249,26 @@ func (p *Pipeline) deferEntry(entry *store.Entry, oldMaturity string) (*AdvanceR
 		NewMaturity: oldMaturity,
 		Message:     "Deferred — will revisit later",
 	}, nil
+}
+
+// maybeAutoContinue fires an auto-advance goroutine if the entry has auto_continue enabled
+// and the new maturity is eligible for automatic advancement (researched or planned).
+// Stops before specced — verification always requires human.
+func (p *Pipeline) maybeAutoContinue(entry *store.Entry, result *AdvanceResult) {
+	if !entry.AutoContinue {
+		return
+	}
+	if result.NewMaturity != "researched" && result.NewMaturity != "planned" {
+		return
+	}
+	go func() {
+		time.Sleep(2 * time.Second) // Brief pause for WebSocket delivery
+		ctx := context.Background()
+		_, err := p.Advance(ctx, AdvanceRequest{EntryID: entry.ID, Action: ActionAdvance})
+		if err != nil {
+			log.Printf("auto-continue failed for %s: %v", entry.ID, err)
+		}
+	}()
 }
 
 // recordFailure tracks a pipeline failure: increments the counter, posts a session message,
@@ -373,6 +395,15 @@ Token budget guidance:
 	message := fmt.Sprintf("Research pass complete. Findings at %s", scratchPath)
 	if summary := extractQuestionSummary(absPath); summary != "" {
 		message += "\n\n" + summary
+	}
+
+	// Sabbath path: pause for human review unless auto-continue is on
+	if !entry.AutoContinue {
+		p.store.DB().UpdateRouteStatus(entry.ID, "your_turn")
+		p.store.DB().AddSessionMessage(entry.ID, "agent",
+			"Research complete. Review the findings before I continue to planning.\n\n"+message)
+		p.notify("entry.updated", entry.ID, map[string]string{"route_status": "your_turn"})
+		p.notify("message.new", entry.ID, nil)
 	}
 
 	return &AdvanceResult{
@@ -618,12 +649,23 @@ Rules:
 
 	p.notify("entry.updated", entry.ID, map[string]string{"maturity": "planned"})
 
+	planMessage := fmt.Sprintf("Plan pass complete. Plan appended to %s", scratchPath)
+
+	// Sabbath path: pause for human review unless auto-continue is on
+	if !entry.AutoContinue {
+		p.store.DB().UpdateRouteStatus(entry.ID, "your_turn")
+		p.store.DB().AddSessionMessage(entry.ID, "agent",
+			"Plan complete. Review before adding scenarios.\n\n"+planMessage)
+		p.notify("entry.updated", entry.ID, map[string]string{"route_status": "your_turn"})
+		p.notify("message.new", entry.ID, nil)
+	}
+
 	return &AdvanceResult{
 		EntryID:     entry.ID,
 		OldMaturity: entry.Maturity,
 		NewMaturity: "planned",
 		ScratchPath: scratchPath,
-		Message:     fmt.Sprintf("Plan pass complete. Plan appended to %s", scratchPath),
+		Message:     planMessage,
 	}, nil
 }
 

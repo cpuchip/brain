@@ -130,7 +130,9 @@ func (p *Pipeline) Verify(req VerifyRequest) (*VerifyResult, error) {
 			return nil, fmt.Errorf("setting maturity to verified: %w", err)
 		}
 		p.store.DB().AddSessionMessage(entry.ID, "agent",
-			fmt.Sprintf("Verified! All %d scenarios passed.", len(req.Results)))
+			fmt.Sprintf("Verified! All %d scenarios passed.\n\n"+
+				"**Sabbath moment:** Before we close this — what worked well? What would you do differently? Any loose ends?",
+				len(req.Results)))
 
 		p.notify("entry.updated", entry.ID, map[string]string{"maturity": "verified"})
 		p.notify("message.new", entry.ID, map[string]string{"role": "agent"})

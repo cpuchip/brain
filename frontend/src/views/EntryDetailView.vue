@@ -148,6 +148,7 @@ async function reclassify(category: string) {
 
 // AI Classify
 const classifying = ref(false)
+const togglingAutoContinue = ref(false)
 async function classify() {
   if (!entry.value || classifying.value) return
   classifying.value = true
@@ -159,6 +160,21 @@ async function classify() {
     showToast('Classification failed')
   } finally {
     classifying.value = false
+  }
+}
+
+async function toggleAutoContinue() {
+  if (!entry.value || togglingAutoContinue.value) return
+  togglingAutoContinue.value = true
+  try {
+    const newVal = !entry.value.auto_continue
+    await api.setAutoContinue(entry.value.id, newVal)
+    entry.value.auto_continue = newVal
+    showToast(newVal ? 'Auto-continue on — delegation mode' : 'Auto-continue off — sabbath mode')
+  } catch {
+    showToast('Failed to toggle auto-continue')
+  } finally {
+    togglingAutoContinue.value = false
   }
 }
 
@@ -328,6 +344,10 @@ subscribe('entry.updated', (evt) => {
             <span v-if="entry.failure_count" class="text-xs text-red-400" :title="entry.last_failure_reason || 'Pipeline failure'">
               🔴 {{ entry.failure_count }} failure{{ entry.failure_count === 1 ? '' : 's' }}
             </span>
+            <label v-if="entry.maturity" class="inline-flex items-center gap-1.5 text-xs cursor-pointer select-none" :title="entry.auto_continue ? 'Delegation mode — stages advance automatically' : 'Sabbath mode — pause for review after each stage'">
+              <input type="checkbox" :checked="entry.auto_continue" :disabled="togglingAutoContinue" @change="toggleAutoContinue" class="accent-violet-500 w-3.5 h-3.5">
+              <span :class="entry.auto_continue ? 'text-violet-400' : 'text-gray-500'">{{ entry.auto_continue ? '⚡ Auto' : '🕊️ Sabbath' }}</span>
+            </label>
           </div>
         </div>
         <div class="flex gap-2 shrink-0">
