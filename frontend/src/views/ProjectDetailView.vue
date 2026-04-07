@@ -71,13 +71,27 @@ const nonEmptyStages = computed(() => {
   return [...maturityStages, 'unset'].filter(s => (entriesByMaturity.value[s]?.length ?? 0) > 0)
 })
 
-// For board mode, show all stages (even empty) so the kanban layout is consistent
-const boardStages = computed(() => {
-  const stages: string[] = [...maturityStages]
-  if ((entriesByMaturity.value['unset']?.length ?? 0) > 0) {
-    stages.unshift('unset')
+// 3-column board: Inbox / Working / Done
+const boardColumns = computed(() => {
+  const inbox: Entry[] = []
+  const working: Entry[] = []
+  const done: Entry[] = []
+
+  for (const e of entries.value) {
+    if (e.notebook || !e.maturity || e.maturity === 'raw') {
+      inbox.push(e)
+    } else if (e.maturity === 'verified') {
+      done.push(e)
+    } else {
+      working.push(e)
+    }
   }
-  return stages
+
+  return [
+    { key: 'inbox', label: 'Inbox', entries: inbox, color: 'bg-gray-700 text-gray-300', borderColor: 'border-gray-600' },
+    { key: 'working', label: 'Working', entries: working, color: 'bg-blue-900 text-blue-300', borderColor: 'border-blue-800' },
+    { key: 'done', label: 'Done', entries: done, color: 'bg-green-900 text-green-300', borderColor: 'border-green-800' },
+  ]
 })
 
 const totalPremiumRequests = computed(() => {
@@ -93,18 +107,6 @@ function maturityColor(stage: string) {
     case 'executing': return 'bg-amber-900 text-amber-300'
     case 'verified': return 'bg-green-900 text-green-300'
     default: return 'bg-gray-800 text-gray-400'
-  }
-}
-
-function maturityBorderColor(stage: string) {
-  switch (stage) {
-    case 'raw': return 'border-gray-700'
-    case 'researched': return 'border-blue-800'
-    case 'planned': return 'border-purple-800'
-    case 'specced': return 'border-indigo-800'
-    case 'executing': return 'border-amber-800'
-    case 'verified': return 'border-green-800'
-    default: return 'border-gray-800'
   }
 }
 
@@ -568,27 +570,27 @@ subscribe('entry.created', () => {
         <div class="text-sm text-gray-500">Assign entries from the Entries view.</div>
       </div>
 
-      <!-- ========== BOARD VIEW ========== -->
-      <div v-else-if="viewMode === 'board'" class="flex gap-3 overflow-x-auto pb-4 -mx-4 px-4" style="min-height: 400px;">
+      <!-- ========== BOARD VIEW (3-column) ========== -->
+      <div v-else-if="viewMode === 'board'" class="grid grid-cols-3 gap-4" style="min-height: 400px;">
         <div
-          v-for="stage in boardStages"
-          :key="stage"
-          class="flex-shrink-0 w-64"
+          v-for="col in boardColumns"
+          :key="col.key"
+          class="min-w-0"
         >
           <!-- Column header -->
-          <div :class="['flex items-center justify-between px-3 py-2 rounded-t-lg border-b-2', maturityBorderColor(stage)]">
+          <div :class="['flex items-center justify-between px-3 py-2 rounded-t-lg border-b-2', col.borderColor]">
             <div class="flex items-center gap-2">
-              <span :class="['px-2 py-0.5 text-xs rounded-full font-medium', maturityColor(stage)]">
-                {{ stageLabels[stage] || stage }}
+              <span :class="['px-2 py-0.5 text-xs rounded-full font-medium', col.color]">
+                {{ col.label }}
               </span>
-              <span class="text-xs text-gray-600">{{ entriesByMaturity[stage]?.length ?? 0 }}</span>
+              <span class="text-xs text-gray-600">{{ col.entries.length }}</span>
             </div>
           </div>
 
           <!-- Column body -->
           <div class="space-y-2 mt-2 min-h-[100px]">
             <div
-              v-for="entry in entriesByMaturity[stage]"
+              v-for="entry in col.entries"
               :key="entry.id"
               @click="openPanel(entry)"
               :class="[
@@ -601,6 +603,14 @@ subscribe('entry.created', () => {
               <p v-if="entry.body" class="text-xs text-gray-500 mt-1 line-clamp-2">{{ entry.body.slice(0, 120) }}</p>
               <div class="flex items-center gap-1.5 mt-2 flex-wrap">
                 <span class="text-xs text-gray-600 bg-gray-800 px-1.5 py-0.5 rounded">{{ entry.category }}</span>
+                <!-- Notebook badge in Inbox -->
+                <span v-if="entry.notebook" class="text-xs bg-indigo-900/50 text-indigo-300 px-1.5 py-0.5 rounded" title="Notebook entry">📓 Notebook</span>
+                <!-- Sub-stage badge in Working column -->
+                <span
+                  v-if="col.key === 'working' && entry.maturity"
+                  :class="['text-xs px-1.5 py-0.5 rounded', maturityColor(entry.maturity)]"
+                >{{ stageLabels[entry.maturity] || entry.maturity }}</span>
+                <!-- Route status -->
                 <span
                   v-if="routeStatusIndicator(entry)"
                   :class="['text-xs px-1.5 py-0.5 rounded', routeStatusIndicator(entry)!.badge]"
@@ -644,7 +654,7 @@ subscribe('entry.created', () => {
 
             <!-- Empty column indicator -->
             <div
-              v-if="(entriesByMaturity[stage]?.length ?? 0) === 0"
+              v-if="col.entries.length === 0"
               class="text-center py-6 text-gray-700 text-xs"
             >No entries</div>
           </div>
