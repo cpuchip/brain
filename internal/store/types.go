@@ -93,6 +93,9 @@ type Entry struct {
 	// Notebook mode (opted out of pipeline)
 	Notebook bool `json:"notebook,omitempty" yaml:"notebook,omitempty"`
 
+	// Nudge count (how many times the review bot has nudged this entry)
+	NudgeCount int `json:"nudge_count,omitempty" yaml:"nudge_count,omitempty"`
+
 	// Sub-tasks (loaded separately from subtasks table)
 	SubTasks []SubTask `json:"subtasks,omitempty" yaml:"subtasks,omitempty"`
 }

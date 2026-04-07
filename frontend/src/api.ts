@@ -42,6 +42,8 @@ export interface Entry {
   auto_continue?: boolean
   // Notebook mode
   notebook?: boolean
+  // Nudge count
+  nudge_count?: number
 }
 
 export interface Project {
@@ -88,6 +90,18 @@ export interface TaskRun {
   error?: string
   started_at: string
   ended_at?: string | null
+}
+
+export interface NudgeBotStatus {
+  enabled: boolean
+  paused: boolean
+  wake_hours: number[]
+  last_run_at?: string
+  next_run_at?: string
+  last_nudge_count: number
+  total_nudges: number
+  total_cost: number
+  user_present: boolean
 }
 
 export interface ActivityEvent {
@@ -441,6 +455,18 @@ export const api = {
 
   triggerTaskRun(taskId: number) {
     return request<{ run_id: number; status: string }>(`/scheduled/${taskId}/run`, { method: 'POST' })
+  },
+
+  // Nudge bot
+  getNudgeBotStatus() {
+    return request<NudgeBotStatus>('/nudge-bot/status')
+  },
+
+  setNudgeBotPaused(paused: boolean) {
+    return request<NudgeBotStatus>('/nudge-bot/pause', {
+      method: 'PUT',
+      body: JSON.stringify({ paused }),
+    })
   },
 
   // Library

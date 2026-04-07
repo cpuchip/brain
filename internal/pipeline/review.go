@@ -7,11 +7,39 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cpuchip/brain/internal/ai"
 	"github.com/cpuchip/brain/internal/store"
 )
+
+// ReviewStatus holds observable state of the nudge bot for the API.
+type ReviewStatus struct {
+	Enabled        bool      `json:"enabled"`
+	Paused         bool      `json:"paused"`
+	WakeHours      []int     `json:"wake_hours"`
+	LastRunAt      time.Time `json:"last_run_at,omitempty"`
+	NextRunAt      time.Time `json:"next_run_at,omitempty"`
+	LastNudgeCount int       `json:"last_nudge_count"`
+	TotalNudges    int       `json:"total_nudges"`
+	TotalCost      float64   `json:"total_cost"`
+	UserPresent    bool      `json:"user_present"`
+}
+
+// reviewState tracks mutable nudge bot state (mutex-protected).
+type reviewState struct {
+	mu             sync.Mutex
+	enabled        bool
+	paused         bool
+	wakeHours      []int
+	lastRunAt      time.Time
+	nextRunAt      time.Time
+	lastNudgeCount int
+	totalNudges    int
+	totalCost      float64
+	lastActivityAt time.Time // last user API activity
+}
 
 // ReviewConfig holds thresholds for the push-back review loop.
 type ReviewConfig struct {
@@ -58,10 +86,22 @@ func (p *Pipeline) StartReviewLoop(cfg ReviewConfig) {
 		return
 	}
 
+	// Initialize review state
+	p.review.mu.Lock()
+	p.review.enabled = true
+	p.review.wakeHours = cfg.WakeHours
+	p.review.lastActivityAt = time.Now() // assume user is present at startup
+	p.review.mu.Unlock()
+
 	go func() {
 		for {
 			next := nextWakeTime(time.Now(), cfg.WakeHours)
 			delay := time.Until(next)
+
+			p.review.mu.Lock()
+			p.review.nextRunAt = next
+			p.review.mu.Unlock()
+
 			log.Printf("Pipeline review loop: next scan at %s (in %v)", next.Format("15:04"), delay.Round(time.Minute))
 
 			timer := time.NewTimer(delay)
@@ -78,7 +118,59 @@ func (p *Pipeline) StartReviewLoop(cfg ReviewConfig) {
 	log.Printf("Pipeline review loop: started (wake hours: %v)", cfg.WakeHours)
 }
 
+// GetReviewStatus returns current nudge bot state for the API.
+func (p *Pipeline) GetReviewStatus() ReviewStatus {
+	p.review.mu.Lock()
+	defer p.review.mu.Unlock()
+	return ReviewStatus{
+		Enabled:        p.review.enabled,
+		Paused:         p.review.paused,
+		WakeHours:      p.review.wakeHours,
+		LastRunAt:      p.review.lastRunAt,
+		NextRunAt:      p.review.nextRunAt,
+		LastNudgeCount: p.review.lastNudgeCount,
+		TotalNudges:    p.review.totalNudges,
+		TotalCost:      p.review.totalCost,
+		UserPresent:    time.Since(p.review.lastActivityAt) < 2*time.Hour,
+	}
+}
+
+// SetReviewPaused pauses or resumes the nudge bot.
+func (p *Pipeline) SetReviewPaused(paused bool) {
+	p.review.mu.Lock()
+	p.review.paused = paused
+	p.review.mu.Unlock()
+	if paused {
+		log.Printf("Pipeline review: paused by user")
+	} else {
+		log.Printf("Pipeline review: resumed by user")
+	}
+}
+
+// TouchActivity records that the user made an API request (for presence detection).
+func (p *Pipeline) TouchActivity() {
+	p.review.mu.Lock()
+	p.review.lastActivityAt = time.Now()
+	p.review.mu.Unlock()
+}
+
 func (p *Pipeline) runReviewScan(cfg ReviewConfig) {
+	p.review.mu.Lock()
+	paused := p.review.paused
+	lastActivity := p.review.lastActivityAt
+	p.review.mu.Unlock()
+
+	if paused {
+		log.Printf("Pipeline review: skipping scan (paused)")
+		return
+	}
+
+	// Presence check: skip if no API activity in 2 hours
+	if time.Since(lastActivity) > 2*time.Hour {
+		log.Printf("Pipeline review: skipping scan (no user activity for %v)", time.Since(lastActivity).Round(time.Minute))
+		return
+	}
+
 	now := time.Now().UTC()
 
 	entries, err := p.store.DB().ListStaleEntries(
@@ -91,17 +183,26 @@ func (p *Pipeline) runReviewScan(cfg ReviewConfig) {
 		return
 	}
 
-	if len(entries) == 0 {
-		return
-	}
+	nudgeCount := 0
+	if len(entries) > 0 {
+		log.Printf("Pipeline review: found %d stale entries to nudge", len(entries))
 
-	log.Printf("Pipeline review: found %d stale entries to nudge", len(entries))
-
-	for _, entry := range entries {
-		if err := p.nudgeEntry(entry); err != nil {
-			log.Printf("Pipeline review: nudge failed for %s: %v", entry.ID, err)
+		for _, entry := range entries {
+			if err := p.nudgeEntry(entry); err != nil {
+				log.Printf("Pipeline review: nudge failed for %s: %v", entry.ID, err)
+			} else {
+				nudgeCount++
+			}
 		}
 	}
+
+	// Update stats
+	p.review.mu.Lock()
+	p.review.lastRunAt = time.Now()
+	p.review.lastNudgeCount = nudgeCount
+	p.review.totalNudges += nudgeCount
+	p.review.totalCost += float64(nudgeCount) * 0.33 // Haiku cost per nudge
+	p.review.mu.Unlock()
 }
 
 func (p *Pipeline) nudgeEntry(entry *store.Entry) error {
@@ -159,6 +260,11 @@ func (p *Pipeline) nudgeEntry(entry *store.Entry) error {
 	// Track premium request cost (Haiku = 0.33)
 	if err := p.store.DB().IncrementPremiumRequests(entry.ID, 0.33); err != nil {
 		log.Printf("warning: failed to track cost for %s: %v", entry.ID, err)
+	}
+
+	// Increment nudge count
+	if err := p.store.DB().IncrementNudgeCount(entry.ID); err != nil {
+		log.Printf("warning: failed to increment nudge count for %s: %v", entry.ID, err)
 	}
 
 	// Post the nudge as a session message

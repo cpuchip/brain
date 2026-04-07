@@ -43,6 +43,7 @@ type Pipeline struct {
 	workspace string // parent workspace root (scripture-study)
 	ctx       context.Context
 	cancel    context.CancelFunc
+	review    reviewState
 }
 
 // SetNotifier configures a push notification sink (typically the WebSocket hub).

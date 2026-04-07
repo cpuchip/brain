@@ -160,6 +160,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/scheduled/{id}/runs", s.cors(s.handleListTaskRuns))
 	s.mux.HandleFunc("POST /api/scheduled/{id}/run", s.cors(s.handleTriggerTaskRun))
 
+	// Nudge bot controls
+	s.mux.HandleFunc("GET /api/nudge-bot/status", s.cors(s.handleNudgeBotStatus))
+	s.mux.HandleFunc("PUT /api/nudge-bot/pause", s.cors(s.handleNudgeBotPause))
+
 	// Library (agents, skills, docs)
 	s.mux.HandleFunc("GET /api/library/agents", s.cors(s.handleLibraryAgents))
 	s.mux.HandleFunc("GET /api/library/skills", s.cors(s.handleLibrarySkills))
@@ -775,6 +779,10 @@ func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		// Track user presence for nudge bot scheduling
+		if s.pipeline != nil {
+			s.pipeline.TouchActivity()
+		}
 		next(w, r)
 	}
 }
@@ -2538,6 +2546,32 @@ func (s *Server) handleTriggerTaskRun(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	jsonResponse(w, map[string]any{"run_id": run.ID, "status": "started"})
+}
+
+// --- Nudge Bot Handlers ---
+
+func (s *Server) handleNudgeBotStatus(w http.ResponseWriter, r *http.Request) {
+	if s.pipeline == nil {
+		jsonResponse(w, map[string]any{"enabled": false})
+		return
+	}
+	jsonResponse(w, s.pipeline.GetReviewStatus())
+}
+
+func (s *Server) handleNudgeBotPause(w http.ResponseWriter, r *http.Request) {
+	if s.pipeline == nil {
+		jsonError(w, "pipeline not configured", nil, http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Paused bool `json:"paused"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request body", err, http.StatusBadRequest)
+		return
+	}
+	s.pipeline.SetReviewPaused(req.Paused)
+	jsonResponse(w, s.pipeline.GetReviewStatus())
 }
 
 // --- Library Handlers ---

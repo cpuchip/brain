@@ -360,6 +360,9 @@ subscribe('entry.updated', (evt) => {
             <span v-if="entry.failure_count" class="text-xs text-red-400" :title="entry.last_failure_reason || 'Pipeline failure'">
               🔴 {{ entry.failure_count }} failure{{ entry.failure_count === 1 ? '' : 's' }}
             </span>
+            <span v-if="entry.nudge_count" class="text-xs text-gray-500" :title="`Nudged ${entry.nudge_count} time${entry.nudge_count === 1 ? '' : 's'} by review bot`">
+              🔔 {{ entry.nudge_count }}
+            </span>
             <label v-if="entry.maturity && !entry.notebook" class="inline-flex items-center gap-1.5 text-xs cursor-pointer select-none" :title="entry.auto_continue ? 'Delegation mode — stages advance automatically' : 'Sabbath mode — pause for review after each stage'">
               <input type="checkbox" :checked="entry.auto_continue" :disabled="togglingAutoContinue" @change="toggleAutoContinue" class="accent-violet-500 w-3.5 h-3.5">
               <span :class="entry.auto_continue ? 'text-violet-400' : 'text-gray-500'">{{ entry.auto_continue ? '⚡ Auto' : '🕊️ Sabbath' }}</span>

@@ -72,7 +72,10 @@ func (d *DB) migrate() error {
 	if err := d.migrateAutoContinue(); err != nil {
 		return err
 	}
-	return d.migrateNotebook()
+	if err := d.migrateNotebook(); err != nil {
+		return err
+	}
+	return d.migrateNudgeCount()
 }
 
 const schema = `
@@ -500,6 +503,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	var lastFailureReason sql.NullString
 	var autoContinue sql.NullBool
 	var notebook sql.NullBool
+	var nudgeCount sql.NullInt64
 
 	err := d.db.QueryRow(`
 		SELECT id, title, category, body, confidence, needs_review, source,
@@ -515,7 +519,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 			project_id,
 			failure_count, last_failure_reason,
 			auto_continue,
-			notebook
+			notebook,
+			nudge_count
 		FROM entries WHERE id = ?`, id).Scan(
 		&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
 		&createdStr, &updatedStr,
@@ -531,6 +536,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		&failureCount, &lastFailureReason,
 		&autoContinue,
 		&notebook,
+		&nudgeCount,
 	)
 	if err != nil {
 		return nil, err
@@ -570,6 +576,7 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	e.LastFailureReason = lastFailureReason.String
 	e.AutoContinue = autoContinue.Valid && autoContinue.Bool
 	e.Notebook = notebook.Valid && notebook.Bool
+	e.NudgeCount = int(nudgeCount.Int64)
 
 	// Load tags
 	rows, err := d.db.Query(`SELECT tag FROM tags WHERE entry_id = ?`, id)
@@ -1724,6 +1731,30 @@ func (d *DB) BulkSetNotebook(entryIDs []string, notebook bool) (int, error) {
 	}
 	n, _ := result.RowsAffected()
 	return int(n), nil
+}
+
+// migrateNudgeCount adds the nudge_count column for tracking how many times an entry was nudged.
+func (d *DB) migrateNudgeCount() error {
+	cols, err := d.columnNames("entries")
+	if err != nil {
+		return err
+	}
+	if cols["nudge_count"] {
+		return nil // already migrated
+	}
+	if _, err := d.db.Exec("ALTER TABLE entries ADD COLUMN nudge_count INTEGER DEFAULT 0"); err != nil {
+		return fmt.Errorf("nudge_count migration: %w", err)
+	}
+	return nil
+}
+
+// IncrementNudgeCount increments the nudge counter for an entry.
+func (d *DB) IncrementNudgeCount(entryID string) error {
+	_, err := d.db.Exec(
+		"UPDATE entries SET nudge_count = COALESCE(nudge_count, 0) + 1 WHERE id = ?",
+		entryID,
+	)
+	return err
 }
 
 // CreateScheduledTask creates a new scheduled task.

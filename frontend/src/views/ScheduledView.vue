@@ -1,12 +1,34 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { api, type ScheduledTask, type TaskRun, type Project, type AgentInfo } from '../api'
+import { api, type ScheduledTask, type TaskRun, type Project, type AgentInfo, type NudgeBotStatus } from '../api'
 
 const tasks = ref<ScheduledTask[]>([])
 const projects = ref<Project[]>([])
 const agents = ref<AgentInfo[]>([])
 const loading = ref(true)
 const error = ref('')
+
+// Nudge bot
+const nudgeBot = ref<NudgeBotStatus | null>(null)
+const togglingNudge = ref(false)
+
+async function loadNudgeBot() {
+  try {
+    nudgeBot.value = await api.getNudgeBotStatus()
+  } catch {
+    // nudge bot may not be configured
+  }
+}
+
+async function toggleNudgePause() {
+  if (!nudgeBot.value || togglingNudge.value) return
+  togglingNudge.value = true
+  try {
+    nudgeBot.value = await api.setNudgeBotPaused(!nudgeBot.value.paused)
+  } finally {
+    togglingNudge.value = false
+  }
+}
 
 // Create form
 const showCreate = ref(false)
@@ -38,6 +60,7 @@ async function loadAll() {
     projects.value = p
     agents.value = a
     error.value = ''
+    await loadNudgeBot()
   } catch (e: any) {
     error.value = e.message || 'Failed to load'
   } finally {
@@ -144,6 +167,38 @@ onMounted(loadAll)
 
     <!-- Error -->
     <div v-if="error" class="bg-red-900/50 text-red-300 px-4 py-2 rounded-lg text-sm">{{ error }}</div>
+
+    <!-- Nudge Bot Status -->
+    <div v-if="nudgeBot?.enabled" class="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-medium text-gray-200">🔔 Nudge Bot</span>
+          <span class="text-xs px-2 py-0.5 rounded-full"
+            :class="nudgeBot.paused ? 'bg-gray-800 text-gray-500' : 'bg-emerald-900 text-emerald-300'">
+            {{ nudgeBot.paused ? 'Paused' : 'Active' }}
+          </span>
+          <span v-if="!nudgeBot.paused && !nudgeBot.user_present" class="text-xs px-2 py-0.5 rounded-full bg-amber-900 text-amber-300" title="No API activity in 2+ hours — nudges will skip until you return">
+            😴 Waiting for presence
+          </span>
+        </div>
+        <button
+          @click="toggleNudgePause"
+          :disabled="togglingNudge"
+          class="text-xs px-3 py-1 rounded-lg border transition-colors"
+          :class="nudgeBot.paused ? 'border-emerald-700 text-emerald-400 hover:bg-emerald-900' : 'border-gray-700 text-gray-400 hover:bg-gray-800'"
+        >{{ nudgeBot.paused ? '▶ Resume' : '⏸ Pause' }}</button>
+      </div>
+      <div class="flex items-center gap-4 mt-2 text-xs text-gray-500">
+        <span>Wake hours: {{ nudgeBot.wake_hours.map(h => h + ':00').join(', ') }}</span>
+        <span>Last run: {{ nudgeBot.last_run_at ? formatTime(nudgeBot.last_run_at) : '—' }}</span>
+        <span>Next: {{ nudgeBot.next_run_at ? formatTime(nudgeBot.next_run_at) : '—' }}</span>
+      </div>
+      <div class="flex items-center gap-4 mt-1 text-xs text-gray-600">
+        <span>Last cycle: {{ nudgeBot.last_nudge_count }} nudge{{ nudgeBot.last_nudge_count === 1 ? '' : 's' }}</span>
+        <span>Total: {{ nudgeBot.total_nudges }} nudges</span>
+        <span>Cost: 🎟️ {{ nudgeBot.total_cost.toFixed(2) }}</span>
+      </div>
+    </div>
 
     <!-- Create form -->
     <Transition
