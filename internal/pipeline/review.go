@@ -249,7 +249,7 @@ func (p *Pipeline) nudgeEntry(entry *store.Entry) error {
 	agentCfg := ai.AgentConfig{
 		Model:         ResearchModel, // Haiku — 0.33 premium requests
 		SystemMessage: systemMsg,
-		WorkingDir:    p.workspace,
+		WorkingDir:    p.resolveWorkDir(entry),
 		AgentName:     "review",
 	}
 

@@ -364,6 +364,12 @@ export const api = {
     return request<void>(`/projects/${id}`, { method: 'DELETE' })
   },
 
+  scaffoldProject(id: number) {
+    return request<{ project_dir: string; git_inited: boolean; gh_created: boolean; error?: string }>(`/projects/${id}/scaffold`, {
+      method: 'POST',
+    })
+  },
+
   projectEntries(id: number) {
     return request<Entry[]>(`/projects/${id}/entries`)
   },

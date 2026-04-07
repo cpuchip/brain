@@ -167,3 +167,27 @@ func FormatProjectContext(ctx *ProjectContext) string {
 	sb.WriteString("---\n")
 	return sb.String()
 }
+
+// resolveWorkDir returns the working directory for pipeline agents operating on
+// an entry. For external projects, this is the project's own directory. For
+// subfolder and integrated projects, agents work from the workspace root.
+func (p *Pipeline) resolveWorkDir(entry *store.Entry) string {
+	if entry.ProjectID == nil {
+		return p.workspace
+	}
+	project, err := p.store.DB().GetProject(*entry.ProjectID)
+	if err != nil || project == nil {
+		return p.workspace
+	}
+	if project.WorkspaceType == "external" && project.WorkspacePath != "" {
+		abs := project.WorkspacePath
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(p.workspace, abs)
+		}
+		// Only use if the directory actually exists
+		if info, err := os.Stat(abs); err == nil && info.IsDir() {
+			return abs
+		}
+	}
+	return p.workspace
+}

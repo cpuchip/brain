@@ -364,7 +364,7 @@ Token budget guidance:
 		Model:         ResearchModel,
 		SystemMessage: systemMsg,
 		MCPServers:    p.mcpDefsForCategory(entry.Category),
-		WorkingDir:    p.workspace,
+		WorkingDir:    p.resolveWorkDir(entry),
 		AgentName:     "research",
 		AllowedWritePaths: map[string][]string{
 			"research": {"study/.scratch", ".spec/scratch"},
@@ -623,7 +623,7 @@ Rules:
 		Model:         PlanModel,
 		SystemMessage: systemMsg,
 		MCPServers:    p.mcpDefsForCategory(entry.Category),
-		WorkingDir:    p.workspace,
+		WorkingDir:    p.resolveWorkDir(entry),
 		AgentName:     "plan",
 		AllowedWritePaths: map[string][]string{
 			"plan": {".spec/scratch", ".spec/proposals", "study/.scratch"},

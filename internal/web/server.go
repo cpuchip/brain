@@ -142,6 +142,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/projects/{id}", s.cors(s.handleDeleteProject))
 	s.mux.HandleFunc("GET /api/projects/{id}/entries", s.cors(s.handleProjectEntries))
 	s.mux.HandleFunc("GET /api/projects/{id}/stats", s.cors(s.handleProjectStats))
+	s.mux.HandleFunc("POST /api/projects/{id}/scaffold", s.cors(s.handleScaffoldProject))
 	s.mux.HandleFunc("PUT /api/entries/{id}/project", s.cors(s.handleSetEntryProject))
 
 	// Session messages (iterative turns)
@@ -2012,6 +2013,29 @@ func (s *Server) handleProjectStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, stats)
+}
+
+func (s *Server) handleScaffoldProject(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		jsonError(w, "invalid project id", err, http.StatusBadRequest)
+		return
+	}
+	project, err := s.store.DB().GetProject(id)
+	if err != nil {
+		jsonError(w, "project not found", err, http.StatusNotFound)
+		return
+	}
+	if s.pipeline == nil {
+		jsonError(w, "pipeline not available", nil, http.StatusServiceUnavailable)
+		return
+	}
+	result, err := s.pipeline.ScaffoldProject(project)
+	if err != nil {
+		jsonError(w, "scaffolding project", err, http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, result)
 }
 
 func (s *Server) handleSetEntryProject(w http.ResponseWriter, r *http.Request) {

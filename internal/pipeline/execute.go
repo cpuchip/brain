@@ -221,7 +221,7 @@ Token budget guidance:
 		Model:         ExecuteModel,
 		SystemMessage: systemMsg,
 		MCPServers:    p.mcpDefsForCategory(entry.Category),
-		WorkingDir:    p.workspace,
+		WorkingDir:    p.resolveWorkDir(entry),
 		AgentName:     "execute",
 		AllowedWritePaths: map[string][]string{
 			"execute": {".", ".spec/scratch"}, // Execution can write broadly

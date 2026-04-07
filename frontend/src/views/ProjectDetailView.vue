@@ -36,6 +36,8 @@ const verifyDialog = ref(false)
 const verifyEntryId = ref('')
 const verifyScenarios = ref<{ scenario: string; passed: boolean; notes: string }[]>([])
 const verifySubmitting = ref(false)
+const scaffolding = ref(false)
+const scaffoldResult = ref<{ project_dir: string; git_inited: boolean; gh_created: boolean; error?: string } | null>(null)
 
 const editForm = ref({ name: '', description: '', emoji: '', status: '', context_file: '', workspace_type: 'integrated', workspace_path: '', github_repo: '', repo_visibility: 'private' })
 
@@ -211,6 +213,20 @@ async function doDelete() {
   if (!project.value) return
   await api.deleteProject(project.value.id)
   router.push('/projects')
+}
+
+async function doScaffold() {
+  if (!project.value) return
+  scaffolding.value = true
+  scaffoldResult.value = null
+  try {
+    scaffoldResult.value = await api.scaffoldProject(project.value.id)
+    await load()
+  } catch (e: any) {
+    scaffoldResult.value = { project_dir: '', git_inited: false, gh_created: false, error: e.message || String(e) }
+  } finally {
+    scaffolding.value = false
+  }
 }
 
 async function removeEntry(entryId: string) {
@@ -395,6 +411,15 @@ subscribe('entry.created', () => {
               :class="['px-3 py-1.5 text-xs transition-colors', viewMode === 'list' ? 'bg-gray-700 text-white' : 'text-gray-500 hover:text-gray-300']"
             >List</button>
           </div>
+          <button
+            v-if="project.workspace_type === 'external'"
+            @click="doScaffold"
+            :disabled="scaffolding"
+            class="px-3 py-1.5 text-sm text-emerald-400 hover:text-emerald-300 border border-gray-700 rounded-lg hover:border-emerald-700 transition-colors disabled:opacity-40"
+            title="Create project directory, git init, scaffold structure, and optionally create GitHub repo"
+          >
+            {{ scaffolding ? 'Initializing...' : '🚀 Initialize' }}
+          </button>
           <button @click="startEdit" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white border border-gray-700 rounded-lg hover:border-gray-600 transition-colors">
             Edit
           </button>
@@ -403,6 +428,22 @@ subscribe('entry.created', () => {
           </button>
         </div>
       </div>
+
+      <!-- Scaffold result -->
+      <Transition
+        enter-active-class="transition-opacity duration-200"
+        leave-active-class="transition-opacity duration-150"
+        enter-from-class="opacity-0" leave-to-class="opacity-0"
+      >
+        <div v-if="scaffoldResult" class="rounded-lg px-4 py-3 text-sm" :class="scaffoldResult.error ? 'bg-red-900/50 border border-red-800 text-red-300' : 'bg-emerald-900/50 border border-emerald-800 text-emerald-300'">
+          <div v-if="!scaffoldResult.error">
+            ✓ Project initialized at <code class="text-xs">{{ scaffoldResult.project_dir }}</code>
+            <span v-if="scaffoldResult.gh_created"> · GitHub repo created</span>
+          </div>
+          <div v-else>{{ scaffoldResult.error }}</div>
+          <button @click="scaffoldResult = null" class="text-xs underline mt-1 opacity-60 hover:opacity-100">dismiss</button>
+        </div>
+      </Transition>
 
       <!-- Edit form -->
       <form v-else @submit.prevent="saveEdit" class="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
