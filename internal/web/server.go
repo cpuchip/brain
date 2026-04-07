@@ -1853,10 +1853,14 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Emoji       string `json:"emoji"`
-		ContextFile string `json:"context_file"`
+		Name           string `json:"name"`
+		Description    string `json:"description"`
+		Emoji          string `json:"emoji"`
+		ContextFile    string `json:"context_file"`
+		WorkspaceType  string `json:"workspace_type"`
+		WorkspacePath  string `json:"workspace_path"`
+		GithubRepo     string `json:"github_repo"`
+		RepoVisibility string `json:"repo_visibility"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
@@ -1867,12 +1871,25 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	wsType := req.WorkspaceType
+	if wsType == "" {
+		wsType = "integrated"
+	}
+	repoVis := req.RepoVisibility
+	if repoVis == "" {
+		repoVis = "private"
+	}
+
 	p := &store.Project{
-		Name:        req.Name,
-		Description: req.Description,
-		Status:      "active",
-		Emoji:       req.Emoji,
-		ContextFile: req.ContextFile,
+		Name:           req.Name,
+		Description:    req.Description,
+		Status:         "active",
+		Emoji:          req.Emoji,
+		ContextFile:    req.ContextFile,
+		WorkspaceType:  wsType,
+		WorkspacePath:  req.WorkspacePath,
+		GithubRepo:     req.GithubRepo,
+		RepoVisibility: repoVis,
 	}
 	id, err := s.store.DB().CreateProject(p)
 	if err != nil {
@@ -1932,6 +1949,18 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if v, ok := updates["context_file"].(string); ok {
 		existing.ContextFile = v
+	}
+	if v, ok := updates["workspace_type"].(string); ok {
+		existing.WorkspaceType = v
+	}
+	if v, ok := updates["workspace_path"].(string); ok {
+		existing.WorkspacePath = v
+	}
+	if v, ok := updates["github_repo"].(string); ok {
+		existing.GithubRepo = v
+	}
+	if v, ok := updates["repo_visibility"].(string); ok {
+		existing.RepoVisibility = v
 	}
 
 	if err := s.store.DB().UpdateProject(existing); err != nil {

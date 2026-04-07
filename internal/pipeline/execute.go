@@ -195,6 +195,9 @@ func (p *Pipeline) runExecute(entry *store.Entry, feedback string) {
 
 	// Build system message
 	systemMsg := "You are an execution agent for the brain pipeline.\n\n"
+	if baseInstr := p.loadBaseInstructions(); baseInstr != "" {
+		systemMsg += "## Workspace Context\n\n" + baseInstr + "\n\n---\n\n"
+	}
 	if govDoc != "" {
 		systemMsg += "## Your Governance Covenant\n\n" + govDoc + "\n\n---\n\n"
 	}

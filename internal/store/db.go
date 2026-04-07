@@ -75,7 +75,10 @@ func (d *DB) migrate() error {
 	if err := d.migrateNotebook(); err != nil {
 		return err
 	}
-	return d.migrateNudgeCount()
+	if err := d.migrateNudgeCount(); err != nil {
+		return err
+	}
+	return d.migrateProjectWorkspace()
 }
 
 const schema = `
@@ -1248,9 +1251,11 @@ func (d *DB) migrateProjects() error {
 func (d *DB) CreateProject(p *Project) (int, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := d.db.Exec(`
-		INSERT INTO projects (name, description, status, emoji, context_file, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), nullStr(p.ContextFile), now, now,
+		INSERT INTO projects (name, description, status, emoji, context_file, workspace_type, workspace_path, github_repo, repo_visibility, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), nullStr(p.ContextFile),
+		nullStr(p.WorkspaceType), nullStr(p.WorkspacePath), nullStr(p.GithubRepo), nullStr(p.RepoVisibility),
+		now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("creating project: %w", err)
@@ -1266,11 +1271,15 @@ func (d *DB) CreateProject(p *Project) (int, error) {
 func (d *DB) GetProject(id int) (*Project, error) {
 	p := &Project{}
 	var createdStr, updatedStr string
-	var desc, emoji, contextFile sql.NullString
+	var desc, emoji, contextFile, wsType, wsPath, ghRepo, repoVis sql.NullString
 	err := d.db.QueryRow(`
-		SELECT id, name, description, status, emoji, context_file, created_at, updated_at
+		SELECT id, name, description, status, emoji, context_file,
+			workspace_type, workspace_path, github_repo, repo_visibility,
+			created_at, updated_at
 		FROM projects WHERE id = ?`, id).Scan(
-		&p.ID, &p.Name, &desc, &p.Status, &emoji, &contextFile, &createdStr, &updatedStr,
+		&p.ID, &p.Name, &desc, &p.Status, &emoji, &contextFile,
+		&wsType, &wsPath, &ghRepo, &repoVis,
+		&createdStr, &updatedStr,
 	)
 	if err != nil {
 		return nil, err
@@ -1278,6 +1287,10 @@ func (d *DB) GetProject(id int) (*Project, error) {
 	p.Description = desc.String
 	p.Emoji = emoji.String
 	p.ContextFile = contextFile.String
+	p.WorkspaceType = wsType.String
+	p.WorkspacePath = wsPath.String
+	p.GithubRepo = ghRepo.String
+	p.RepoVisibility = repoVis.String
 	p.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
 	p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
 	return p, nil
@@ -1339,7 +1352,9 @@ func (d *DB) CountUnassigned() int {
 // ListProjects returns all projects with entry counts, ordered by status then name.
 func (d *DB) ListProjects() ([]*Project, error) {
 	rows, err := d.db.Query(`
-		SELECT p.id, p.name, p.description, p.status, p.emoji, p.context_file, p.created_at, p.updated_at,
+		SELECT p.id, p.name, p.description, p.status, p.emoji, p.context_file,
+			p.workspace_type, p.workspace_path, p.github_repo, p.repo_visibility,
+			p.created_at, p.updated_at,
 			COUNT(e.id) AS entry_count
 		FROM projects p
 		LEFT JOIN entries e ON e.project_id = p.id
@@ -1356,13 +1371,19 @@ func (d *DB) ListProjects() ([]*Project, error) {
 	for rows.Next() {
 		p := &Project{}
 		var createdStr, updatedStr string
-		var desc, emoji, contextFile sql.NullString
-		if err := rows.Scan(&p.ID, &p.Name, &desc, &p.Status, &emoji, &contextFile, &createdStr, &updatedStr, &p.EntryCount); err != nil {
+		var desc, emoji, contextFile, wsType, wsPath, ghRepo, repoVis sql.NullString
+		if err := rows.Scan(&p.ID, &p.Name, &desc, &p.Status, &emoji, &contextFile,
+			&wsType, &wsPath, &ghRepo, &repoVis,
+			&createdStr, &updatedStr, &p.EntryCount); err != nil {
 			return nil, err
 		}
 		p.Description = desc.String
 		p.Emoji = emoji.String
 		p.ContextFile = contextFile.String
+		p.WorkspaceType = wsType.String
+		p.WorkspacePath = wsPath.String
+		p.GithubRepo = ghRepo.String
+		p.RepoVisibility = repoVis.String
 		p.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
 		p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
 		projects = append(projects, p)
@@ -1374,9 +1395,13 @@ func (d *DB) ListProjects() ([]*Project, error) {
 func (d *DB) UpdateProject(p *Project) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := d.db.Exec(`
-		UPDATE projects SET name = ?, description = ?, status = ?, emoji = ?, context_file = ?, updated_at = ?
+		UPDATE projects SET name = ?, description = ?, status = ?, emoji = ?, context_file = ?,
+			workspace_type = ?, workspace_path = ?, github_repo = ?, repo_visibility = ?,
+			updated_at = ?
 		WHERE id = ?`,
-		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), nullStr(p.ContextFile), now, p.ID,
+		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), nullStr(p.ContextFile),
+		nullStr(p.WorkspaceType), nullStr(p.WorkspacePath), nullStr(p.GithubRepo), nullStr(p.RepoVisibility),
+		now, p.ID,
 	)
 	return err
 }
@@ -1755,6 +1780,28 @@ func (d *DB) IncrementNudgeCount(entryID string) error {
 		entryID,
 	)
 	return err
+}
+
+func (d *DB) migrateProjectWorkspace() error {
+	cols, err := d.columnNames("projects")
+	if err != nil {
+		return err
+	}
+	stmts := map[string]string{
+		"workspace_type":  "ALTER TABLE projects ADD COLUMN workspace_type TEXT DEFAULT 'integrated'",
+		"workspace_path":  "ALTER TABLE projects ADD COLUMN workspace_path TEXT",
+		"github_repo":     "ALTER TABLE projects ADD COLUMN github_repo TEXT",
+		"repo_visibility": "ALTER TABLE projects ADD COLUMN repo_visibility TEXT DEFAULT 'private'",
+	}
+	for col, stmt := range stmts {
+		if cols[col] {
+			continue
+		}
+		if _, err := d.db.Exec(stmt); err != nil {
+			return fmt.Errorf("project workspace migration (%s): %w", col, err)
+		}
+	}
+	return nil
 }
 
 // CreateScheduledTask creates a new scheduled task.

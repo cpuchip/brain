@@ -242,10 +242,13 @@ func (p *Pipeline) nudgeEntry(entry *store.Entry) error {
 
 	prompt := buildNudgePrompt(entry, maturity, scratchContent, conversationCtx, FormatProjectContext(p.BuildProjectContext(entry)))
 
+	// Build system message with base instructions + review covenant
+	systemMsg := p.buildNudgeSystemMessage()
+
 	// Use cheap model — this is a nudge, not deep work
 	agentCfg := ai.AgentConfig{
 		Model:         ResearchModel, // Haiku — 0.33 premium requests
-		SystemMessage: nudgeSystemPrompt,
+		SystemMessage: systemMsg,
 		WorkingDir:    p.workspace,
 		AgentName:     "review",
 	}
@@ -314,6 +317,24 @@ func buildNudgePrompt(entry *store.Entry, maturity, scratchContent, conversation
 	}
 
 	return sb.String()
+}
+
+// buildNudgeSystemMessage constructs the review agent's system prompt with
+// base instructions (Layer 0) + review covenant (Layer 1) + nudge rules.
+func (p *Pipeline) buildNudgeSystemMessage() string {
+	msg := nudgeSystemPrompt + "\n\n"
+
+	if baseInstr := p.loadBaseInstructions(); baseInstr != "" {
+		msg += "## Workspace Context\n\n" + baseInstr + "\n\n---\n\n"
+	}
+
+	// Load review covenant
+	govPath := filepath.Join(p.codeDir, "docs", "governance", "review-covenant.md")
+	if data, err := os.ReadFile(govPath); err == nil {
+		msg += "## Your Governance Covenant\n\n" + string(data) + "\n\n"
+	}
+
+	return msg
 }
 
 const nudgeSystemPrompt = `You are a project review assistant. Your job is to nudge stale brain entries forward by asking specific, actionable questions.

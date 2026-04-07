@@ -10,6 +10,61 @@ import (
 	"github.com/cpuchip/brain/internal/store"
 )
 
+// loadBaseInstructions reads and trims the workspace's copilot-instructions.md
+// for injection as Layer 0 in pipeline agent system messages.
+// Returns empty string if the file doesn't exist or workspace is not set.
+func (p *Pipeline) loadBaseInstructions() string {
+	if p.workspace == "" {
+		return ""
+	}
+	instrPath := filepath.Join(p.workspace, ".github", "copilot-instructions.md")
+	data, err := os.ReadFile(instrPath)
+	if err != nil {
+		return ""
+	}
+	return trimBaseInstructions(string(data))
+}
+
+// trimBaseInstructions extracts the essentials from copilot-instructions.md:
+// voice, covenant, core principles. Strips MCP tool tables, agent mode lists,
+// session memory procedures, and other operational details that waste agent tokens.
+func trimBaseInstructions(full string) string {
+	lines := strings.Split(full, "\n")
+	var kept []string
+	skip := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Skip sections that are operational, not identity/voice
+		if strings.HasPrefix(trimmed, "## MCP Tools") ||
+			strings.HasPrefix(trimmed, "## Agent Modes") ||
+			strings.HasPrefix(trimmed, "## Session Memory") ||
+			strings.HasPrefix(trimmed, "## Running the Becoming App") ||
+			strings.HasPrefix(trimmed, "## Living Documents") {
+			skip = true
+			continue
+		}
+
+		// Resume at next H2
+		if skip && strings.HasPrefix(trimmed, "## ") {
+			skip = false
+		}
+		if skip {
+			continue
+		}
+
+		kept = append(kept, line)
+	}
+
+	result := strings.Join(kept, "\n")
+	// Hard cap at ~8000 chars (~2000 tokens)
+	if len(result) > 8000 {
+		result = result[:8000] + "\n...(trimmed for token budget)"
+	}
+	return result
+}
+
 // ProjectContext holds pre-built project context for injection into agent prompts.
 type ProjectContext struct {
 	ProjectName    string
@@ -67,8 +122,8 @@ func (p *Pipeline) BuildProjectContext(entry *store.Entry) *ProjectContext {
 		}
 		if data, err := os.ReadFile(absPath); err == nil {
 			doc := string(data)
-			if len(doc) > 3000 {
-				doc = doc[:3000] + "\n...(truncated)"
+			if len(doc) > 8000 {
+				doc = doc[:8000] + "\n...(truncated)"
 			}
 			ctx.ContextDoc = doc
 		}

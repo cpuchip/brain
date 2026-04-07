@@ -334,8 +334,11 @@ func (p *Pipeline) runResearch(ctx context.Context, entry *store.Entry, feedback
 
 	prompt := buildResearchPrompt(entry, body, absPath, feedback, projectCtx)
 
-	// Build system message: governance doc + research instructions
+	// Build system message: base instructions + governance doc + research instructions
 	systemMsg := "You are a research assistant for the brain pipeline.\n\n"
+	if baseInstr := p.loadBaseInstructions(); baseInstr != "" {
+		systemMsg += "## Workspace Context\n\n" + baseInstr + "\n\n---\n\n"
+	}
 	if govDoc != "" {
 		systemMsg += "## Your Governance Covenant\n\n" + govDoc + "\n\n---\n\n"
 	}
@@ -596,8 +599,11 @@ func (p *Pipeline) runPlan(ctx context.Context, entry *store.Entry, feedback str
 
 	prompt := buildPlanPrompt(entry, body, absPath, existingScratch, feedback, FormatProjectContext(p.BuildProjectContext(entry)))
 
-	// Build system message: governance doc + plan instructions
+	// Build system message: base instructions + governance doc + plan instructions
 	systemMsg := "You are a plan architect for the brain pipeline.\n\n"
+	if baseInstr := p.loadBaseInstructions(); baseInstr != "" {
+		systemMsg += "## Workspace Context\n\n" + baseInstr + "\n\n---\n\n"
+	}
 	if govDoc != "" {
 		systemMsg += "## Your Governance Covenant\n\n" + govDoc + "\n\n---\n\n"
 	}

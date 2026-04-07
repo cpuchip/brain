@@ -37,7 +37,7 @@ const verifyEntryId = ref('')
 const verifyScenarios = ref<{ scenario: string; passed: boolean; notes: string }[]>([])
 const verifySubmitting = ref(false)
 
-const editForm = ref({ name: '', description: '', emoji: '', status: '', context_file: '' })
+const editForm = ref({ name: '', description: '', emoji: '', status: '', context_file: '', workspace_type: 'integrated', workspace_path: '', github_repo: '', repo_visibility: 'private' })
 
 const maturityStages = ['raw', 'researched', 'planned', 'specced', 'executing', 'verified'] as const
 const stageLabels: Record<string, string> = {
@@ -177,6 +177,10 @@ function startEdit() {
     emoji: project.value.emoji || '',
     status: project.value.status,
     context_file: project.value.context_file || '',
+    workspace_type: project.value.workspace_type || 'integrated',
+    workspace_path: project.value.workspace_path || '',
+    github_repo: project.value.github_repo || '',
+    repo_visibility: project.value.repo_visibility || 'private',
   }
   editing.value = true
 }
@@ -191,6 +195,10 @@ async function saveEdit() {
       emoji: editForm.value.emoji || undefined,
       status: editForm.value.status,
       context_file: editForm.value.context_file || undefined,
+      workspace_type: editForm.value.workspace_type,
+      workspace_path: editForm.value.workspace_path || undefined,
+      github_repo: editForm.value.github_repo || undefined,
+      repo_visibility: editForm.value.repo_visibility,
     })
     editing.value = false
     await load()
@@ -370,6 +378,9 @@ subscribe('entry.created', () => {
             <span class="text-xs text-gray-600">{{ entries.length }} entries</span>
             <span v-if="totalPremiumRequests > 0" class="text-xs text-emerald-400" title="Total premium requests consumed across all entries">🎟️ {{ totalPremiumRequests.toFixed(2) }} premium requests</span>
             <span v-if="project.context_file" class="text-xs text-purple-400" title="Agents receive this file as context">📄 {{ project.context_file }}</span>
+            <span v-if="project.workspace_type && project.workspace_type !== 'integrated'" class="text-xs text-sky-400" :title="`${project.workspace_type}: ${project.workspace_path || ''}`">
+              {{ project.workspace_type === 'subfolder' ? '📁' : '🔗' }} {{ project.workspace_path || project.workspace_type }}
+            </span>
           </div>
         </div>
         <div class="flex gap-2 items-center">
@@ -406,6 +417,30 @@ subscribe('entry.created', () => {
           <option value="archived">Archived</option>
         </select>
         <input v-model="editForm.context_file" placeholder="Context file path (e.g. .spec/context/project.md)" class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 focus:outline-none focus:ring-2 focus:ring-sky-500" />
+
+        <!-- Workspace settings -->
+        <div class="border-t border-gray-800 pt-3 space-y-3">
+          <label class="block text-xs font-medium text-gray-500 uppercase tracking-wider">Workspace</label>
+          <select v-model="editForm.workspace_type" class="bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+            <option value="integrated">Integrated (workspace root)</option>
+            <option value="subfolder">Subfolder (same repo)</option>
+            <option value="external">External (own repo)</option>
+          </select>
+          <input
+            v-if="editForm.workspace_type !== 'integrated'"
+            v-model="editForm.workspace_path"
+            :placeholder="editForm.workspace_type === 'subfolder' ? 'scripts/becoming/' : 'projects/space-center/'"
+            class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 focus:outline-none focus:ring-2 focus:ring-sky-500"
+          />
+          <template v-if="editForm.workspace_type === 'external'">
+            <input v-model="editForm.github_repo" placeholder="GitHub repo (e.g. cpuchip/space-center)" class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 focus:outline-none focus:ring-2 focus:ring-sky-500" />
+            <select v-model="editForm.repo_visibility" class="bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+              <option value="private">Private</option>
+              <option value="public">Public</option>
+            </select>
+          </template>
+        </div>
+
         <div class="flex justify-end gap-2">
           <button type="button" @click="editing = false" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
           <button type="submit" :disabled="!editForm.name.trim() || saving" class="px-4 py-2 text-sm bg-sky-600 text-white rounded-lg hover:bg-sky-500 disabled:opacity-40">Save</button>

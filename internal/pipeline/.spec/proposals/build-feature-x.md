@@ -3,7 +3,7 @@
 **Category:** projects
 **Status:** specced
 **Created:** 2026-04-07
-**Specced:** 2026-04-06
+**Specced:** 2026-04-07
 
 ---
 
