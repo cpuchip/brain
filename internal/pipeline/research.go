@@ -308,6 +308,7 @@ func (p *Pipeline) runResearch(ctx context.Context, entry *store.Entry, feedback
 	} else {
 		scratchPath = filepath.Join(".spec", "scratch", slug, "main.md")
 	}
+	scratchPath = p.projectRelPath(entry, scratchPath)
 
 	// Load governance document
 	govDoc := ""
@@ -571,6 +572,9 @@ func (p *Pipeline) runPlan(ctx context.Context, entry *store.Entry, feedback str
 	} else {
 		scratchPath = filepath.Join(".spec", "scratch", slug, "main.md")
 	}
+	if entry.ScratchPath == "" {
+		scratchPath = p.projectRelPath(entry, scratchPath)
+	}
 
 	// Load existing scratch file contents (research findings)
 	existingScratch := ""
@@ -723,6 +727,7 @@ func buildPlanPrompt(entry *store.Entry, body, scratchPath, existingScratch, fee
 func (p *Pipeline) generateProposal(entry *store.Entry, scenarios []string) (string, error) {
 	slug := slugify(entry.Title)
 	proposalPath := filepath.Join(".spec", "proposals", slug+".md")
+	proposalPath = p.projectRelPath(entry, proposalPath)
 
 	absPath := proposalPath
 	if p.workspace != "" {

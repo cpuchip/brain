@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -46,12 +47,13 @@ type MCPDef struct {
 // Unlike the classifier session (stateless, reused), agent sessions
 // are conversational and tool-enabled.
 type Agent struct {
-	client  *copilot.Client
-	config  AgentConfig
-	mu      sync.Mutex
-	session *copilot.Session
-	started bool
-	usage   SessionUsage
+	client       *copilot.Client
+	config       AgentConfig
+	mu           sync.Mutex
+	session      *copilot.Session
+	started      bool
+	usage        SessionUsage
+	writtenFiles map[string]bool // set of absolute file paths written during session
 }
 
 // SessionUsage tracks usage and governance state for one agent session.
@@ -69,8 +71,9 @@ type SessionUsage struct {
 // NewAgent creates an agent backed by the given Copilot client.
 func NewAgent(client *copilot.Client, cfg AgentConfig) *Agent {
 	return &Agent{
-		client: client,
-		config: cfg,
+		client:       client,
+		config:       cfg,
+		writtenFiles: make(map[string]bool),
 	}
 }
 
@@ -261,6 +264,17 @@ func (a *Agent) Usage() SessionUsage {
 	return a.usage
 }
 
+// WrittenFiles returns the absolute paths of files written during this session.
+func (a *Agent) WrittenFiles() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	files := make([]string, 0, len(a.writtenFiles))
+	for f := range a.writtenFiles {
+		files = append(files, f)
+	}
+	return files
+}
+
 // Reset destroys the current session so the next Ask creates a fresh one.
 func (a *Agent) Reset() {
 	a.mu.Lock()
@@ -286,6 +300,19 @@ func (a *Agent) createSession(ctx context.Context) (*copilot.Session, error) {
 			OnPostToolUse: func(input copilot.PostToolUseHookInput, _ copilot.HookInvocation) (*copilot.PostToolUseHookOutput, error) {
 				a.recordToolCall(input.ToolName)
 				log.Printf("AUDIT: agent=%s tool=%s args=%v ts=%d", a.displayName(), input.ToolName, input.ToolArgs, input.Timestamp)
+				// Track written files for selective git commits
+				if isWriteTool(input.ToolName) {
+					for _, p := range extractPathCandidates(input.ToolArgs) {
+						abs := p
+						if !filepath.IsAbs(abs) && a.config.WorkingDir != "" {
+							abs = filepath.Join(a.config.WorkingDir, abs)
+						}
+						abs = filepath.Clean(abs)
+						a.mu.Lock()
+						a.writtenFiles[abs] = true
+						a.mu.Unlock()
+					}
+				}
 				return nil, nil
 			},
 		},

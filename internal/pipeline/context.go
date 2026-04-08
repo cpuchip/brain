@@ -69,6 +69,8 @@ func trimBaseInstructions(full string) string {
 type ProjectContext struct {
 	ProjectName    string
 	Description    string
+	WorkspaceType  string // "integrated", "subfolder", "external"
+	WorkspacePath  string // relative path from workspace root (e.g. "projects/space-center")
 	SiblingEntries []siblingEntry
 	ContextDoc     string // content of project context_file if set
 }
@@ -92,8 +94,10 @@ func (p *Pipeline) BuildProjectContext(entry *store.Entry) *ProjectContext {
 	}
 
 	ctx := &ProjectContext{
-		ProjectName: project.Name,
-		Description: project.Description,
+		ProjectName:   project.Name,
+		Description:   project.Description,
+		WorkspaceType: project.WorkspaceType,
+		WorkspacePath: project.WorkspacePath,
 	}
 
 	// Load sibling entries (same project, limit 20, titles + maturity only)
@@ -149,6 +153,14 @@ func FormatProjectContext(ctx *ProjectContext) string {
 		sb.WriteString(fmt.Sprintf("**Description:** %s\n", desc))
 	}
 
+	if ctx.WorkspacePath != "" {
+		sb.WriteString(fmt.Sprintf("**Project directory:** %s\n", filepath.ToSlash(ctx.WorkspacePath)))
+		sb.WriteString("All project files (scratch, proposals, docs) should be created within this directory.\n")
+	}
+	if ctx.WorkspaceType == "external" {
+		sb.WriteString("This is an external project with its own git repository.\n")
+	}
+
 	if len(ctx.SiblingEntries) > 0 {
 		sb.WriteString("\n**Related entries in this project:**\n")
 		for _, s := range ctx.SiblingEntries {
@@ -190,4 +202,17 @@ func (p *Pipeline) resolveWorkDir(entry *store.Entry) string {
 		}
 	}
 	return p.workspace
+}
+
+// projectRelPath returns a path prefixed with the project's workspace path
+// if the entry belongs to a project with one. Otherwise returns the path unchanged.
+func (p *Pipeline) projectRelPath(entry *store.Entry, relPath string) string {
+	if entry.ProjectID == nil {
+		return relPath
+	}
+	project, err := p.store.DB().GetProject(*entry.ProjectID)
+	if err != nil || project == nil || project.WorkspacePath == "" {
+		return relPath
+	}
+	return filepath.Join(project.WorkspacePath, relPath)
 }

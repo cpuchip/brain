@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -268,6 +269,9 @@ Token budget guidance:
 
 	log.Printf("Execution complete for %s (%d chars response)", entry.ID, len(response))
 
+	// Selective git commit of files the agent wrote
+	p.commitAfterExecution(entry, agent.WrittenFiles())
+
 	// Store the execution output
 	p.store.DB().SetAgentOutput(entry.ID, response, 0)
 
@@ -356,4 +360,131 @@ func countScenarios(scenarios string) int {
 		count = 1 // at least one if there's any text
 	}
 	return count
+}
+
+// commitAfterExecution selectively commits files written during the agent session.
+// Groups files by git repo and commits each group separately.
+// Best-effort — failures log but don't block the pipeline.
+func (p *Pipeline) commitAfterExecution(entry *store.Entry, writtenFiles []string) {
+	if len(writtenFiles) == 0 {
+		log.Printf("post-execution commit: no files tracked for %s", entry.ID)
+		return
+	}
+
+	// Group files by their git repo root
+	repoFiles := map[string][]string{} // repoRoot -> []relativePaths
+	for _, absPath := range writtenFiles {
+		repoRoot := findGitRoot(absPath)
+		if repoRoot == "" {
+			log.Printf("post-execution commit: skipping %s (not in a git repo)", absPath)
+			continue
+		}
+		rel, err := filepath.Rel(repoRoot, absPath)
+		if err != nil {
+			continue
+		}
+		repoFiles[repoRoot] = append(repoFiles[repoRoot], filepath.ToSlash(rel))
+	}
+
+	for repoRoot, files := range repoFiles {
+		msg := p.generateCommitMessage(entry, files)
+		if err := gitCommitSelective(repoRoot, files, msg); err != nil {
+			log.Printf("post-execution commit failed in %s: %v", repoRoot, err)
+			continue
+		}
+		log.Printf("post-execution commit: %s (%d files in %s)", msg, len(files), repoRoot)
+	}
+}
+
+// findGitRoot walks up from the given path to find the nearest .git directory.
+func findGitRoot(path string) string {
+	dir := filepath.Dir(path)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "" // reached filesystem root
+		}
+		dir = parent
+	}
+}
+
+// gitCommitSelective stages specific files and commits.
+func gitCommitSelective(repoRoot string, files []string, message string) error {
+	// git add <file1> <file2> ...
+	args := append([]string{"add", "--"}, files...)
+	add := exec.Command("git", args...)
+	add.Dir = repoRoot
+	if out, err := add.CombinedOutput(); err != nil {
+		return fmt.Errorf("git add: %w (%s)", err, string(out))
+	}
+
+	// git commit -m message
+	commit := exec.Command("git", "commit", "-m", message)
+	commit.Dir = repoRoot
+	out, err := commit.CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "nothing to commit") {
+			return nil
+		}
+		return fmt.Errorf("git commit: %w (%s)", err, string(out))
+	}
+	return nil
+}
+
+// generateCommitMessage uses Haiku to generate a short commit message.
+// Falls back to mechanical message if Haiku fails.
+func (p *Pipeline) generateCommitMessage(entry *store.Entry, files []string) string {
+	slug := slugify(entry.Title)
+	prefix := fmt.Sprintf("brain(%s)", slug)
+	fallback := fmt.Sprintf("%s: pipeline execution", prefix)
+
+	if p.pool == nil {
+		return fallback
+	}
+
+	// Build a short prompt listing the files changed
+	fileList := strings.Join(files, "\n  ")
+	prompt := fmt.Sprintf(
+		"Generate a concise git commit message (one line, max 50 chars) "+
+			"for these changes made while working on '%s':\n  %s\n"+
+			"Reply with ONLY the message body, no prefix. No quotes.",
+		entry.Title, fileList,
+	)
+
+	// Quick Haiku call — single turn, no tools
+	agentCfg := ai.AgentConfig{
+		Model:              ResearchModel, // Haiku — cheap
+		SystemMessage:      "You generate concise git commit messages. Reply with only the message text, nothing else.",
+		PremiumRequestCost: 0.33,
+	}
+	agent := ai.NewAgent(p.pool.Client(), agentCfg)
+
+	body, err := agent.Ask(p.ctx, prompt)
+	if err != nil {
+		log.Printf("Haiku commit message failed for %s: %v (using fallback)", entry.ID, err)
+		return fallback
+	}
+
+	// Track cost
+	if err := p.store.DB().IncrementPremiumRequests(entry.ID, agentCfg.PremiumRequestCost); err != nil {
+		log.Printf("warning: failed to track commit message cost for %s: %v", entry.ID, err)
+	}
+
+	body = strings.TrimSpace(body)
+	body = strings.Trim(body, "\"'`") // strip any quotes the model might add
+	if body == "" {
+		return fallback
+	}
+
+	maxBody := 72 - len(prefix) - 2
+	if maxBody < 10 {
+		maxBody = 50
+	}
+	if len(body) > maxBody {
+		body = body[:maxBody]
+	}
+	return fmt.Sprintf("%s: %s", prefix, body)
 }
