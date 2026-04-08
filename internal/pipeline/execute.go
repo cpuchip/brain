@@ -10,11 +10,9 @@ import (
 	"strings"
 
 	"github.com/cpuchip/brain/internal/ai"
+	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/store"
 )
-
-// ExecuteModel is the model used for execution passes (needs strong reasoning + tool use).
-const ExecuteModel = "claude-sonnet-4"
 
 // ExecuteRequest holds parameters for kicking off execution of a specced entry.
 type ExecuteRequest struct {
@@ -219,7 +217,7 @@ Token budget guidance:
 - If the implementation is large, break it into phases and complete each before starting the next.`
 
 	agentCfg := ai.AgentConfig{
-		Model:         ExecuteModel,
+		Model:         config.PipelineSmartModel,
 		SystemMessage: systemMsg,
 		MCPServers:    p.mcpDefsForCategory(entry.Category),
 		WorkingDir:    p.resolveWorkDir(entry),
@@ -456,7 +454,7 @@ func (p *Pipeline) generateCommitMessage(entry *store.Entry, files []string) str
 
 	// Quick Haiku call — single turn, no tools
 	agentCfg := ai.AgentConfig{
-		Model:              ResearchModel, // Haiku — cheap
+		Model:              config.PipelineCheapModel, // Haiku — cheap
 		SystemMessage:      "You generate concise git commit messages. Reply with only the message text, nothing else.",
 		PremiumRequestCost: 0.33,
 	}

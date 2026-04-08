@@ -20,12 +20,6 @@ import (
 
 //go:generate echo "governance docs are loaded at runtime from docs/governance/"
 
-// ResearchModel is the default cheap model used for research passes.
-const ResearchModel = "claude-haiku-4.5"
-
-// PlanModel is the mid-tier model used for plan passes (better reasoning for structure).
-const PlanModel = "claude-sonnet-4"
-
 // Pipeline orchestrates maturity transitions for brain entries.
 // Notifier receives push events from the pipeline. Implemented by the web
 // hub to broadcast over WebSocket.
@@ -362,7 +356,7 @@ Token budget guidance:
 
 	// Create agent with cheap model and research-specific config
 	agentCfg := ai.AgentConfig{
-		Model:         ResearchModel,
+		Model:         config.PipelineCheapModel,
 		SystemMessage: systemMsg,
 		MCPServers:    p.mcpDefsForCategory(entry.Category),
 		WorkingDir:    p.resolveWorkDir(entry),
@@ -624,7 +618,7 @@ Rules:
 
 	// Create agent with Sonnet model and plan-specific config
 	agentCfg := ai.AgentConfig{
-		Model:         PlanModel,
+		Model:         config.PipelineBigModel,
 		SystemMessage: systemMsg,
 		MCPServers:    p.mcpDefsForCategory(entry.Category),
 		WorkingDir:    p.resolveWorkDir(entry),

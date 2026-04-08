@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cpuchip/brain/internal/ai"
+	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/store"
 )
 
@@ -247,7 +248,7 @@ func (p *Pipeline) nudgeEntry(entry *store.Entry) error {
 
 	// Use cheap model — this is a nudge, not deep work
 	agentCfg := ai.AgentConfig{
-		Model:         ResearchModel, // Haiku — 0.33 premium requests
+		Model:         config.PipelineCheapModel, // Haiku — 0.33 premium requests
 		SystemMessage: systemMsg,
 		WorkingDir:    p.resolveWorkDir(entry),
 		AgentName:     "review",

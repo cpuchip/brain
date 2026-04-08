@@ -29,6 +29,14 @@ var AvailableModels = map[string]ModelPreset{
 	"gpt5":     {ID: "gpt-5", DisplayName: "GPT-5", PremiumRate: "1x"},
 }
 
+// Pipeline model assignments — update these when new model versions are released.
+// All pipeline agents reference these constants instead of hard-coding model strings.
+const (
+	PipelineCheapModel = "claude-haiku-4.5"  // Research, review/nudge, commit messages (0.33x)
+	PipelineSmartModel = "claude-sonnet-4.6" // Plan, execute, scaffold (1.0x)
+	PipelineBigModel   = "claude-opus-4.6"   // Very capable model for large tasks (3.0x)              // Deep work (1.0x, but can handle more complex prompts and reasoning)
+)
+
 // Config holds all brain configuration.
 type Config struct {
 	// Paths

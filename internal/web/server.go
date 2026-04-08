@@ -2306,7 +2306,7 @@ func (s *Server) handleExecutionContext(w http.ResponseWriter, r *http.Request) 
 		"title":       entry.Title,
 		"maturity":    entry.Maturity,
 		"scenarios":   scenarios,
-		"model":       pipeline.ExecuteModel,
+		"model":       config.PipelineSmartModel,
 		"cost":        1.0, // Sonnet premium request cost
 		"prompt":      prompt,
 		"has_scratch": entry.ScratchPath != "",

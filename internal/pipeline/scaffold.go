@@ -11,11 +11,9 @@ import (
 	"strings"
 
 	"github.com/cpuchip/brain/internal/ai"
+	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/store"
 )
-
-// InitModel is the model used for project initialization (one-time, quality matters).
-const InitModel = "claude-sonnet-4"
 
 // InitResult reports what happened during project initialization.
 type InitResult struct {
@@ -100,7 +98,7 @@ func (p *Pipeline) initializeWithAgent(project *store.Project, workDir, wsType s
 	prompt := buildInitPrompt(project, wsType)
 
 	agentCfg := ai.AgentConfig{
-		Model:         InitModel,
+		Model:         config.PipelineSmartModel,
 		SystemMessage: systemMsg,
 		WorkingDir:    workDir,
 		AgentName:     "init",
