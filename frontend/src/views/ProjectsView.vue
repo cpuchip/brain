@@ -8,6 +8,7 @@ const showCreate = ref(false)
 const newName = ref('')
 const newDesc = ref('')
 const newEmoji = ref('')
+const newInitInstructions = ref('')
 const creating = ref(false)
 
 async function loadProjects() {
@@ -27,10 +28,12 @@ async function createProject() {
       name: newName.value.trim(),
       description: newDesc.value.trim() || undefined,
       emoji: newEmoji.value.trim() || undefined,
+      init_instructions: newInitInstructions.value.trim() || undefined,
     })
     newName.value = ''
     newDesc.value = ''
     newEmoji.value = ''
+    newInitInstructions.value = ''
     showCreate.value = false
     await loadProjects()
   } finally {
@@ -89,6 +92,12 @@ onMounted(loadProjects)
           placeholder="Description (optional)"
           rows="2"
           class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
+        />
+        <textarea
+          v-model="newInitInstructions"
+          placeholder="Initialization instructions (optional) — tech stack, architecture, conventions, goals..."
+          rows="3"
+          class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
         />
         <div class="flex justify-end">
           <button

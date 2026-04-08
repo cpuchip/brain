@@ -37,9 +37,9 @@ const verifyEntryId = ref('')
 const verifyScenarios = ref<{ scenario: string; passed: boolean; notes: string }[]>([])
 const verifySubmitting = ref(false)
 const scaffolding = ref(false)
-const scaffoldResult = ref<{ project_dir: string; git_inited: boolean; gh_created: boolean; error?: string } | null>(null)
+const scaffoldResult = ref<{ method: string; files_created: string[]; project_dir?: string; git_inited: boolean; gh_created: boolean; error?: string } | null>(null)
 
-const editForm = ref({ name: '', description: '', emoji: '', status: '', context_file: '', workspace_type: 'integrated', workspace_path: '', github_repo: '', repo_visibility: 'private' })
+const editForm = ref({ name: '', description: '', emoji: '', status: '', context_file: '', workspace_type: 'integrated', workspace_path: '', github_repo: '', repo_visibility: 'private', init_instructions: '' })
 
 const maturityStages = ['raw', 'researched', 'planned', 'specced', 'executing', 'verified'] as const
 const stageLabels: Record<string, string> = {
@@ -183,6 +183,7 @@ function startEdit() {
     workspace_path: project.value.workspace_path || '',
     github_repo: project.value.github_repo || '',
     repo_visibility: project.value.repo_visibility || 'private',
+    init_instructions: project.value.init_instructions || '',
   }
   editing.value = true
 }
@@ -201,6 +202,7 @@ async function saveEdit() {
       workspace_path: editForm.value.workspace_path || undefined,
       github_repo: editForm.value.github_repo || undefined,
       repo_visibility: editForm.value.repo_visibility,
+      init_instructions: editForm.value.init_instructions || undefined,
     })
     editing.value = false
     await load()
@@ -215,15 +217,15 @@ async function doDelete() {
   router.push('/projects')
 }
 
-async function doScaffold() {
+async function doInitialize() {
   if (!project.value) return
   scaffolding.value = true
   scaffoldResult.value = null
   try {
-    scaffoldResult.value = await api.scaffoldProject(project.value.id)
+    scaffoldResult.value = await api.initializeProject(project.value.id)
     await load()
   } catch (e: any) {
-    scaffoldResult.value = { project_dir: '', git_inited: false, gh_created: false, error: e.message || String(e) }
+    scaffoldResult.value = { method: 'error', files_created: [], project_dir: '', git_inited: false, gh_created: false, error: e.message || String(e) }
   } finally {
     scaffolding.value = false
   }
@@ -412,11 +414,10 @@ subscribe('entry.created', () => {
             >List</button>
           </div>
           <button
-            v-if="project.workspace_type === 'external'"
-            @click="doScaffold"
+            @click="doInitialize"
             :disabled="scaffolding"
             class="px-3 py-1.5 text-sm text-emerald-400 hover:text-emerald-300 border border-gray-700 rounded-lg hover:border-emerald-700 transition-colors disabled:opacity-40"
-            title="Create project directory, git init, scaffold structure, and optionally create GitHub repo"
+            title="Initialize project files using an agent (or mechanical fallback)"
           >
             {{ scaffolding ? 'Initializing...' : '🚀 Initialize' }}
           </button>
@@ -437,8 +438,10 @@ subscribe('entry.created', () => {
       >
         <div v-if="scaffoldResult" class="rounded-lg px-4 py-3 text-sm" :class="scaffoldResult.error ? 'bg-red-900/50 border border-red-800 text-red-300' : 'bg-emerald-900/50 border border-emerald-800 text-emerald-300'">
           <div v-if="!scaffoldResult.error">
-            ✓ Project initialized at <code class="text-xs">{{ scaffoldResult.project_dir }}</code>
+            ✓ Project initialized ({{ scaffoldResult.method }})
+            <span v-if="scaffoldResult.project_dir"> at <code class="text-xs">{{ scaffoldResult.project_dir }}</code></span>
             <span v-if="scaffoldResult.gh_created"> · GitHub repo created</span>
+            <span v-if="scaffoldResult.files_created?.length"> · {{ scaffoldResult.files_created.length }} files created</span>
           </div>
           <div v-else>{{ scaffoldResult.error }}</div>
           <button @click="scaffoldResult = null" class="text-xs underline mt-1 opacity-60 hover:opacity-100">dismiss</button>
@@ -446,7 +449,7 @@ subscribe('entry.created', () => {
       </Transition>
 
       <!-- Edit form -->
-      <form v-else @submit.prevent="saveEdit" class="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
+      <form v-if="editing" @submit.prevent="saveEdit" class="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
         <div class="flex gap-3">
           <input v-model="editForm.emoji" placeholder="📋" class="w-14 bg-gray-950 border border-gray-700 rounded-lg px-2 py-2 text-center text-lg focus:outline-none focus:ring-2 focus:ring-sky-500" maxlength="4" />
           <input v-model="editForm.name" placeholder="Project name" class="flex-1 bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500" />
@@ -480,6 +483,17 @@ subscribe('entry.created', () => {
               <option value="public">Public</option>
             </select>
           </template>
+        </div>
+
+        <!-- Initialization instructions -->
+        <div class="border-t border-gray-800 pt-3 space-y-2">
+          <label class="block text-xs font-medium text-gray-500 uppercase tracking-wider">Initialization Instructions</label>
+          <textarea
+            v-model="editForm.init_instructions"
+            placeholder="Tech stack, architecture, conventions, goals — used by the initialization agent to create meaningful project files..."
+            rows="4"
+            class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 focus:outline-none focus:ring-2 focus:ring-sky-500 resize-y"
+          />
         </div>
 
         <div class="flex justify-end gap-2">

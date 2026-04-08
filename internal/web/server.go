@@ -142,7 +142,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/projects/{id}", s.cors(s.handleDeleteProject))
 	s.mux.HandleFunc("GET /api/projects/{id}/entries", s.cors(s.handleProjectEntries))
 	s.mux.HandleFunc("GET /api/projects/{id}/stats", s.cors(s.handleProjectStats))
-	s.mux.HandleFunc("POST /api/projects/{id}/scaffold", s.cors(s.handleScaffoldProject))
+	s.mux.HandleFunc("POST /api/projects/{id}/initialize", s.cors(s.handleInitializeProject))
 	s.mux.HandleFunc("PUT /api/entries/{id}/project", s.cors(s.handleSetEntryProject))
 
 	// Session messages (iterative turns)
@@ -1854,14 +1854,15 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name           string `json:"name"`
-		Description    string `json:"description"`
-		Emoji          string `json:"emoji"`
-		ContextFile    string `json:"context_file"`
-		WorkspaceType  string `json:"workspace_type"`
-		WorkspacePath  string `json:"workspace_path"`
-		GithubRepo     string `json:"github_repo"`
-		RepoVisibility string `json:"repo_visibility"`
+		Name             string `json:"name"`
+		Description      string `json:"description"`
+		Emoji            string `json:"emoji"`
+		ContextFile      string `json:"context_file"`
+		WorkspaceType    string `json:"workspace_type"`
+		WorkspacePath    string `json:"workspace_path"`
+		GithubRepo       string `json:"github_repo"`
+		RepoVisibility   string `json:"repo_visibility"`
+		InitInstructions string `json:"init_instructions"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
@@ -1882,15 +1883,16 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p := &store.Project{
-		Name:           req.Name,
-		Description:    req.Description,
-		Status:         "active",
-		Emoji:          req.Emoji,
-		ContextFile:    req.ContextFile,
-		WorkspaceType:  wsType,
-		WorkspacePath:  req.WorkspacePath,
-		GithubRepo:     req.GithubRepo,
-		RepoVisibility: repoVis,
+		Name:             req.Name,
+		Description:      req.Description,
+		Status:           "active",
+		Emoji:            req.Emoji,
+		ContextFile:      req.ContextFile,
+		WorkspaceType:    wsType,
+		WorkspacePath:    req.WorkspacePath,
+		GithubRepo:       req.GithubRepo,
+		RepoVisibility:   repoVis,
+		InitInstructions: req.InitInstructions,
 	}
 	id, err := s.store.DB().CreateProject(p)
 	if err != nil {
@@ -1963,6 +1965,9 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	if v, ok := updates["repo_visibility"].(string); ok {
 		existing.RepoVisibility = v
 	}
+	if v, ok := updates["init_instructions"].(string); ok {
+		existing.InitInstructions = v
+	}
 
 	if err := s.store.DB().UpdateProject(existing); err != nil {
 		jsonError(w, "updating project", err, http.StatusInternalServerError)
@@ -2015,7 +2020,7 @@ func (s *Server) handleProjectStats(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, stats)
 }
 
-func (s *Server) handleScaffoldProject(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleInitializeProject(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
 		jsonError(w, "invalid project id", err, http.StatusBadRequest)
@@ -2030,9 +2035,9 @@ func (s *Server) handleScaffoldProject(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "pipeline not available", nil, http.StatusServiceUnavailable)
 		return
 	}
-	result, err := s.pipeline.ScaffoldProject(project)
+	result, err := s.pipeline.InitializeProject(project)
 	if err != nil {
-		jsonError(w, "scaffolding project", err, http.StatusInternalServerError)
+		jsonError(w, "initializing project", err, http.StatusInternalServerError)
 		return
 	}
 	jsonResponse(w, result)

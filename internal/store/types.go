@@ -6,18 +6,19 @@ import (
 
 // Project groups related entries under a named goal/workstream.
 type Project struct {
-	ID             int       `json:"id"`
-	Name           string    `json:"name"`
-	Description    string    `json:"description,omitempty"`
-	Status         string    `json:"status"` // active, paused, archived
-	Emoji          string    `json:"emoji,omitempty"`
-	ContextFile    string    `json:"context_file,omitempty"`    // optional path to project-level context doc for agents
-	WorkspaceType  string    `json:"workspace_type,omitempty"`  // integrated, subfolder, external
-	WorkspacePath  string    `json:"workspace_path,omitempty"`  // relative path within workspace (subfolder/external)
-	GithubRepo     string    `json:"github_repo,omitempty"`     // e.g. "cpuchip/space-center"
-	RepoVisibility string    `json:"repo_visibility,omitempty"` // public, private
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID               int       `json:"id"`
+	Name             string    `json:"name"`
+	Description      string    `json:"description,omitempty"`
+	Status           string    `json:"status"` // active, paused, archived
+	Emoji            string    `json:"emoji,omitempty"`
+	ContextFile      string    `json:"context_file,omitempty"`      // optional path to project-level context doc for agents
+	WorkspaceType    string    `json:"workspace_type,omitempty"`    // integrated, subfolder, external
+	WorkspacePath    string    `json:"workspace_path,omitempty"`    // relative path within workspace (subfolder/external)
+	GithubRepo       string    `json:"github_repo,omitempty"`       // e.g. "cpuchip/space-center"
+	RepoVisibility   string    `json:"repo_visibility,omitempty"`   // public, private
+	InitInstructions string    `json:"init_instructions,omitempty"` // detailed instructions for agent initialization
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 
 	// Computed (not stored)
 	EntryCount int `json:"entry_count,omitempty"`

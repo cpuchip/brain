@@ -57,6 +57,7 @@ export interface Project {
   workspace_path?: string
   github_repo?: string
   repo_visibility?: string
+  init_instructions?: string
   entry_count?: number
   created_at: string
   updated_at: string
@@ -342,7 +343,7 @@ export const api = {
     return request<Project[]>('/projects')
   },
 
-  createProject(data: { name: string; description?: string; emoji?: string; workspace_type?: string; workspace_path?: string; github_repo?: string; repo_visibility?: string }) {
+  createProject(data: { name: string; description?: string; emoji?: string; workspace_type?: string; workspace_path?: string; github_repo?: string; repo_visibility?: string; init_instructions?: string }) {
     return request<Project>('/projects', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -353,7 +354,7 @@ export const api = {
     return request<Project>(`/projects/${id}`)
   },
 
-  updateProject(id: number, updates: Partial<Pick<Project, 'name' | 'description' | 'status' | 'emoji' | 'context_file' | 'workspace_type' | 'workspace_path' | 'github_repo' | 'repo_visibility'>>) {
+  updateProject(id: number, updates: Partial<Pick<Project, 'name' | 'description' | 'status' | 'emoji' | 'context_file' | 'workspace_type' | 'workspace_path' | 'github_repo' | 'repo_visibility' | 'init_instructions'>>) {
     return request<Project>(`/projects/${id}`, {
       method: 'PUT',
       body: JSON.stringify(updates),
@@ -364,8 +365,8 @@ export const api = {
     return request<void>(`/projects/${id}`, { method: 'DELETE' })
   },
 
-  scaffoldProject(id: number) {
-    return request<{ project_dir: string; git_inited: boolean; gh_created: boolean; error?: string }>(`/projects/${id}/scaffold`, {
+  initializeProject(id: number) {
+    return request<{ method: string; files_created: string[]; project_dir?: string; git_inited: boolean; gh_created: boolean; error?: string }>(`/projects/${id}/initialize`, {
       method: 'POST',
     })
   },
