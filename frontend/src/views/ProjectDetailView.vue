@@ -38,6 +38,23 @@ const verifyScenarios = ref<{ scenario: string; passed: boolean; notes: string }
 const verifySubmitting = ref(false)
 const scaffolding = ref(false)
 const scaffoldResult = ref<{ method: string; files_created: string[]; project_dir?: string; git_inited: boolean; gh_created: boolean; error?: string } | null>(null)
+const cancellingEntry = ref<string | null>(null)
+
+// Toast
+const toast = ref('')
+const toastType = ref<'error' | 'success' | 'info'>('info')
+const toastTimeout = ref<ReturnType<typeof setTimeout>>()
+function showToast(msg: string, type: 'error' | 'success' | 'info' = 'info') {
+  toast.value = msg
+  toastType.value = type
+  if (toastTimeout.value) clearTimeout(toastTimeout.value)
+  toastTimeout.value = setTimeout(() => { toast.value = '' }, 3000)
+}
+
+// Scenario input dialog (planned → specced)
+const scenarioDialog = ref(false)
+const scenarioEntryId = ref('')
+const scenarioText = ref('')
 
 const editForm = ref({ name: '', description: '', emoji: '', status: '', context_file: '', workspace_type: 'integrated', workspace_path: '', github_repo: '', repo_visibility: 'private', init_instructions: '' })
 
@@ -82,7 +99,7 @@ const boardColumns = computed(() => {
   for (const e of entries.value) {
     if (e.notebook || !e.maturity || e.maturity === 'raw') {
       inbox.push(e)
-    } else if (e.maturity === 'verified') {
+    } else if (e.maturity === 'verified' || e.maturity === 'complete') {
       done.push(e)
     } else {
       working.push(e)
@@ -152,6 +169,14 @@ function canExecute(entry: Entry): boolean {
 
 function canVerify(entry: Entry): boolean {
   return entry.maturity === 'executing' && entry.route_status === 'your_turn'
+}
+
+function canCancel(entry: Entry): boolean {
+  return entry.maturity === 'executing' && entry.route_status === 'agent'
+}
+
+function canComplete(entry: Entry): boolean {
+  return entry.maturity === 'verified'
 }
 
 watch(viewMode, (v) => localStorage.setItem('project-view-mode', v))
@@ -257,19 +282,79 @@ function closePanel() {
 }
 
 async function advanceEntry(entryId: string) {
+  // If entry is planned, we need scenarios — open dialog
+  const entry = entries.value.find(e => e.id === entryId)
+  if (entry?.maturity === 'planned') {
+    scenarioEntryId.value = entryId
+    scenarioText.value = ''
+    scenarioDialog.value = true
+    return
+  }
+
   advancingEntry.value = entryId
   try {
     await api.pipelineAdvance(entryId, 'advance')
     await load()
-    // Refresh panel if open
     if (selectedEntry.value?.id === entryId) {
       const updated = entries.value.find(e => e.id === entryId)
       if (updated) selectedEntry.value = updated
     }
   } catch (e: any) {
-    alert(e.message || 'Advance failed')
+    showToast(e.message || 'Advance failed', 'error')
   } finally {
     advancingEntry.value = null
+  }
+}
+
+async function submitScenarios() {
+  if (!scenarioEntryId.value || !scenarioText.value.trim()) return
+  const scenarios = scenarioText.value.split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean)
+  if (scenarios.length === 0) return
+  advancingEntry.value = scenarioEntryId.value
+  scenarioDialog.value = false
+  try {
+    await api.pipelineAdvance(scenarioEntryId.value, 'advance', undefined, scenarios)
+    showToast(`Advanced to specced with ${scenarios.length} scenario${scenarios.length === 1 ? '' : 's'}`, 'success')
+    await load()
+    if (selectedEntry.value?.id === scenarioEntryId.value) {
+      const updated = entries.value.find(e => e.id === scenarioEntryId.value)
+      if (updated) selectedEntry.value = updated
+    }
+  } catch (e: any) {
+    showToast(e.message || 'Advance failed', 'error')
+  } finally {
+    advancingEntry.value = null
+  }
+}
+
+async function cancelExecution(entryId: string) {
+  cancellingEntry.value = entryId
+  try {
+    await api.cancelExecution(entryId)
+    showToast('Execution cancelled', 'info')
+    await load()
+    if (selectedEntry.value?.id === entryId) {
+      const updated = entries.value.find(e => e.id === entryId)
+      if (updated) selectedEntry.value = updated
+    }
+  } catch (e: any) {
+    showToast(e.message || 'Cancel failed', 'error')
+  } finally {
+    cancellingEntry.value = null
+  }
+}
+
+async function completeEntry(entryId: string) {
+  try {
+    await api.markComplete(entryId)
+    showToast('Marked complete', 'success')
+    await load()
+    if (selectedEntry.value?.id === entryId) {
+      const updated = entries.value.find(e => e.id === entryId)
+      if (updated) selectedEntry.value = updated
+    }
+  } catch (e: any) {
+    showToast(e.message || 'Failed to mark complete', 'error')
   }
 }
 
@@ -292,7 +377,7 @@ async function submitFeedback() {
       if (updated) selectedEntry.value = updated
     }
   } catch (e: any) {
-    alert(e.message || `${feedbackAction.value} failed`)
+    showToast(e.message || `${feedbackAction.value} failed`, 'error')
   } finally {
     advancingEntry.value = null
   }
@@ -323,7 +408,7 @@ async function confirmExecute() {
       if (updated) selectedEntry.value = updated
     }
   } catch (e: any) {
-    alert(e.message || 'Execute failed')
+    showToast(e.message || 'Execute failed', 'error')
   } finally {
     executingEntry.value = null
   }
@@ -353,7 +438,7 @@ async function submitVerification() {
       if (updated) selectedEntry.value = updated
     }
   } catch (e: any) {
-    alert(e.message || 'Verification failed')
+    showToast(e.message || 'Verification failed', 'error')
   } finally {
     verifySubmitting.value = false
   }
@@ -654,6 +739,53 @@ subscribe('entry.created', () => {
         </dialog>
       </Teleport>
 
+      <!-- Scenario input dialog (planned → specced) -->
+      <Teleport to="body">
+        <dialog
+          :open="scenarioDialog"
+          class="fixed inset-0 z-40 flex items-center justify-center bg-transparent"
+          v-if="scenarioDialog"
+        >
+          <div class="fixed inset-0 bg-black/50" @click="scenarioDialog = false" />
+          <div class="relative bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-xl max-w-md mx-auto w-full">
+            <h3 class="font-semibold mb-2 text-indigo-400">📋 Define Scenarios</h3>
+            <p class="text-sm text-gray-400 mb-3">
+              Define acceptance criteria — one per line. These are how you'll verify the work is done.
+            </p>
+            <textarea
+              v-model="scenarioText"
+              placeholder="- User can see the clock display&#10;- Calculator handles basic operations&#10;- Theme matches LCARS color palette"
+              rows="6"
+              class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none mb-4"
+            />
+            <div class="flex justify-end gap-2">
+              <button @click="scenarioDialog = false" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
+              <button
+                @click="submitScenarios"
+                :disabled="!scenarioText.trim()"
+                class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 transition-colors disabled:opacity-40"
+              >Advance to Specced</button>
+            </div>
+          </div>
+        </dialog>
+      </Teleport>
+
+      <!-- Toast -->
+      <Teleport to="body">
+        <Transition enter-active-class="transition-all duration-200" leave-active-class="transition-all duration-150"
+          enter-from-class="opacity-0 translate-y-2" leave-to-class="opacity-0 translate-y-2">
+          <div v-if="toast"
+            :class="[
+              'fixed top-4 right-4 z-50 font-semibold px-4 py-2 rounded-lg shadow-lg text-sm',
+              toastType === 'error' ? 'bg-red-500 text-white' :
+              toastType === 'success' ? 'bg-emerald-500 text-gray-950' :
+              'bg-sky-500 text-gray-950'
+            ]">
+            {{ toast }}
+          </div>
+        </Transition>
+      </Teleport>
+
       <!-- Empty state -->
       <div v-if="entries.length === 0" class="text-center py-8">
         <div class="text-gray-600 mb-1">No entries in this project</div>
@@ -700,6 +832,11 @@ subscribe('entry.created', () => {
                   v-if="col.key === 'working' && entry.maturity"
                   :class="['text-xs px-1.5 py-0.5 rounded', maturityColor(entry.maturity)]"
                 >{{ stageLabels[entry.maturity] || entry.maturity }}</span>
+                <!-- Maturity badge in Done column -->
+                <span
+                  v-if="col.key === 'done' && entry.maturity"
+                  :class="['text-xs px-1.5 py-0.5 rounded', maturityColor(entry.maturity)]"
+                >{{ stageLabels[entry.maturity] || entry.maturity }}</span>
                 <!-- Route status -->
                 <span
                   v-if="routeStatusIndicator(entry)"
@@ -708,7 +845,7 @@ subscribe('entry.created', () => {
               </div>
 
               <!-- Pipeline action buttons -->
-              <div v-if="canAdvance(entry) || canRevise(entry) || canExecute(entry) || canVerify(entry)" class="flex gap-1.5 mt-2 pt-2 border-t border-gray-800" @click.stop>
+              <div v-if="canAdvance(entry) || canRevise(entry) || canExecute(entry) || canVerify(entry) || canCancel(entry) || canComplete(entry)" class="flex gap-1.5 mt-2 pt-2 border-t border-gray-800" @click.stop>
                 <button
                   v-if="canAdvance(entry)"
                   @click.stop="advanceEntry(entry.id)"
@@ -735,10 +872,21 @@ subscribe('entry.created', () => {
                   class="px-2 py-1 text-xs bg-green-900/50 text-green-300 rounded hover:bg-green-800 transition-colors disabled:opacity-40"
                 >▶ Execute</button>
                 <button
+                  v-if="canCancel(entry)"
+                  @click.stop="cancelExecution(entry.id)"
+                  :disabled="cancellingEntry === entry.id"
+                  class="px-2 py-1 text-xs bg-red-900/50 text-red-300 rounded hover:bg-red-800 transition-colors disabled:opacity-40"
+                >✕ Cancel</button>
+                <button
                   v-if="canVerify(entry)"
                   @click.stop="openVerifyDialog(entry.id)"
                   class="px-2 py-1 text-xs bg-emerald-900/50 text-emerald-300 rounded hover:bg-emerald-800 transition-colors"
                 >✓ Verify</button>
+                <button
+                  v-if="canComplete(entry)"
+                  @click.stop="completeEntry(entry.id)"
+                  class="px-2 py-1 text-xs bg-green-900/50 text-green-300 rounded hover:bg-green-800 transition-colors"
+                >✓ Complete</button>
               </div>
             </div>
 
@@ -802,6 +950,19 @@ subscribe('entry.created', () => {
                   title="Verify scenarios"
                 >✓</button>
                 <button
+                  v-if="canCancel(entry)"
+                  @click="cancelExecution(entry.id)"
+                  :disabled="cancellingEntry === entry.id"
+                  class="px-2 py-1 text-xs bg-red-900/50 text-red-300 rounded hover:bg-red-800 transition-colors disabled:opacity-40"
+                  title="Cancel execution"
+                >✕</button>
+                <button
+                  v-if="canComplete(entry)"
+                  @click="completeEntry(entry.id)"
+                  class="px-2 py-1 text-xs bg-green-900/50 text-green-300 rounded hover:bg-green-800 transition-colors"
+                  title="Mark complete"
+                >✓</button>
+                <button
                   v-if="canRevise(entry)"
                   @click="openFeedbackDialog(entry.id, 'revise')"
                   :disabled="advancingEntry === entry.id"
@@ -863,7 +1024,7 @@ subscribe('entry.created', () => {
               <div v-if="selectedEntry.body" class="text-sm text-gray-300 whitespace-pre-wrap">{{ selectedEntry.body }}</div>
 
               <!-- Pipeline actions -->
-              <div v-if="canAdvance(selectedEntry) || canRevise(selectedEntry) || canExecute(selectedEntry) || canVerify(selectedEntry)" class="flex gap-2 pt-2 border-t border-gray-800">
+              <div v-if="canAdvance(selectedEntry) || canRevise(selectedEntry) || canExecute(selectedEntry) || canVerify(selectedEntry) || canCancel(selectedEntry) || canComplete(selectedEntry)" class="flex gap-2 pt-2 border-t border-gray-800 flex-wrap">
                 <button
                   v-if="canAdvance(selectedEntry)"
                   @click="advanceEntry(selectedEntry!.id)"
@@ -889,10 +1050,21 @@ subscribe('entry.created', () => {
                   class="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors disabled:opacity-40"
                 >▶ Execute</button>
                 <button
+                  v-if="canCancel(selectedEntry)"
+                  @click="cancelExecution(selectedEntry!.id)"
+                  :disabled="cancellingEntry === selectedEntry!.id"
+                  class="px-3 py-1.5 text-sm bg-red-600 text-white rounded-lg hover:bg-red-500 transition-colors disabled:opacity-40"
+                >✕ Cancel</button>
+                <button
                   v-if="canVerify(selectedEntry)"
                   @click="openVerifyDialog(selectedEntry!.id)"
                   class="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition-colors"
                 >✓ Verify</button>
+                <button
+                  v-if="canComplete(selectedEntry)"
+                  @click="completeEntry(selectedEntry!.id)"
+                  class="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors"
+                >✓ Complete</button>
               </div>
 
               <!-- Conversation history -->

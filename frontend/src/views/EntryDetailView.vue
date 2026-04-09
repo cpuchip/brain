@@ -287,6 +287,121 @@ async function markComplete() {
   }
 }
 
+// Pipeline gate state
+const scenarioText = ref('')
+const advancingPipeline = ref(false)
+const cancellingExecution = ref(false)
+const verifyScenarios = ref<{ scenario: string; passed: boolean; notes: string }[]>([])
+const verifySubmitting = ref(false)
+
+const maturityLabel: Record<string, string> = {
+  raw: 'Raw', researched: 'Researched', planned: 'Planned',
+  specced: 'Specced', executing: 'Executing', verified: 'Verified', complete: 'Complete',
+}
+
+function maturityColor(stage: string): string {
+  switch (stage) {
+    case 'raw': return 'bg-gray-700 text-gray-300'
+    case 'researched': return 'bg-blue-900 text-blue-300'
+    case 'planned': return 'bg-purple-900 text-purple-300'
+    case 'specced': return 'bg-indigo-900 text-indigo-300'
+    case 'executing': return 'bg-amber-900 text-amber-300'
+    case 'verified': return 'bg-green-900 text-green-300'
+    case 'complete': return 'bg-green-900 text-green-300'
+    default: return 'bg-gray-800 text-gray-400'
+  }
+}
+
+async function advancePipeline() {
+  if (!entry.value || advancingPipeline.value) return
+
+  // If planned, need scenarios
+  if (entry.value.maturity === 'planned') {
+    const scenarios = scenarioText.value.split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean)
+    if (scenarios.length === 0) {
+      showToast('Add at least one scenario')
+      return
+    }
+    advancingPipeline.value = true
+    try {
+      await api.pipelineAdvance(entry.value.id, 'advance', undefined, scenarios)
+      scenarioText.value = ''
+      showToast('Advanced to specced')
+      await load()
+    } catch (e: any) {
+      showToast(e.message || 'Advance failed')
+    } finally {
+      advancingPipeline.value = false
+    }
+    return
+  }
+
+  // Normal advance
+  advancingPipeline.value = true
+  try {
+    await api.pipelineAdvance(entry.value.id, 'advance')
+    showToast('Advanced')
+    await load()
+  } catch (e: any) {
+    showToast(e.message || 'Advance failed')
+  } finally {
+    advancingPipeline.value = false
+  }
+}
+
+async function executeEntry() {
+  if (!entry.value) return
+  advancingPipeline.value = true
+  try {
+    await api.executeEntry(entry.value.id)
+    showToast('Execution started')
+    await load()
+  } catch (e: any) {
+    showToast(e.message || 'Execute failed')
+  } finally {
+    advancingPipeline.value = false
+  }
+}
+
+async function cancelExecution() {
+  if (!entry.value || cancellingExecution.value) return
+  cancellingExecution.value = true
+  try {
+    await api.cancelExecution(entry.value.id)
+    showToast('Execution cancelled')
+    await load()
+  } catch (e: any) {
+    showToast(e.message || 'Cancel failed')
+  } finally {
+    cancellingExecution.value = false
+  }
+}
+
+async function loadVerifyScenarios() {
+  if (!entry.value) return
+  try {
+    const ctx = await api.executionContext(entry.value.id)
+    verifyScenarios.value = (ctx.scenarios || []).map(s => ({ scenario: s, passed: false, notes: '' }))
+  } catch {
+    verifyScenarios.value = []
+  }
+}
+
+async function submitVerification() {
+  if (!entry.value || verifyScenarios.value.length === 0 || verifySubmitting.value) return
+  verifySubmitting.value = true
+  try {
+    await api.verifyEntry(entry.value.id, verifyScenarios.value)
+    showToast('Verification submitted')
+    verifyScenarios.value = []
+    await load()
+  } catch (e: any) {
+    showToast(e.message || 'Verification failed')
+  } finally {
+    verifySubmitting.value = false
+  }
+}
+
 onMounted(load)
 onUnmounted(() => { filePanelOpen.value = false })
 
@@ -345,6 +460,7 @@ subscribe('entry.updated', (evt) => {
           </div>
           <div class="flex items-center gap-2 mt-1 text-sm text-gray-500 flex-wrap">
             <span class="px-2 py-0.5 rounded-full bg-gray-800 text-sky-400 text-xs">{{ entry.category }}</span>
+            <span v-if="entry.maturity" :class="['px-2 py-0.5 rounded-full text-xs', maturityColor(entry.maturity)]">{{ maturityLabel[entry.maturity] || entry.maturity }}</span>
             <span v-if="entry.status" class="px-2 py-0.5 rounded-full bg-gray-800 text-amber-400 text-xs">{{ entry.status }}</span>
             <RouterLink
               v-if="entry.project_id"
@@ -409,6 +525,104 @@ subscribe('entry.updated', (evt) => {
           >
             {{ tag }}
           </span>
+        </div>
+
+        <!-- Pipeline gates -->
+        <div v-if="entry.maturity && !entry.notebook" class="mt-4 space-y-3">
+
+          <!-- Scenario input (planned → specced) -->
+          <div v-if="entry.maturity === 'planned'" class="bg-gray-900 border border-indigo-800 rounded-lg p-4">
+            <h3 class="text-sm font-medium text-indigo-400 mb-2">📋 Define Scenarios</h3>
+            <p class="text-xs text-gray-400 mb-2">Define acceptance criteria — one per line. These are how you'll verify the work is done.</p>
+            <textarea
+              v-model="scenarioText"
+              placeholder="- User can see the clock display&#10;- Calculator handles basic operations&#10;- Theme matches LCARS color palette"
+              rows="4"
+              class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y"
+            />
+            <button
+              @click="advancePipeline"
+              :disabled="!scenarioText.trim() || advancingPipeline"
+              class="mt-2 px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 transition-colors disabled:opacity-40"
+            >{{ advancingPipeline ? 'Advancing...' : 'Advance to Specced' }}</button>
+          </div>
+
+          <!-- Execute button (specced) -->
+          <div v-if="entry.maturity === 'specced'" class="bg-gray-900 border border-green-800 rounded-lg p-4">
+            <h3 class="text-sm font-medium text-green-400 mb-2">▶ Ready to Execute</h3>
+            <p class="text-xs text-gray-400 mb-2">Entry is specced and ready for agent execution.</p>
+            <button
+              @click="executeEntry"
+              :disabled="advancingPipeline"
+              class="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors disabled:opacity-40"
+            >{{ advancingPipeline ? 'Starting...' : '▶ Execute' }}</button>
+          </div>
+
+          <!-- Executing status with cancel -->
+          <div v-if="entry.maturity === 'executing' && entry.route_status === 'agent'" class="bg-gray-900 border border-amber-800 rounded-lg p-4">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="inline-block w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
+                <span class="text-sm text-amber-300">Agent is executing...</span>
+              </div>
+              <button
+                @click="cancelExecution"
+                :disabled="cancellingExecution"
+                class="px-3 py-1.5 text-sm bg-red-600 text-white rounded-lg hover:bg-red-500 transition-colors disabled:opacity-40"
+              >{{ cancellingExecution ? 'Cancelling...' : '✕ Cancel' }}</button>
+            </div>
+          </div>
+
+          <!-- Verify scenarios (executing + your_turn) -->
+          <div v-if="entry.maturity === 'executing' && entry.route_status === 'your_turn'" class="bg-gray-900 border border-emerald-800 rounded-lg p-4">
+            <h3 class="text-sm font-medium text-emerald-400 mb-2">✓ Verify Scenarios</h3>
+            <p class="text-xs text-gray-400 mb-3">Check each scenario that passes. Failed scenarios will return the entry to planned.</p>
+            <div v-if="verifyScenarios.length === 0" class="text-sm text-gray-500 mb-3">
+              <button @click="loadVerifyScenarios" class="text-emerald-400 hover:text-emerald-300">Load scenarios</button>
+            </div>
+            <div v-else class="space-y-2 mb-3">
+              <div
+                v-for="(s, i) in verifyScenarios"
+                :key="i"
+                :class="['border rounded-lg px-3 py-2', s.passed ? 'border-green-800 bg-green-950/30' : 'border-gray-700']"
+              >
+                <label class="flex items-start gap-2 cursor-pointer">
+                  <input type="checkbox" v-model="s.passed" class="mt-1 accent-green-500" />
+                  <span class="text-sm text-gray-200">{{ s.scenario }}</span>
+                </label>
+                <input
+                  v-if="!s.passed"
+                  v-model="s.notes"
+                  placeholder="What failed? (optional)"
+                  class="mt-2 w-full bg-gray-950 border border-gray-700 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-amber-500"
+                />
+              </div>
+            </div>
+            <button
+              v-if="verifyScenarios.length > 0"
+              @click="submitVerification"
+              :disabled="verifySubmitting"
+              class="px-4 py-2 text-sm rounded-lg transition-colors disabled:opacity-40"
+              :class="verifyScenarios.every(s => s.passed) ? 'bg-emerald-600 text-white hover:bg-emerald-500' : 'bg-amber-600 text-white hover:bg-amber-500'"
+            >{{ verifyScenarios.every(s => s.passed) ? '✓ All Pass — Verify' : 'Submit (some failed)' }}</button>
+          </div>
+
+          <!-- Advance buttons for raw/researched -->
+          <div v-if="['raw', 'researched'].includes(entry.maturity)" class="flex gap-2">
+            <button
+              @click="advancePipeline"
+              :disabled="advancingPipeline"
+              class="px-3 py-1.5 text-sm bg-sky-600 text-white rounded-lg hover:bg-sky-500 transition-colors disabled:opacity-40"
+            >{{ advancingPipeline ? 'Advancing...' : '▶ Advance' }}</button>
+          </div>
+
+          <!-- Mark complete (verified) -->
+          <div v-if="entry.maturity === 'verified'" class="flex gap-2">
+            <button
+              @click="markComplete"
+              class="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors"
+            >✓ Mark Complete</button>
+          </div>
         </div>
 
         <!-- Subtasks -->

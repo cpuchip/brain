@@ -549,4 +549,10 @@ export const api = {
     if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`)
     return res.text()
   },
+
+  cancelExecution(entryId: string) {
+    return request<{ entry_id: string; status: string }>(`/entries/${encodeURIComponent(entryId)}/cancel-execution`, {
+      method: 'POST',
+    })
+  },
 }
