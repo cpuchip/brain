@@ -76,17 +76,18 @@ func (p *Pipeline) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteRes
 		return nil, fmt.Errorf("agent pool not available — execution requires Copilot SDK")
 	}
 
-	// Mark as executing
+	// Mark as executing and set route_status to agent (not your_turn)
 	if err := p.store.DB().SetMaturity(entry.ID, "executing", ""); err != nil {
 		return nil, fmt.Errorf("setting maturity to executing: %w", err)
 	}
+	p.store.DB().UpdateRouteStatus(entry.ID, "agent")
 
 	// Post session message about execution starting
 	p.store.DB().AddSessionMessage(entry.ID, "agent",
 		fmt.Sprintf("Execution started. Agent will work through %d scenarios.",
 			countScenarios(entry.Scenarios)))
 
-	p.notify("entry.updated", entry.ID, map[string]string{"maturity": "executing"})
+	p.notify("entry.updated", entry.ID, map[string]string{"maturity": "executing", "route_status": "agent"})
 	p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
 
 	// Fire and forget — execution runs in background
@@ -171,7 +172,7 @@ func (p *Pipeline) Verify(req VerifyRequest) (*VerifyResult, error) {
 // BuildExecutionContext builds the full prompt that would be sent to the execution agent.
 // Used both for the preview endpoint and the actual execution.
 func (p *Pipeline) BuildExecutionContext(entry *store.Entry, feedback string) string {
-	return buildExecutePrompt(entry, p.loadScratchContent(entry), feedback, FormatProjectContext(p.BuildProjectContext(entry)))
+	return buildExecutePrompt(entry, entry.ScratchPath, feedback, FormatProjectContext(p.BuildProjectContext(entry)))
 }
 
 // runExecute is the background goroutine that actually runs the execution agent.
@@ -179,11 +180,9 @@ func (p *Pipeline) runExecute(entry *store.Entry, feedback string) {
 	ctx := p.pool.StartTask(entry.ID, "execute")
 	defer p.pool.FinishTask(entry.ID)
 
-	// Load all accumulated context
-	scratchContent := p.loadScratchContent(entry)
+	// Build prompt with scratch path (not content) to keep context small
 	projectCtx := FormatProjectContext(p.BuildProjectContext(entry))
-
-	prompt := buildExecutePrompt(entry, scratchContent, feedback, projectCtx)
+	prompt := buildExecutePrompt(entry, entry.ScratchPath, feedback, projectCtx)
 
 	// Load governance document
 	govDoc := ""
@@ -231,15 +230,25 @@ Token budget guidance:
 
 	agent := ai.NewAgent(p.pool.Client(), agentCfg)
 
+	// Track premium cost immediately — the request is billed when sent, not when it completes.
+	// If we only track after completion, killed/stalled executions lose cost tracking.
+	if costErr := p.store.DB().IncrementPremiumRequests(entry.ID, agentCfg.PremiumRequestCost); costErr != nil {
+		log.Printf("warning: failed to track cost for %s: %v", entry.ID, costErr)
+	}
+
 	log.Printf("Execution starting for %s (%s)", entry.ID, entry.Title)
 
 	response, err := agent.Ask(ctx, prompt)
 	if err != nil {
-		// Still track cost even on failure — the premium request was consumed
-		if costErr := p.store.DB().IncrementPremiumRequests(entry.ID, agentCfg.PremiumRequestCost); costErr != nil {
-			log.Printf("warning: failed to track cost for %s: %v", entry.ID, costErr)
-		}
 		log.Printf("Execution failed for %s: %v", entry.ID, err)
+
+		// Guard against race: if entry was manually reset or cancelled while we ran, don't overwrite
+		current, getErr := p.store.DB().GetEntry(entry.ID)
+		if getErr != nil || current.Maturity != "executing" {
+			log.Printf("Entry %s maturity changed during execution (now: %s), skipping failure handling", entry.ID, current.Maturity)
+			return
+		}
+
 		p.store.DB().SetMaturity(entry.ID, "specced", fmt.Sprintf("Execution failed: %v", err))
 
 		// Track failure count and escalate if needed
@@ -252,14 +261,17 @@ Token budget guidance:
 			msg += fmt.Sprintf("\n\n🔴 This entry has failed %d consecutive times. Something structural may be wrong.", count)
 		}
 		p.store.DB().AddSessionMessage(entry.ID, "agent", msg)
-		p.notify("entry.updated", entry.ID, map[string]string{"maturity": "specced"})
+		p.store.DB().UpdateRouteStatus(entry.ID, "your_turn")
+		p.notify("entry.updated", entry.ID, map[string]string{"maturity": "specced", "route_status": "your_turn"})
 		p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
 		return
 	}
 
-	// Track premium request cost
-	if err := p.store.DB().IncrementPremiumRequests(entry.ID, agentCfg.PremiumRequestCost); err != nil {
-		log.Printf("warning: failed to track cost for %s: %v", entry.ID, err)
+	// Guard against race: if entry was manually reset while we ran, don't overwrite
+	current, getErr := p.store.DB().GetEntry(entry.ID)
+	if getErr != nil || current.Maturity != "executing" {
+		log.Printf("Entry %s maturity changed during execution (now: %s), aborting post-processing", entry.ID, current.Maturity)
+		return
 	}
 
 	// Reset failure count on success
@@ -305,7 +317,7 @@ func (p *Pipeline) loadScratchContent(entry *store.Entry) string {
 	return content
 }
 
-func buildExecutePrompt(entry *store.Entry, scratchContent, feedback, projectCtx string) string {
+func buildExecutePrompt(entry *store.Entry, scratchPath, feedback, projectCtx string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Execute the following specced brain entry:\n\n")
 	fmt.Fprintf(&sb, "**Title:** %s\n", entry.Title)
@@ -326,9 +338,12 @@ func buildExecutePrompt(entry *store.Entry, scratchContent, feedback, projectCtx
 	fmt.Fprintf(&sb, "%s\n\n", entry.Scenarios)
 	fmt.Fprintf(&sb, "Your implementation must satisfy ALL of these scenarios. They will be verified by the human after you finish.\n\n")
 
-	if scratchContent != "" {
-		fmt.Fprintf(&sb, "## Research & Plan (from scratch file)\n\n")
-		fmt.Fprintf(&sb, "```markdown\n%s\n```\n\n", scratchContent)
+	// Give the agent the path to read — don't embed content in the prompt.
+	// Embedding large scratch files (~10K+) caused context overload and SDK stalls.
+	if scratchPath != "" {
+		fmt.Fprintf(&sb, "## Research & Plan\n\n")
+		fmt.Fprintf(&sb, "The research and plan are in: `%s`\n", scratchPath)
+		fmt.Fprintf(&sb, "Read this file first to understand the plan before implementing.\n\n")
 	}
 
 	if feedback != "" {
@@ -336,7 +351,7 @@ func buildExecutePrompt(entry *store.Entry, scratchContent, feedback, projectCtx
 	}
 
 	fmt.Fprintf(&sb, "## Instructions\n\n")
-	fmt.Fprintf(&sb, "1. Read the plan and scenarios carefully\n")
+	fmt.Fprintf(&sb, "1. Read the scratch file above to understand the research and plan\n")
 	fmt.Fprintf(&sb, "2. Implement the plan — create files, write code, update configs as needed\n")
 	fmt.Fprintf(&sb, "3. Verify each scenario is satisfied by your implementation\n")
 	fmt.Fprintf(&sb, "4. Report what was done and any notes for the verification step\n")

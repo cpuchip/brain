@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
 
@@ -159,9 +160,13 @@ func (p *AgentPool) ResetAll() {
 	log.Printf("Agent pool: reset all agents")
 }
 
-// StartTask registers a running task for an entry and returns a cancellable context.
+// ExecutionTimeout is the maximum time an execution task can run before being cancelled.
+const ExecutionTimeout = 10 * time.Minute
+
+// StartTask registers a running task for an entry and returns a context with a timeout.
 // The caller should use the returned context for the agent work and call the
-// cancel function (or CancelTask) when done.
+// cancel function (or CancelTask) when done. Tasks are automatically cancelled
+// after ExecutionTimeout (10 minutes) to prevent stalled executions.
 func (p *AgentPool) StartTask(entryID, agentName string) context.Context {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -172,12 +177,13 @@ func (p *AgentPool) StartTask(entryID, agentName string) context.Context {
 		delete(p.tasks, entryID)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), ExecutionTimeout)
 	p.tasks[entryID] = &runningTask{
 		EntryID:   entryID,
 		AgentName: agentName,
 		cancel:    cancel,
 	}
+	log.Printf("Agent pool: started task for entry %s (agent=%s, timeout=%s)", entryID, agentName, ExecutionTimeout)
 	return ctx
 }
 

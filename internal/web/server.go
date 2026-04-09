@@ -128,6 +128,7 @@ func (s *Server) routes() {
 
 	// Execution gate (Phase 4e)
 	s.mux.HandleFunc("POST /api/entries/{id}/execute", s.cors(s.handleExecute))
+	s.mux.HandleFunc("POST /api/entries/{id}/cancel-execution", s.cors(s.handleCancelExecution))
 	s.mux.HandleFunc("POST /api/entries/{id}/verify", s.cors(s.handleVerify))
 	s.mux.HandleFunc("GET /api/entries/{id}/execution-context", s.cors(s.handleExecutionContext))
 	s.mux.HandleFunc("PUT /api/entries/{id}/auto-continue", s.cors(s.handleSetAutoContinue))
@@ -2182,12 +2183,17 @@ func (s *Server) tryReplyAutoAdvance(entryID, replyContent string) {
 func (s *Server) handleMarkComplete(w http.ResponseWriter, r *http.Request) {
 	entryID := r.PathValue("id")
 
+	// Set both maturity and route_status to complete
+	if err := s.store.DB().SetMaturity(entryID, "complete", ""); err != nil {
+		jsonError(w, "setting maturity to complete", err, http.StatusInternalServerError)
+		return
+	}
 	if err := s.store.DB().UpdateRouteStatus(entryID, "complete"); err != nil {
 		jsonError(w, "marking complete", err, http.StatusInternalServerError)
 		return
 	}
 
-	s.hub.Broadcast(Event{Type: "entry.updated", EntryID: entryID, Data: map[string]any{"route_status": "complete"}})
+	s.hub.Broadcast(Event{Type: "entry.updated", EntryID: entryID, Data: map[string]any{"maturity": "complete", "route_status": "complete"}})
 
 	jsonResponse(w, map[string]any{"entry_id": entryID, "status": "complete"})
 }
@@ -2249,6 +2255,41 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, result)
+}
+
+func (s *Server) handleCancelExecution(w http.ResponseWriter, r *http.Request) {
+	entryID := r.PathValue("id")
+
+	if s.pool == nil {
+		jsonError(w, "agent pool not available", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	// Verify entry is actually executing
+	entry, err := s.store.DB().GetEntry(entryID)
+	if err != nil {
+		jsonError(w, "entry not found", err, http.StatusNotFound)
+		return
+	}
+	if entry.Maturity != "executing" {
+		jsonError(w, fmt.Sprintf("entry is not executing (currently: %s)", entry.Maturity), nil, http.StatusBadRequest)
+		return
+	}
+
+	// Cancel the running goroutine
+	s.pool.CancelTask(entryID)
+
+	// Reset to specced so user can retry
+	s.store.DB().SetMaturity(entryID, "specced", "Execution cancelled by user")
+	s.store.DB().UpdateRouteStatus(entryID, "your_turn")
+	s.store.DB().AddSessionMessage(entryID, "system", "Execution cancelled by user. Entry returned to specced.")
+
+	s.hub.Broadcast(Event{Type: "entry.updated", EntryID: entryID, Data: map[string]any{
+		"maturity":     "specced",
+		"route_status": "your_turn",
+	}})
+
+	jsonResponse(w, map[string]any{"entry_id": entryID, "status": "cancelled"})
 }
 
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
