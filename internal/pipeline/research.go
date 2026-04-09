@@ -251,13 +251,14 @@ func (p *Pipeline) deferEntry(entry *store.Entry, oldMaturity string) (*AdvanceR
 }
 
 // maybeAutoContinue fires an auto-advance goroutine if the entry has auto_continue enabled
-// and the new maturity is eligible for automatic advancement (researched or planned).
-// Stops before specced — verification always requires human.
+// and the new maturity is eligible for automatic advancement.
+// Only continues from researched → planned (plan phase). Stops at planned because
+// planned → specced requires human-provided scenarios.
 func (p *Pipeline) maybeAutoContinue(entry *store.Entry, result *AdvanceResult) {
 	if !entry.AutoContinue {
 		return
 	}
-	if result.NewMaturity != "researched" && result.NewMaturity != "planned" {
+	if result.NewMaturity != "researched" {
 		return
 	}
 	go func() {
@@ -616,7 +617,7 @@ Rules:
 6. APPEND your plan section to the scratch file — do not overwrite existing content
 7. If the research is thin or missing, flag that as a blocker`
 
-	// Create agent with Sonnet model and plan-specific config
+	// Create agent with Opus model for high-quality planning
 	agentCfg := ai.AgentConfig{
 		Model:         config.PipelineBigModel,
 		SystemMessage: systemMsg,
@@ -627,7 +628,7 @@ Rules:
 			"plan": {".spec/scratch", ".spec/proposals", "study/.scratch"},
 		},
 		TokenWarningThreshold: 150000,
-		PremiumRequestCost:    1.0, // Sonnet 4
+		PremiumRequestCost:    3.0, // Opus 4.6
 	}
 
 	agent := ai.NewAgent(p.pool.Client(), agentCfg)
