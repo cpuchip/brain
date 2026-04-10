@@ -137,7 +137,7 @@ function routeStatusIndicator(entry: Entry) {
       }
       return { class: 'border-l-amber-400', badge: 'bg-amber-900 text-amber-300', label: 'Your Turn', icon: '🔔' }
     case 'running': return { class: 'border-l-blue-400', badge: 'bg-blue-900 text-blue-300', label: 'Running', icon: '⚡' }
-    case 'complete': return { class: 'border-l-green-400', badge: 'bg-green-900 text-green-300', label: 'Complete', icon: '✓' }
+    case 'complete': return { class: 'border-l-green-400', badge: 'bg-green-900 text-green-300', label: 'Routed', icon: '✓' }
     case 'suggested': return { class: 'border-l-gray-600', badge: 'bg-gray-800 text-gray-400', label: 'Suggested', icon: '→' }
     default: return null
   }
@@ -355,6 +355,20 @@ async function completeEntry(entryId: string) {
     }
   } catch (e: any) {
     showToast(e.message || 'Failed to mark complete', 'error')
+  }
+}
+
+async function uncompleteEntry(entryId: string) {
+  try {
+    await api.updateEntry(entryId, { maturity: 'verified', route_status: 'your_turn' } as any)
+    showToast('Reverted to verified', 'info')
+    await load()
+    if (selectedEntry.value?.id === entryId) {
+      const updated = entries.value.find(e => e.id === entryId)
+      if (updated) selectedEntry.value = updated
+    }
+  } catch (e: any) {
+    showToast(e.message || 'Failed to undo complete', 'error')
   }
 }
 
@@ -845,7 +859,7 @@ subscribe('entry.created', () => {
               </div>
 
               <!-- Pipeline action buttons -->
-              <div v-if="canAdvance(entry) || canRevise(entry) || canExecute(entry) || canVerify(entry) || canCancel(entry) || canComplete(entry)" class="flex gap-1.5 mt-2 pt-2 border-t border-gray-800" @click.stop>
+              <div v-if="canAdvance(entry) || canRevise(entry) || canExecute(entry) || canVerify(entry) || canCancel(entry) || canComplete(entry) || entry.maturity === 'complete'" class="flex gap-1.5 mt-2 pt-2 border-t border-gray-800" @click.stop>
                 <button
                   v-if="canAdvance(entry)"
                   @click.stop="advanceEntry(entry.id)"
@@ -887,6 +901,11 @@ subscribe('entry.created', () => {
                   @click.stop="completeEntry(entry.id)"
                   class="px-2 py-1 text-xs bg-green-900/50 text-green-300 rounded hover:bg-green-800 transition-colors"
                 >✓ Complete</button>
+                <button
+                  v-if="entry.maturity === 'complete'"
+                  @click.stop="uncompleteEntry(entry.id)"
+                  class="px-2 py-1 text-xs bg-gray-800 text-gray-400 rounded hover:bg-gray-700 transition-colors"
+                >↩ Undo</button>
               </div>
             </div>
 
@@ -963,6 +982,12 @@ subscribe('entry.created', () => {
                   title="Mark complete"
                 >✓</button>
                 <button
+                  v-if="entry.maturity === 'complete'"
+                  @click="uncompleteEntry(entry.id)"
+                  class="px-2 py-1 text-xs bg-gray-800 text-gray-400 rounded hover:bg-gray-700 transition-colors"
+                  title="Undo complete"
+                >↩</button>
+                <button
                   v-if="canRevise(entry)"
                   @click="openFeedbackDialog(entry.id, 'revise')"
                   :disabled="advancingEntry === entry.id"
@@ -1024,7 +1049,7 @@ subscribe('entry.created', () => {
               <div v-if="selectedEntry.body" class="text-sm text-gray-300 whitespace-pre-wrap">{{ selectedEntry.body }}</div>
 
               <!-- Pipeline actions -->
-              <div v-if="canAdvance(selectedEntry) || canRevise(selectedEntry) || canExecute(selectedEntry) || canVerify(selectedEntry) || canCancel(selectedEntry) || canComplete(selectedEntry)" class="flex gap-2 pt-2 border-t border-gray-800 flex-wrap">
+              <div v-if="canAdvance(selectedEntry) || canRevise(selectedEntry) || canExecute(selectedEntry) || canVerify(selectedEntry) || canCancel(selectedEntry) || canComplete(selectedEntry) || selectedEntry.maturity === 'complete'" class="flex gap-2 pt-2 border-t border-gray-800 flex-wrap">
                 <button
                   v-if="canAdvance(selectedEntry)"
                   @click="advanceEntry(selectedEntry!.id)"
@@ -1065,6 +1090,11 @@ subscribe('entry.created', () => {
                   @click="completeEntry(selectedEntry!.id)"
                   class="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors"
                 >✓ Complete</button>
+                <button
+                  v-if="selectedEntry!.maturity === 'complete'"
+                  @click="uncompleteEntry(selectedEntry!.id)"
+                  class="px-3 py-1.5 text-sm text-gray-400 border border-gray-700 rounded-lg hover:bg-gray-800 transition-colors"
+                >↩ Undo Complete</button>
               </div>
 
               <!-- Conversation history -->

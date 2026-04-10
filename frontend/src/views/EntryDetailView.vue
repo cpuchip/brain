@@ -287,6 +287,28 @@ async function markComplete() {
   }
 }
 
+async function undoComplete() {
+  if (!entry.value) return
+  try {
+    await api.updateEntry(entry.value.id, { maturity: 'verified', route_status: 'your_turn' } as any)
+    showToast('Reverted to verified')
+    await load()
+  } catch {
+    showToast('Failed to undo complete')
+  }
+}
+
+async function dismissRoute() {
+  if (!entry.value) return
+  try {
+    await api.dismissRoute(entry.value.id)
+    showToast('Dismissed')
+    await load()
+  } catch {
+    showToast('Failed to dismiss')
+  }
+}
+
 // Pipeline gate state
 const scenarioText = ref('')
 const advancingPipeline = ref(false)
@@ -469,7 +491,7 @@ subscribe('execution.tool', (evt) => {
               @click="toggleDone"
               class="shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors"
               :class="isDone ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-gray-600 hover:border-sky-500'"
-              :title="isDone ? 'Mark incomplete' : 'Mark complete'"
+              :title="isDone ? 'Reopen' : 'Mark done'"
             >
               <span v-if="isDone" class="text-xs">✓</span>
             </button>
@@ -655,6 +677,15 @@ subscribe('execution.tool', (evt) => {
               class="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors"
             >✓ Mark Complete</button>
           </div>
+
+          <!-- Undo complete -->
+          <div v-if="entry.maturity === 'complete'" class="flex gap-2">
+            <span class="px-3 py-1.5 text-sm text-green-400">✓ Pipeline complete</span>
+            <button
+              @click="undoComplete"
+              class="px-3 py-1.5 text-sm text-gray-400 border border-gray-700 rounded-lg hover:bg-gray-800 transition-colors"
+            >↩ Undo</button>
+          </div>
         </div>
 
         <!-- Subtasks -->
@@ -730,10 +761,10 @@ subscribe('execution.tool', (evt) => {
                 ]"
               >{{ entry.route_status === 'your_turn' && entry.agent_route === 'review' ? '🤖 Review' : entry.route_status === 'your_turn' ? 'Your Turn' : entry.route_status === 'running' ? 'Agent Working' : entry.route_status }}</span>
               <button
-                v-if="entry.route_status !== 'complete'"
-                @click="markComplete"
-                class="px-2 py-0.5 text-xs text-green-400 border border-green-800 rounded-full hover:bg-green-900 transition-colors"
-              >✓ Complete</button>
+                v-if="entry.route_status === 'your_turn'"
+                @click="dismissRoute"
+                class="px-2 py-0.5 text-xs text-gray-400 border border-gray-700 rounded-full hover:bg-gray-800 transition-colors"
+              >✓ Dismiss</button>
             </div>
           </div>
 
