@@ -293,6 +293,7 @@ const advancingPipeline = ref(false)
 const cancellingExecution = ref(false)
 const verifyScenarios = ref<{ scenario: string; passed: boolean; notes: string }[]>([])
 const verifySubmitting = ref(false)
+const executionTools = ref<string[]>([])
 
 const maturityLabel: Record<string, string> = {
   raw: 'Raw', researched: 'Researched', planned: 'Planned',
@@ -419,7 +420,23 @@ subscribe('message.new', (evt) => {
 subscribe('entry.updated', (evt) => {
   if (evt.entry_id === currentId.value) {
     // Refresh the entry when it's updated
-    api.getEntry(currentId.value).then(e => { entry.value = e })
+    api.getEntry(currentId.value).then(e => {
+      entry.value = e
+      // Clear tool log when execution finishes
+      if (e.maturity !== 'executing' || e.route_status !== 'agent') {
+        executionTools.value = []
+      }
+    })
+  }
+})
+
+subscribe('execution.tool', (evt) => {
+  if (evt.entry_id === currentId.value && evt.data?.tool) {
+    executionTools.value.push(evt.data.tool)
+    // Keep only last 20 to avoid unbounded growth
+    if (executionTools.value.length > 20) {
+      executionTools.value = executionTools.value.slice(-20)
+    }
   }
 })
 </script>
@@ -483,10 +500,18 @@ subscribe('entry.updated', (evt) => {
               <input type="checkbox" :checked="entry.auto_continue" :disabled="togglingAutoContinue" @change="toggleAutoContinue" class="accent-violet-500 w-3.5 h-3.5">
               <span :class="entry.auto_continue ? 'text-violet-400' : 'text-gray-500'">{{ entry.auto_continue ? '⚡ Auto' : '🕊️ Sabbath' }}</span>
             </label>
-            <label class="inline-flex items-center gap-1.5 text-xs cursor-pointer select-none" :title="entry.notebook ? 'Notebook mode — searchable but outside pipeline' : 'Pipeline mode — enters research/execute workflow'">
-              <input type="checkbox" :checked="entry.notebook" :disabled="togglingNotebook" @change="toggleNotebook" class="accent-amber-500 w-3.5 h-3.5">
-              <span :class="entry.notebook ? 'text-amber-400' : 'text-gray-500'">{{ entry.notebook ? '📓 Notebook' : '🔄 Pipeline' }}</span>
-            </label>
+            <div class="inline-flex bg-gray-800 rounded-lg overflow-hidden text-xs select-none" :title="entry.notebook ? 'Notebook mode — searchable but outside pipeline' : 'Pipeline mode — enters research/execute workflow'">
+              <button
+                @click="entry.notebook && toggleNotebook()"
+                :disabled="togglingNotebook"
+                :class="['px-2.5 py-1 transition-colors', !entry.notebook ? 'bg-sky-600 text-white' : 'text-gray-500 hover:text-gray-300']"
+              >🔄 Pipeline</button>
+              <button
+                @click="!entry.notebook && toggleNotebook()"
+                :disabled="togglingNotebook"
+                :class="['px-2.5 py-1 transition-colors', entry.notebook ? 'bg-amber-600 text-white' : 'text-gray-500 hover:text-gray-300']"
+              >📓 Notebook</button>
+            </div>
           </div>
         </div>
         <div class="flex gap-2 shrink-0">
@@ -570,6 +595,13 @@ subscribe('entry.updated', (evt) => {
                 :disabled="cancellingExecution"
                 class="px-3 py-1.5 text-sm bg-red-600 text-white rounded-lg hover:bg-red-500 transition-colors disabled:opacity-40"
               >{{ cancellingExecution ? 'Cancelling...' : '✕ Cancel' }}</button>
+            </div>
+            <!-- Tool call progress log -->
+            <div v-if="executionTools.length > 0" class="mt-3 space-y-1 max-h-40 overflow-y-auto">
+              <div v-for="(tool, i) in executionTools" :key="i" class="text-xs text-gray-500 font-mono flex items-center gap-1.5">
+                <span class="text-gray-700">{{ i + 1 }}.</span>
+                <span>{{ tool }}</span>
+              </div>
             </div>
           </div>
 

@@ -226,6 +226,9 @@ Token budget guidance:
 		},
 		TokenWarningThreshold: 200000,
 		PremiumRequestCost:    1.0, // Sonnet
+		OnToolCall: func(toolName string, args any) {
+			p.notify("execution.tool", entry.ID, map[string]string{"tool": toolName})
+		},
 	}
 
 	agent := ai.NewAgent(p.pool.Client(), agentCfg)

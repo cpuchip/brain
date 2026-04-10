@@ -33,6 +33,10 @@ type AgentConfig struct {
 	// SDK custom agents — wired into the default agent's session for intent-based delegation.
 	// Named agents (from entry routing) don't get these — they ARE the target agent.
 	CustomAgents []copilot.CustomAgentConfig
+
+	// OnToolCall is invoked after each tool call during the session.
+	// Useful for streaming progress events (e.g. "reading file X", "searching workspace").
+	OnToolCall func(toolName string, args any)
 }
 
 // MCPDef describes an MCP server that should be available to agent sessions.
@@ -300,6 +304,10 @@ func (a *Agent) createSession(ctx context.Context) (*copilot.Session, error) {
 			OnPostToolUse: func(input copilot.PostToolUseHookInput, _ copilot.HookInvocation) (*copilot.PostToolUseHookOutput, error) {
 				a.recordToolCall(input.ToolName)
 				log.Printf("AUDIT: agent=%s tool=%s args=%v ts=%d", a.displayName(), input.ToolName, input.ToolArgs, input.Timestamp)
+				// Notify external callback (e.g. for streaming progress to WebSocket)
+				if a.config.OnToolCall != nil {
+					a.config.OnToolCall(input.ToolName, input.ToolArgs)
+				}
 				// Track written files for selective git commits
 				if isWriteTool(input.ToolName) {
 					for _, p := range extractPathCandidates(input.ToolArgs) {
