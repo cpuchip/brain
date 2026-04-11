@@ -27,22 +27,34 @@ type Notifier interface {
 	Notify(eventType, entryID string, data any)
 }
 
+// FailureHandler receives notification when a pipeline stage fails.
+// Implemented by the steward package for automatic retry.
+type FailureHandler interface {
+	OnFailure(entryID, stage string, failErr error)
+}
+
 type Pipeline struct {
-	store     *store.Store
-	pool      *ai.AgentPool
-	cfg       *config.Config
-	wc        config.WorkspaceConfig
-	notifier  Notifier
-	codeDir   string // brain code dir (scripts/brain)
-	workspace string // parent workspace root (scripture-study)
-	ctx       context.Context
-	cancel    context.CancelFunc
-	review    reviewState
+	store          *store.Store
+	pool           *ai.AgentPool
+	cfg            *config.Config
+	wc             config.WorkspaceConfig
+	notifier       Notifier
+	failureHandler FailureHandler
+	codeDir        string // brain code dir (scripts/brain)
+	workspace      string // parent workspace root (scripture-study)
+	ctx            context.Context
+	cancel         context.CancelFunc
+	review         reviewState
 }
 
 // SetNotifier configures a push notification sink (typically the WebSocket hub).
 func (p *Pipeline) SetNotifier(n Notifier) {
 	p.notifier = n
+}
+
+// SetFailureHandler configures the failure handler (typically the steward).
+func (p *Pipeline) SetFailureHandler(h FailureHandler) {
+	p.failureHandler = h
 }
 
 // notify sends a push event if a notifier is configured.
@@ -272,7 +284,7 @@ func (p *Pipeline) maybeAutoContinue(entry *store.Entry, result *AdvanceResult) 
 }
 
 // recordFailure tracks a pipeline failure: increments the counter, posts a session message,
-// and escalates if the entry has failed too many times.
+// and notifies the steward for potential automatic retry.
 func (p *Pipeline) recordFailure(entry *store.Entry, stage string, err error) {
 	reason := err.Error()
 	count, countErr := p.store.DB().IncrementFailureCount(entry.ID, reason)
@@ -280,13 +292,24 @@ func (p *Pipeline) recordFailure(entry *store.Entry, stage string, err error) {
 		log.Printf("warning: failed to increment failure count for %s: %v", entry.ID, countErr)
 	}
 
-	msg := fmt.Sprintf("⚠️ %s pass failed: %v\n\nYou can:\n- **Advance** to retry\n- **Revise** with feedback\n- **Reject** to start over\n- **Defer** to revisit later", stage, err)
+	msg := fmt.Sprintf("⚠️ %s pass failed: %v", stage, err)
 	if count >= 3 {
 		msg += fmt.Sprintf("\n\n🔴 This entry has failed %d consecutive times. Something structural may be wrong.", count)
 	}
 
+	// If steward is active, it handles the retry/quarantine flow.
+	// Otherwise, show manual options to the human.
+	if p.failureHandler == nil {
+		msg += "\n\nYou can:\n- **Advance** to retry\n- **Revise** with feedback\n- **Reject** to start over\n- **Defer** to revisit later"
+	}
+
 	p.store.DB().AddSessionMessage(entry.ID, "system", msg)
 	p.notify("message.new", entry.ID, nil)
+
+	// Notify steward for automatic retry consideration
+	if p.failureHandler != nil {
+		p.failureHandler.OnFailure(entry.ID, stage, err)
+	}
 }
 
 // runResearch executes the research pass for an entry.

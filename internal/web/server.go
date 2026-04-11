@@ -19,6 +19,7 @@ import (
 	"github.com/cpuchip/brain/internal/classifier"
 	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/pipeline"
+	"github.com/cpuchip/brain/internal/steward"
 	"github.com/cpuchip/brain/internal/store"
 )
 
@@ -29,6 +30,7 @@ type Server struct {
 	classify   *classifier.Classifier
 	pool       *ai.AgentPool
 	pipeline   *pipeline.Pipeline
+	steward    *steward.Steward
 	hub        *Hub
 	wc         config.WorkspaceConfig
 	mux        *http.ServeMux
@@ -54,6 +56,12 @@ func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, p
 		s.pipeline = pipeline.New(st, pool, cfg, wc)
 		s.pipeline.SetNotifier(s.hub)
 		s.pipeline.StartReviewLoop(pipeline.DefaultReviewConfig())
+
+		// Wire the steward — watches for failures, retries with context.
+		s.steward = steward.New(st, steward.DefaultConfig())
+		s.steward.SetNotifier(s.hub)
+		s.steward.SetRetrier(s.pipeline)
+		s.pipeline.SetFailureHandler(s.steward)
 	}
 	s.routes()
 	return s
@@ -73,6 +81,9 @@ func (s *Server) ListenAndServe(addr string) error {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.steward != nil {
+		s.steward.Stop()
+	}
 	if s.pipeline != nil {
 		s.pipeline.Stop()
 	}
@@ -165,6 +176,10 @@ func (s *Server) routes() {
 	// Nudge bot controls
 	s.mux.HandleFunc("GET /api/nudge-bot/status", s.cors(s.handleNudgeBotStatus))
 	s.mux.HandleFunc("PUT /api/nudge-bot/pause", s.cors(s.handleNudgeBotPause))
+
+	// Steward controls
+	s.mux.HandleFunc("GET /api/steward/status", s.cors(s.handleStewardStatus))
+	s.mux.HandleFunc("PUT /api/steward/pause", s.cors(s.handleStewardPause))
 
 	// Library (agents, skills, docs)
 	s.mux.HandleFunc("GET /api/library/agents", s.cors(s.handleLibraryAgents))
@@ -2671,6 +2686,32 @@ func (s *Server) handleNudgeBotPause(w http.ResponseWriter, r *http.Request) {
 	}
 	s.pipeline.SetReviewPaused(req.Paused)
 	jsonResponse(w, s.pipeline.GetReviewStatus())
+}
+
+// --- Steward Handlers ---
+
+func (s *Server) handleStewardStatus(w http.ResponseWriter, r *http.Request) {
+	if s.steward == nil {
+		jsonResponse(w, map[string]any{"enabled": false})
+		return
+	}
+	jsonResponse(w, s.steward.Status())
+}
+
+func (s *Server) handleStewardPause(w http.ResponseWriter, r *http.Request) {
+	if s.steward == nil {
+		jsonError(w, "steward not configured", nil, http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Paused bool `json:"paused"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request body", err, http.StatusBadRequest)
+		return
+	}
+	s.steward.SetEnabled(!req.Paused)
+	jsonResponse(w, s.steward.Status())
 }
 
 // --- Library Handlers ---

@@ -254,19 +254,31 @@ Token budget guidance:
 
 		p.store.DB().SetMaturity(entry.ID, "specced", fmt.Sprintf("Execution failed: %v", err))
 
-		// Track failure count and escalate if needed
+		// Track failure count
 		count, countErr := p.store.DB().IncrementFailureCount(entry.ID, err.Error())
 		if countErr != nil {
 			log.Printf("warning: failed to increment failure count for %s: %v", entry.ID, countErr)
 		}
-		msg := fmt.Sprintf("Execution failed: %v\n\nEntry returned to specced. You can retry or revise the plan.", err)
+
+		msg := fmt.Sprintf("Execution failed: %v\n\nEntry returned to specced.", err)
 		if count >= 3 {
 			msg += fmt.Sprintf("\n\n🔴 This entry has failed %d consecutive times. Something structural may be wrong.", count)
 		}
-		p.store.DB().AddSessionMessage(entry.ID, "agent", msg)
-		p.store.DB().UpdateRouteStatus(entry.ID, "your_turn")
-		p.notify("entry.updated", entry.ID, map[string]string{"maturity": "specced", "route_status": "your_turn"})
-		p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
+
+		// If steward is available, let it handle retry/quarantine.
+		// Otherwise, set your_turn and show manual options.
+		if p.failureHandler != nil {
+			p.store.DB().AddSessionMessage(entry.ID, "agent", msg)
+			p.notify("entry.updated", entry.ID, map[string]string{"maturity": "specced"})
+			p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
+			p.failureHandler.OnFailure(entry.ID, "execute", err)
+		} else {
+			msg += " You can retry or revise the plan."
+			p.store.DB().AddSessionMessage(entry.ID, "agent", msg)
+			p.store.DB().UpdateRouteStatus(entry.ID, "your_turn")
+			p.notify("entry.updated", entry.ID, map[string]string{"maturity": "specced", "route_status": "your_turn"})
+			p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
+		}
 		return
 	}
 
