@@ -101,20 +101,22 @@ type Status struct {
 	MaxCostPerEntry  float64                 `json:"max_cost_per_entry"`
 	CircuitBreakers  map[string]StageBreaker `json:"circuit_breakers,omitempty"`
 	NudgeBot         NudgeStatus             `json:"nudge_bot"`
+	ActiveCommissions int                    `json:"active_commissions"`
 }
 
 // Steward watches for pipeline failures and orchestrates retries.
 type Steward struct {
-	store    *store.Store
-	retrier  PipelineRetrier
-	notifier Notifier
-	nudger   Nudger
-	cfg      Config
-	nudgeCfg NudgeConfig
-	breaker  *CircuitBreaker
-	nudge    nudgeState
-	ctx      context.Context
-	cancel   context.CancelFunc
+	store      *store.Store
+	retrier    PipelineRetrier
+	notifier   Notifier
+	nudger     Nudger
+	cfg        Config
+	nudgeCfg   NudgeConfig
+	breaker    *CircuitBreaker
+	nudge      nudgeState
+	commission commissionState
+	ctx        context.Context
+	cancel     context.CancelFunc
 
 	mu               sync.Mutex
 	totalRetries     int
@@ -180,15 +182,16 @@ func (s *Steward) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return Status{
-		Enabled:          s.cfg.Enabled,
-		TotalRetries:     s.totalRetries,
-		TotalEscalations: s.totalEscalations,
-		TotalQuarant:     s.totalQuarant,
-		LastActionAt:     s.lastActionAt,
-		RecentActions:    append([]Action(nil), s.recentActions...),
-		MaxCostPerEntry:  s.cfg.MaxCostPerEntry,
-		CircuitBreakers:  s.breaker.AllStatus(),
-		NudgeBot:         s.GetNudgeStatus(),
+		Enabled:           s.cfg.Enabled,
+		TotalRetries:      s.totalRetries,
+		TotalEscalations:  s.totalEscalations,
+		TotalQuarant:      s.totalQuarant,
+		LastActionAt:      s.lastActionAt,
+		RecentActions:     append([]Action(nil), s.recentActions...),
+		MaxCostPerEntry:   s.cfg.MaxCostPerEntry,
+		CircuitBreakers:   s.breaker.AllStatus(),
+		NudgeBot:          s.GetNudgeStatus(),
+		ActiveCommissions: s.activeCommissionCount(),
 	}
 }
 

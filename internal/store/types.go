@@ -179,3 +179,36 @@ type ActivityEvent struct {
 	ProjectID *int      `json:"project_id,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
+
+// Commission represents delegated authority for the steward to shepherd
+// entries through the pipeline. Level 1: single entry, full lifecycle.
+type Commission struct {
+	ID        string    `json:"id"`
+	EntryID   string    `json:"entry_id"`              // Level 1: single entry
+	ProjectID *int      `json:"project_id,omitempty"`  // entry's project (if any)
+	Intent    string    `json:"intent"`                // human's goal description
+	Scope     string    `json:"scope"`                 // "single", "selected", "project"
+	Authority string    `json:"authority"`              // "advance_and_execute", "advance_only"
+	Model     string    `json:"model"`                 // judgment model (default: claude-opus-4.6)
+	MaxCost   float64   `json:"max_cost"`              // budget cap in premium requests
+	CostUsed  float64   `json:"cost_used"`             // premium requests spent so far
+	Status    string    `json:"status"`                // "active", "paused", "completed", "revoked", "failed"
+	StartedAt time.Time `json:"started_at"`
+	ExpiresAt string    `json:"expires_at,omitempty"`  // RFC3339 or empty
+	CreatedAt time.Time `json:"created_at"`
+
+	// Loaded separately
+	Decisions []CommissionDecision `json:"decisions,omitempty"`
+}
+
+// CommissionDecision records one judgment call made during a commission.
+type CommissionDecision struct {
+	ID           int       `json:"id"`
+	CommissionID string    `json:"commission_id"`
+	Timestamp    time.Time `json:"timestamp"`
+	EntryID      string    `json:"entry_id"`
+	Stage        string    `json:"stage"`  // "research", "plan", "spec", "execute", "verify"
+	Action       string    `json:"action"` // "advance", "revise", "surface", "execute", "complete", "fail"
+	Reasoning    string    `json:"reasoning"`
+	Cost         float64   `json:"cost"`
+}

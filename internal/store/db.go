@@ -84,7 +84,10 @@ func (d *DB) migrate() error {
 	if err := d.migrateInitInstructions(); err != nil {
 		return err
 	}
-	return d.migrateQuarantine()
+	if err := d.migrateQuarantine(); err != nil {
+		return err
+	}
+	return d.migrateCommissions()
 }
 
 func (d *DB) migrateQuarantine() error {
@@ -2150,4 +2153,172 @@ func scanScheduledTask(row scannable) (*ScheduledTask, error) {
 
 func scanScheduledTaskRow(rows *sql.Rows) (*ScheduledTask, error) {
 	return scanScheduledTask(rows)
+}
+
+// --- Commission tables and CRUD ---
+
+func (d *DB) migrateCommissions() error {
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS commissions (
+			id         TEXT PRIMARY KEY,
+			entry_id   TEXT NOT NULL,
+			project_id INTEGER,
+			intent     TEXT NOT NULL DEFAULT '',
+			scope      TEXT NOT NULL DEFAULT 'single',
+			authority  TEXT NOT NULL DEFAULT 'advance_and_execute',
+			model      TEXT NOT NULL DEFAULT 'claude-opus-4.6',
+			max_cost   REAL NOT NULL DEFAULT 50.0,
+			cost_used  REAL NOT NULL DEFAULT 0.0,
+			status     TEXT NOT NULL DEFAULT 'active',
+			started_at TEXT NOT NULL,
+			expires_at TEXT,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS commission_decisions (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			commission_id  TEXT NOT NULL REFERENCES commissions(id),
+			timestamp      TEXT NOT NULL,
+			entry_id       TEXT NOT NULL,
+			stage          TEXT NOT NULL,
+			action         TEXT NOT NULL,
+			reasoning      TEXT NOT NULL DEFAULT '',
+			cost           REAL NOT NULL DEFAULT 0.0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_commission_decisions_commission ON commission_decisions(commission_id)`,
+	} {
+		if _, err := d.db.Exec(stmt); err != nil {
+			return fmt.Errorf("commission migration: %w", err)
+		}
+	}
+	return nil
+}
+
+// CreateCommission inserts a new commission.
+func (d *DB) CreateCommission(c *Commission) error {
+	if c.ID == "" {
+		c.ID = uuid.New().String()
+	}
+	now := time.Now().UTC()
+	c.CreatedAt = now
+	if c.StartedAt.IsZero() {
+		c.StartedAt = now
+	}
+	_, err := d.db.Exec(`INSERT INTO commissions
+		(id, entry_id, project_id, intent, scope, authority, model, max_cost, cost_used, status, started_at, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.EntryID, c.ProjectID, c.Intent, c.Scope, c.Authority, c.Model,
+		c.MaxCost, c.CostUsed, c.Status, c.StartedAt.Format(time.RFC3339),
+		c.ExpiresAt, c.CreatedAt.Format(time.RFC3339))
+	return err
+}
+
+// GetCommission returns a commission by ID, including its decisions.
+func (d *DB) GetCommission(id string) (*Commission, error) {
+	row := d.db.QueryRow(`SELECT id, entry_id, project_id, intent, scope, authority, model,
+		max_cost, cost_used, status, started_at, expires_at, created_at
+		FROM commissions WHERE id = ?`, id)
+	c, err := scanCommission(row)
+	if err != nil {
+		return nil, err
+	}
+	c.Decisions, err = d.ListCommissionDecisions(c.ID)
+	if err != nil {
+		return nil, fmt.Errorf("loading decisions: %w", err)
+	}
+	return c, nil
+}
+
+// ListCommissions returns all commissions ordered by creation date (newest first).
+func (d *DB) ListCommissions() ([]*Commission, error) {
+	rows, err := d.db.Query(`SELECT id, entry_id, project_id, intent, scope, authority, model,
+		max_cost, cost_used, status, started_at, expires_at, created_at
+		FROM commissions ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Commission
+	for rows.Next() {
+		c, err := scanCommissionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// UpdateCommissionStatus sets the commission's status.
+func (d *DB) UpdateCommissionStatus(id, status string) error {
+	_, err := d.db.Exec(`UPDATE commissions SET status = ? WHERE id = ?`, status, id)
+	return err
+}
+
+// UpdateCommissionCost sets the commission's cost_used.
+func (d *DB) UpdateCommissionCost(id string, cost float64) error {
+	_, err := d.db.Exec(`UPDATE commissions SET cost_used = ? WHERE id = ?`, cost, id)
+	return err
+}
+
+// AddCommissionDecision records a judgment call.
+func (d *DB) AddCommissionDecision(dec *CommissionDecision) error {
+	_, err := d.db.Exec(`INSERT INTO commission_decisions
+		(commission_id, timestamp, entry_id, stage, action, reasoning, cost)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		dec.CommissionID, dec.Timestamp.Format(time.RFC3339),
+		dec.EntryID, dec.Stage, dec.Action, dec.Reasoning, dec.Cost)
+	return err
+}
+
+// ListCommissionDecisions returns all decisions for a commission.
+func (d *DB) ListCommissionDecisions(commissionID string) ([]CommissionDecision, error) {
+	rows, err := d.db.Query(`SELECT id, commission_id, timestamp, entry_id, stage, action, reasoning, cost
+		FROM commission_decisions WHERE commission_id = ? ORDER BY id ASC`, commissionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CommissionDecision
+	for rows.Next() {
+		var dec CommissionDecision
+		var ts string
+		if err := rows.Scan(&dec.ID, &dec.CommissionID, &ts, &dec.EntryID, &dec.Stage, &dec.Action, &dec.Reasoning, &dec.Cost); err != nil {
+			return nil, err
+		}
+		dec.Timestamp, _ = time.Parse(time.RFC3339, ts)
+		out = append(out, dec)
+	}
+	return out, rows.Err()
+}
+
+// GetActiveCommissionForEntry returns the active commission for an entry, if any.
+func (d *DB) GetActiveCommissionForEntry(entryID string) (*Commission, error) {
+	row := d.db.QueryRow(`SELECT id, entry_id, project_id, intent, scope, authority, model,
+		max_cost, cost_used, status, started_at, expires_at, created_at
+		FROM commissions WHERE entry_id = ? AND status = 'active' LIMIT 1`, entryID)
+	return scanCommission(row)
+}
+
+type commissionScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanCommission(s commissionScanner) (*Commission, error) {
+	var c Commission
+	var startedStr, createdStr string
+	var expiresAt *string
+	if err := s.Scan(&c.ID, &c.EntryID, &c.ProjectID, &c.Intent, &c.Scope, &c.Authority,
+		&c.Model, &c.MaxCost, &c.CostUsed, &c.Status, &startedStr, &expiresAt, &createdStr); err != nil {
+		return nil, err
+	}
+	c.StartedAt, _ = time.Parse(time.RFC3339, startedStr)
+	c.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
+	if expiresAt != nil {
+		c.ExpiresAt = *expiresAt
+	}
+	return &c, nil
+}
+
+func scanCommissionRow(rows *sql.Rows) (*Commission, error) {
+	return scanCommission(rows)
 }

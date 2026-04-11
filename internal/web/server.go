@@ -62,6 +62,7 @@ func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, p
 		s.steward.SetNotifier(s.hub)
 		s.steward.SetRetrier(s.pipeline)
 		s.steward.SetNudger(s.pipeline)
+		s.steward.SetCommissionRunner(s.pipeline)
 		s.pipeline.SetFailureHandler(s.steward)
 		s.steward.StartWatchLoop(steward.DefaultNudgeConfig())
 	}
@@ -185,6 +186,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/steward/breaker/reset", s.cors(s.handleStewardBreakerReset))
 	s.mux.HandleFunc("GET /api/quarantine", s.cors(s.handleListQuarantined))
 	s.mux.HandleFunc("PUT /api/entries/{id}/unquarantine", s.cors(s.handleUnquarantine))
+
+	// Commissions
+	s.mux.HandleFunc("POST /api/commissions", s.cors(s.handleCreateCommission))
+	s.mux.HandleFunc("GET /api/commissions", s.cors(s.handleListCommissions))
+	s.mux.HandleFunc("GET /api/commissions/{id}", s.cors(s.handleGetCommission))
+	s.mux.HandleFunc("PUT /api/commissions/{id}/pause", s.cors(s.handlePauseCommission))
+	s.mux.HandleFunc("PUT /api/commissions/{id}/resume", s.cors(s.handleResumeCommission))
+	s.mux.HandleFunc("PUT /api/commissions/{id}/revoke", s.cors(s.handleRevokeCommission))
 
 	// Library (agents, skills, docs)
 	s.mux.HandleFunc("GET /api/library/agents", s.cors(s.handleLibraryAgents))
@@ -2783,6 +2792,124 @@ func (s *Server) handleUnquarantine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, entry)
+}
+
+// --- Commission Handlers ---
+
+func (s *Server) handleCreateCommission(w http.ResponseWriter, r *http.Request) {
+	if s.steward == nil {
+		jsonError(w, "steward not configured", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		EntryID   string  `json:"entry_id"`
+		Intent    string  `json:"intent"`
+		Authority string  `json:"authority"`
+		Model     string  `json:"model"`
+		MaxCost   float64 `json:"max_cost"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request body", err, http.StatusBadRequest)
+		return
+	}
+	if req.EntryID == "" {
+		jsonError(w, "entry_id is required", nil, http.StatusBadRequest)
+		return
+	}
+
+	c, err := s.steward.CreateCommission(req.EntryID, req.Intent, req.Authority, req.Model, req.MaxCost)
+	if err != nil {
+		jsonError(w, "failed to create commission", err, http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	jsonResponse(w, c)
+}
+
+func (s *Server) handleListCommissions(w http.ResponseWriter, r *http.Request) {
+	if s.steward == nil {
+		jsonError(w, "steward not configured", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	commissions, err := s.steward.ListCommissions()
+	if err != nil {
+		jsonError(w, "failed to list commissions", err, http.StatusInternalServerError)
+		return
+	}
+	if commissions == nil {
+		commissions = []*store.Commission{}
+	}
+	jsonResponse(w, commissions)
+}
+
+func (s *Server) handleGetCommission(w http.ResponseWriter, r *http.Request) {
+	if s.steward == nil {
+		jsonError(w, "steward not configured", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "id is required", nil, http.StatusBadRequest)
+		return
+	}
+
+	c, err := s.steward.GetCommission(id)
+	if err != nil {
+		jsonError(w, "commission not found", err, http.StatusNotFound)
+		return
+	}
+	jsonResponse(w, c)
+}
+
+func (s *Server) handlePauseCommission(w http.ResponseWriter, r *http.Request) {
+	if s.steward == nil {
+		jsonError(w, "steward not configured", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	id := r.PathValue("id")
+	if err := s.steward.PauseCommission(id); err != nil {
+		jsonError(w, "failed to pause commission", err, http.StatusBadRequest)
+		return
+	}
+
+	c, _ := s.steward.GetCommission(id)
+	jsonResponse(w, c)
+}
+
+func (s *Server) handleResumeCommission(w http.ResponseWriter, r *http.Request) {
+	if s.steward == nil {
+		jsonError(w, "steward not configured", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	id := r.PathValue("id")
+	if err := s.steward.ResumeCommission(id); err != nil {
+		jsonError(w, "failed to resume commission", err, http.StatusBadRequest)
+		return
+	}
+
+	c, _ := s.steward.GetCommission(id)
+	jsonResponse(w, c)
+}
+
+func (s *Server) handleRevokeCommission(w http.ResponseWriter, r *http.Request) {
+	if s.steward == nil {
+		jsonError(w, "steward not configured", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	id := r.PathValue("id")
+	if err := s.steward.RevokeCommission(id); err != nil {
+		jsonError(w, "failed to revoke commission", err, http.StatusBadRequest)
+		return
+	}
+
+	c, _ := s.steward.GetCommission(id)
+	jsonResponse(w, c)
 }
 
 // --- Library Handlers ---
