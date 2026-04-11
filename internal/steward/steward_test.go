@@ -2,11 +2,36 @@ package steward
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/cpuchip/brain/internal/store"
 )
+
+// setupTestStore creates a temporary SQLite DB for integration tests.
+func setupTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+	db, err := store.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return store.New(db, nil, nil)
+}
+
+// insertTestEntry creates a minimal entry and returns its ID.
+func insertTestEntry(t *testing.T, st *store.Store, title string) string {
+	t.Helper()
+	entry := &store.Entry{Title: title, Category: "idea"}
+	id, err := st.DB().InsertEntry(entry)
+	if err != nil {
+		t.Fatalf("InsertEntry: %v", err)
+	}
+	return id
+}
 
 func TestDiagnose(t *testing.T) {
 	tests := []struct {
@@ -372,5 +397,198 @@ func TestStatusIncludesEscalationFields(t *testing.T) {
 	}
 	if status.MaxCostPerEntry != 10.0 {
 		t.Errorf("MaxCostPerEntry = %.1f, want 10.0", status.MaxCostPerEntry)
+	}
+}
+
+// --- Phase 4: Quarantine Tests ---
+
+func TestSetQuarantined(t *testing.T) {
+	st := setupTestStore(t)
+	id := insertTestEntry(t, st, "quarantine test")
+
+	// Initially not quarantined
+	entry, err := st.DB().GetEntry(id)
+	if err != nil {
+		t.Fatalf("GetEntry: %v", err)
+	}
+	if entry.Quarantined {
+		t.Error("entry should not be quarantined initially")
+	}
+	if entry.QuarantinedAt != "" {
+		t.Error("quarantined_at should be empty initially")
+	}
+
+	// Quarantine it
+	if err := st.DB().SetQuarantined(id, true); err != nil {
+		t.Fatalf("SetQuarantined(true): %v", err)
+	}
+	entry, _ = st.DB().GetEntry(id)
+	if !entry.Quarantined {
+		t.Error("entry should be quarantined after SetQuarantined(true)")
+	}
+	if entry.QuarantinedAt == "" {
+		t.Error("quarantined_at should be set after quarantining")
+	}
+
+	// Unquarantine it
+	if err := st.DB().SetQuarantined(id, false); err != nil {
+		t.Fatalf("SetQuarantined(false): %v", err)
+	}
+	entry, _ = st.DB().GetEntry(id)
+	if entry.Quarantined {
+		t.Error("entry should not be quarantined after SetQuarantined(false)")
+	}
+	if entry.QuarantinedAt != "" {
+		t.Error("quarantined_at should be cleared after unquarantining")
+	}
+}
+
+func TestListQuarantined(t *testing.T) {
+	st := setupTestStore(t)
+	id1 := insertTestEntry(t, st, "quarantined 1")
+	id2 := insertTestEntry(t, st, "quarantined 2")
+	_ = insertTestEntry(t, st, "not quarantined")
+
+	st.DB().SetQuarantined(id1, true)
+	st.DB().SetQuarantined(id2, true)
+
+	entries, err := st.DB().ListQuarantined()
+	if err != nil {
+		t.Fatalf("ListQuarantined: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("ListQuarantined returned %d entries, want 2", len(entries))
+	}
+
+	// Should be sorted by quarantined_at DESC (most recent first)
+	ids := map[string]bool{entries[0].ID: true, entries[1].ID: true}
+	if !ids[id1] || !ids[id2] {
+		t.Error("ListQuarantined should return both quarantined entries")
+	}
+}
+
+func TestListQuarantinedEmpty(t *testing.T) {
+	st := setupTestStore(t)
+	_ = insertTestEntry(t, st, "not quarantined")
+
+	entries, err := st.DB().ListQuarantined()
+	if err != nil {
+		t.Fatalf("ListQuarantined: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("ListQuarantined returned %d entries, want 0", len(entries))
+	}
+}
+
+func TestUnquarantine(t *testing.T) {
+	st := setupTestStore(t)
+	id := insertTestEntry(t, st, "will unquarantine")
+
+	// Set up quarantine state
+	st.DB().SetQuarantined(id, true)
+	st.DB().IncrementFailureCount(id, "test failure reason")    //nolint:errcheck
+	st.DB().IncrementFailureCount(id, "test failure reason 2")  //nolint:errcheck
+
+	// Verify preconditions
+	entry, _ := st.DB().GetEntry(id)
+	if !entry.Quarantined {
+		t.Fatal("entry should be quarantined before Unquarantine")
+	}
+	if entry.FailureCount != 2 {
+		t.Fatalf("failure_count should be 2, got %d", entry.FailureCount)
+	}
+
+	// Unquarantine via steward
+	s := New(st, DefaultConfig())
+	if err := s.Unquarantine(id, "here's some guidance"); err != nil {
+		t.Fatalf("Unquarantine: %v", err)
+	}
+
+	// Verify post-conditions
+	entry, _ = st.DB().GetEntry(id)
+	if entry.Quarantined {
+		t.Error("entry should not be quarantined after Unquarantine")
+	}
+	if entry.FailureCount != 0 {
+		t.Errorf("failure_count should be 0 after Unquarantine, got %d", entry.FailureCount)
+	}
+}
+
+func TestUnquarantineNoFeedback(t *testing.T) {
+	st := setupTestStore(t)
+	id := insertTestEntry(t, st, "no feedback test")
+
+	st.DB().SetQuarantined(id, true)
+
+	s := New(st, DefaultConfig())
+	if err := s.Unquarantine(id, ""); err != nil {
+		t.Fatalf("Unquarantine with empty feedback: %v", err)
+	}
+
+	entry, _ := st.DB().GetEntry(id)
+	if entry.Quarantined {
+		t.Error("entry should not be quarantined after Unquarantine")
+	}
+}
+
+func TestUnquarantineRecordsAction(t *testing.T) {
+	st := setupTestStore(t)
+	id := insertTestEntry(t, st, "action record test")
+	st.DB().SetQuarantined(id, true)
+
+	s := New(st, DefaultConfig())
+	s.Unquarantine(id, "try this approach instead")
+
+	// Check that the action was recorded via Status()
+	status := s.Status()
+	found := false
+	for _, a := range status.RecentActions {
+		if a.EntryID == id && a.ActionType == "unquarantine" {
+			found = true
+			if a.Notes != "try this approach instead" {
+				t.Errorf("action notes = %q, want 'try this approach instead'", a.Notes)
+			}
+		}
+	}
+	if !found {
+		t.Error("Unquarantine should record an 'unquarantine' action")
+	}
+}
+
+func TestQuarantineSetsFlag(t *testing.T) {
+	st := setupTestStore(t)
+	id := insertTestEntry(t, st, "quarantine flag test")
+
+	entry, _ := st.DB().GetEntry(id)
+	entry.FailureCount = 3
+
+	s := New(st, DefaultConfig())
+	s.quarantine(entry, FailureUnknown, "test reason")
+
+	// Verify the quarantine flag was set
+	updated, _ := st.DB().GetEntry(id)
+	if !updated.Quarantined {
+		t.Error("quarantine() should set the quarantined flag")
+	}
+	if updated.QuarantinedAt == "" {
+		t.Error("quarantine() should set quarantined_at timestamp")
+	}
+}
+
+func TestQuarantineCostLimitSetsFlag(t *testing.T) {
+	st := setupTestStore(t)
+	id := insertTestEntry(t, st, "cost limit flag test")
+
+	entry, _ := st.DB().GetEntry(id)
+	entry.FailureCount = 1
+	entry.PremiumRequestsUsed = 15.0
+
+	s := New(st, DefaultConfig())
+	s.quarantineCostLimit(entry, FailureModelLimit, "budget blown")
+
+	// Verify the quarantine flag was set
+	updated, _ := st.DB().GetEntry(id)
+	if !updated.Quarantined {
+		t.Error("quarantineCostLimit() should set the quarantined flag")
 	}
 }

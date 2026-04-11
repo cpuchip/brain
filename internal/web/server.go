@@ -181,6 +181,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/steward/status", s.cors(s.handleStewardStatus))
 	s.mux.HandleFunc("PUT /api/steward/pause", s.cors(s.handleStewardPause))
 	s.mux.HandleFunc("PUT /api/steward/breaker/reset", s.cors(s.handleStewardBreakerReset))
+	s.mux.HandleFunc("GET /api/quarantine", s.cors(s.handleListQuarantined))
+	s.mux.HandleFunc("PUT /api/entries/{id}/unquarantine", s.cors(s.handleUnquarantine))
 
 	// Library (agents, skills, docs)
 	s.mux.HandleFunc("GET /api/library/agents", s.cors(s.handleLibraryAgents))
@@ -2733,6 +2735,52 @@ func (s *Server) handleStewardBreakerReset(w http.ResponseWriter, r *http.Reques
 	}
 	s.steward.ResetBreaker(req.Stage)
 	jsonResponse(w, s.steward.Status())
+}
+
+func (s *Server) handleListQuarantined(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.store.DB().ListQuarantined()
+	if err != nil {
+		jsonError(w, "failed to list quarantined entries", err, http.StatusInternalServerError)
+		return
+	}
+	if entries == nil {
+		entries = []*store.Entry{}
+	}
+	jsonResponse(w, entries)
+}
+
+func (s *Server) handleUnquarantine(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "id is required", nil, http.StatusBadRequest)
+		return
+	}
+
+	if s.steward == nil {
+		jsonError(w, "steward not configured", nil, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req struct {
+		Feedback string `json:"feedback"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// Body is optional — no feedback is fine
+		req.Feedback = ""
+	}
+
+	if err := s.steward.Unquarantine(id, req.Feedback); err != nil {
+		jsonError(w, "failed to unquarantine entry", err, http.StatusInternalServerError)
+		return
+	}
+
+	// Return the updated entry
+	entry, err := s.store.DB().GetEntry(id)
+	if err != nil {
+		jsonResponse(w, map[string]string{"status": "unquarantined"})
+		return
+	}
+	jsonResponse(w, entry)
 }
 
 // --- Library Handlers ---

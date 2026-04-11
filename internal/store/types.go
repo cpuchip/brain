@@ -92,6 +92,10 @@ type Entry struct {
 	FailureCount      int    `json:"failure_count,omitempty" yaml:"failure_count,omitempty"`
 	LastFailureReason string `json:"last_failure_reason,omitempty" yaml:"last_failure_reason,omitempty"`
 
+	// Quarantine (steward dead-letter)
+	Quarantined   bool   `json:"quarantined,omitempty" yaml:"quarantined,omitempty"`
+	QuarantinedAt string `json:"quarantined_at,omitempty" yaml:"quarantined_at,omitempty"` // RFC3339
+
 	// Auto-continue mode (delegation vs sabbath path)
 	AutoContinue bool `json:"auto_continue,omitempty" yaml:"auto_continue,omitempty"`
 

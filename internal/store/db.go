@@ -81,7 +81,29 @@ func (d *DB) migrate() error {
 	if err := d.migrateProjectWorkspace(); err != nil {
 		return err
 	}
-	return d.migrateInitInstructions()
+	if err := d.migrateInitInstructions(); err != nil {
+		return err
+	}
+	return d.migrateQuarantine()
+}
+
+func (d *DB) migrateQuarantine() error {
+	cols, err := d.columnNames("entries")
+	if err != nil {
+		return err
+	}
+	if cols["quarantined"] {
+		return nil
+	}
+	for _, stmt := range []string{
+		"ALTER TABLE entries ADD COLUMN quarantined INTEGER DEFAULT 0",
+		"ALTER TABLE entries ADD COLUMN quarantined_at TEXT",
+	} {
+		if _, err := d.db.Exec(stmt); err != nil {
+			return fmt.Errorf("quarantine migration: %w", err)
+		}
+	}
+	return nil
 }
 
 const schema = `
@@ -510,6 +532,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	var autoContinue sql.NullBool
 	var notebook sql.NullBool
 	var nudgeCount sql.NullInt64
+	var quarantined sql.NullBool
+	var quarantinedAt sql.NullString
 
 	err := d.db.QueryRow(`
 		SELECT id, title, category, body, confidence, needs_review, source,
@@ -526,7 +550,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 			failure_count, last_failure_reason,
 			auto_continue,
 			notebook,
-			nudge_count
+			nudge_count,
+			quarantined, quarantined_at
 		FROM entries WHERE id = ?`, id).Scan(
 		&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
 		&createdStr, &updatedStr,
@@ -543,6 +568,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 		&autoContinue,
 		&notebook,
 		&nudgeCount,
+		&quarantined,
+		&quarantinedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -583,6 +610,8 @@ func (d *DB) GetEntry(id string) (*Entry, error) {
 	e.AutoContinue = autoContinue.Valid && autoContinue.Bool
 	e.Notebook = notebook.Valid && notebook.Bool
 	e.NudgeCount = int(nudgeCount.Int64)
+	e.Quarantined = quarantined.Valid && quarantined.Bool
+	e.QuarantinedAt = quarantinedAt.String
 
 	// Load tags
 	rows, err := d.db.Query(`SELECT tag FROM tags WHERE entry_id = ?`, id)
@@ -1689,6 +1718,66 @@ func (d *DB) ResetFailureCount(entryID string) error {
 		time.Now().UTC().Format(time.RFC3339), entryID,
 	)
 	return err
+}
+
+// SetQuarantined marks an entry as quarantined (or un-quarantined).
+func (d *DB) SetQuarantined(entryID string, quarantined bool) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	var qAt interface{}
+	if quarantined {
+		qAt = now
+	}
+	_, err := d.db.Exec(
+		"UPDATE entries SET quarantined = ?, quarantined_at = ?, updated_at = ? WHERE id = ?",
+		quarantined, qAt, now, entryID,
+	)
+	return err
+}
+
+// ListQuarantined returns all quarantined entries, newest quarantine first.
+func (d *DB) ListQuarantined() ([]*Entry, error) {
+	rows, err := d.db.Query(`
+		SELECT id, title, category, body, confidence, source, created_at, updated_at,
+			agent_route, route_status, maturity, failure_count, last_failure_reason,
+			premium_requests_used, quarantined_at, project_id
+		FROM entries WHERE COALESCE(quarantined, 0) = 1
+		ORDER BY quarantined_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []*Entry
+	for rows.Next() {
+		e := &Entry{}
+		var createdStr, updatedStr string
+		var agentRoute, routeStatus, maturity, lastFailureReason, quarantinedAt sql.NullString
+		var failureCount sql.NullInt64
+		var premiumReqs sql.NullFloat64
+		var projectID sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &e.Source,
+			&createdStr, &updatedStr,
+			&agentRoute, &routeStatus, &maturity, &failureCount, &lastFailureReason,
+			&premiumReqs, &quarantinedAt, &projectID); err != nil {
+			return nil, err
+		}
+		e.Created, _ = time.Parse(time.RFC3339, createdStr)
+		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
+		e.AgentRoute = agentRoute.String
+		e.RouteStatus = routeStatus.String
+		e.Maturity = maturity.String
+		e.FailureCount = int(failureCount.Int64)
+		e.LastFailureReason = lastFailureReason.String
+		e.PremiumRequestsUsed = premiumReqs.Float64
+		e.QuarantinedAt = quarantinedAt.String
+		e.Quarantined = true
+		if projectID.Valid {
+			v := int(projectID.Int64)
+			e.ProjectID = &v
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
 }
 
 // migrateAutoContinue adds the auto_continue column for pipeline delegation mode.

@@ -367,8 +367,9 @@ func (s *Steward) retry(entry *store.Entry, stage string, diagnosis FailureType,
 func (s *Steward) quarantine(entry *store.Entry, diagnosis FailureType, reason string) {
 	entryID := entry.ID
 
-	// Set route_status to your_turn so it surfaces for the human
+	// Set route_status to your_turn and quarantined flag
 	s.store.DB().UpdateRouteStatus(entryID, "your_turn")
+	s.store.DB().SetQuarantined(entryID, true)
 
 	msg := fmt.Sprintf("🛑 **Steward: Quarantined** — entry has failed %d times.\n\n"+
 		"**Last diagnosis:** %s\n"+
@@ -407,6 +408,7 @@ func (s *Steward) quarantineCostLimit(entry *store.Entry, diagnosis FailureType,
 	entryID := entry.ID
 
 	s.store.DB().UpdateRouteStatus(entryID, "your_turn")
+	s.store.DB().SetQuarantined(entryID, true)
 
 	msg := fmt.Sprintf("💰 **Steward: Cost limit reached** — entry has used %.1f premium requests (limit: %.1f).\n\n"+
 		"**Last diagnosis:** %s\n"+
@@ -436,6 +438,37 @@ func (s *Steward) quarantineCostLimit(entry *store.Entry, diagnosis FailureType,
 	s.mu.Unlock()
 
 	log.Printf("steward: cost-limited entry %s (%.1f/%.1f premium requests)", entryID, entry.PremiumRequestsUsed, s.cfg.MaxCostPerEntry)
+}
+
+// Unquarantine clears quarantine on an entry, resets its failure count,
+// and optionally posts human feedback as a session message.
+func (s *Steward) Unquarantine(entryID, feedback string) error {
+	if err := s.store.DB().SetQuarantined(entryID, false); err != nil {
+		return fmt.Errorf("clear quarantine: %w", err)
+	}
+	if err := s.store.DB().ResetFailureCount(entryID); err != nil {
+		return fmt.Errorf("reset failure count: %w", err)
+	}
+
+	if feedback != "" {
+		s.store.DB().AddSessionMessage(entryID, "user", feedback)
+	}
+
+	msg := "✅ **Steward: Unquarantined** — failure count reset, ready for processing."
+	s.store.DB().AddSessionMessage(entryID, "system", msg)
+
+	s.notify("message.new", entryID, nil)
+	s.notify("entry.updated", entryID, map[string]string{"quarantined": "false"})
+
+	s.recordAction(Action{
+		EntryID:    entryID,
+		Timestamp:  time.Now(),
+		ActionType: "unquarantine",
+		Notes:      feedback,
+	})
+
+	log.Printf("steward: unquarantined entry %s", entryID)
+	return nil
 }
 
 // pickModel determines which model to use for a retry, and whether this
