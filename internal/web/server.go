@@ -180,6 +180,7 @@ func (s *Server) routes() {
 	// Steward controls
 	s.mux.HandleFunc("GET /api/steward/status", s.cors(s.handleStewardStatus))
 	s.mux.HandleFunc("PUT /api/steward/pause", s.cors(s.handleStewardPause))
+	s.mux.HandleFunc("PUT /api/steward/breaker/reset", s.cors(s.handleStewardBreakerReset))
 
 	// Library (agents, skills, docs)
 	s.mux.HandleFunc("GET /api/library/agents", s.cors(s.handleLibraryAgents))
@@ -2711,6 +2712,26 @@ func (s *Server) handleStewardPause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.steward.SetEnabled(!req.Paused)
+	jsonResponse(w, s.steward.Status())
+}
+
+func (s *Server) handleStewardBreakerReset(w http.ResponseWriter, r *http.Request) {
+	if s.steward == nil {
+		jsonError(w, "steward not configured", nil, http.StatusServiceUnavailable)
+		return
+	}
+	var req struct {
+		Stage string `json:"stage"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid request body", err, http.StatusBadRequest)
+		return
+	}
+	if req.Stage == "" {
+		jsonError(w, "stage is required", nil, http.StatusBadRequest)
+		return
+	}
+	s.steward.ResetBreaker(req.Stage)
 	jsonResponse(w, s.steward.Status())
 }
 

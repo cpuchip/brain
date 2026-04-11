@@ -1,9 +1,12 @@
 // Package steward implements the Watch→Diagnose→Act→Account loop for the
 // brain pipeline. Phase 1: retry-with-context. Phase 2: model escalation.
+// Phase 3: per-stage circuit breaker.
 //
 // Scriptural frame: the steward watches for failures (D&C 101 tower),
 // diagnoses them (Ezek 34 shepherd seeking the lost), acts proportionally
 // (Jacob 5 pruning), and renders account (D&C 72 stewardship).
+// The circuit breaker is the tower sentinel standing down when the enemy
+// is too strong — stop wasting resources and wait for reinforcements.
 package steward
 
 import (
@@ -51,6 +54,9 @@ type Config struct {
 	// Phase 2: Model escalation
 	EscalationChain []ModelTier // ordered: cheapest → most capable → human
 	MaxCostPerEntry float64     // max premium requests before quarantining (default 10.0)
+
+	// Phase 3: Circuit breaker
+	BreakerConfig BreakerConfig // per-stage circuit breaker settings
 }
 
 // DefaultConfig returns conservative defaults.
@@ -68,6 +74,7 @@ func DefaultConfig() Config {
 			// Beyond this: quarantine (human)
 		},
 		MaxCostPerEntry: 10.0,
+		BreakerConfig:   DefaultBreakerConfig(),
 	}
 }
 
@@ -85,13 +92,14 @@ type Action struct {
 
 // Status is the observable state of the steward for the API.
 type Status struct {
-	Enabled          bool      `json:"enabled"`
-	TotalRetries     int       `json:"total_retries"`
-	TotalEscalations int       `json:"total_escalations"`
-	TotalQuarant     int       `json:"total_quarantines"`
-	LastActionAt     time.Time `json:"last_action_at,omitempty"`
-	RecentActions    []Action  `json:"recent_actions,omitempty"`
-	MaxCostPerEntry  float64   `json:"max_cost_per_entry"`
+	Enabled          bool                    `json:"enabled"`
+	TotalRetries     int                     `json:"total_retries"`
+	TotalEscalations int                     `json:"total_escalations"`
+	TotalQuarant     int                     `json:"total_quarantines"`
+	LastActionAt     time.Time               `json:"last_action_at,omitempty"`
+	RecentActions    []Action                `json:"recent_actions,omitempty"`
+	MaxCostPerEntry  float64                 `json:"max_cost_per_entry"`
+	CircuitBreakers  map[string]StageBreaker `json:"circuit_breakers,omitempty"`
 }
 
 // Steward watches for pipeline failures and orchestrates retries.
@@ -100,6 +108,7 @@ type Steward struct {
 	retrier  PipelineRetrier
 	notifier Notifier
 	cfg      Config
+	breaker  *CircuitBreaker
 	ctx      context.Context
 	cancel   context.CancelFunc
 
@@ -115,10 +124,11 @@ type Steward struct {
 func New(st *store.Store, cfg Config) *Steward {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Steward{
-		store:  st,
-		cfg:    cfg,
-		ctx:    ctx,
-		cancel: cancel,
+		store:   st,
+		cfg:     cfg,
+		breaker: NewCircuitBreaker(cfg.BreakerConfig),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 }
 
@@ -144,6 +154,23 @@ func (s *Steward) SetEnabled(enabled bool) {
 	s.mu.Unlock()
 }
 
+// Breaker returns the circuit breaker for direct status queries.
+func (s *Steward) Breaker() *CircuitBreaker {
+	return s.breaker
+}
+
+// ResetBreaker manually resets a stage's circuit breaker to closed.
+func (s *Steward) ResetBreaker(stage string) {
+	s.breaker.Reset(stage)
+	s.recordAction(Action{
+		EntryID:    "",
+		Timestamp:  time.Now(),
+		ActionType: "breaker_reset",
+		Notes:      fmt.Sprintf("Circuit breaker for %s manually reset to closed", stage),
+	})
+	log.Printf("steward: circuit breaker for %s manually reset", stage)
+}
+
 // Status returns the current observable state.
 func (s *Steward) Status() Status {
 	s.mu.Lock()
@@ -156,6 +183,7 @@ func (s *Steward) Status() Status {
 		LastActionAt:     s.lastActionAt,
 		RecentActions:    append([]Action(nil), s.recentActions...),
 		MaxCostPerEntry:  s.cfg.MaxCostPerEntry,
+		CircuitBreakers:  s.breaker.AllStatus(),
 	}
 }
 
@@ -189,7 +217,25 @@ func (s *Steward) handleFailure(entryID, stage string, failErr error) {
 
 	// Quarantine immediately for unknown failures or exhausted attempts
 	if failureCount >= s.cfg.QuarantineAfter || diagnosis == FailureUnknown {
+		s.breaker.RecordFailure(stage)
 		s.quarantine(entry, diagnosis, failureReason)
+		return
+	}
+
+	// Circuit breaker: if this stage is open, don't retry — quarantine immediately
+	if !s.breaker.Allow(stage) {
+		msg := s.breaker.FormatBlockedMessage(stage)
+		s.store.DB().AddSessionMessage(entryID, "system", msg)
+		s.notify("message.new", entryID, nil)
+		s.quarantine(entry, diagnosis, failureReason)
+		s.recordAction(Action{
+			EntryID:    entryID,
+			Timestamp:  time.Now(),
+			ActionType: "circuit_open",
+			Diagnosis:  diagnosis,
+			Attempt:    failureCount,
+			Notes:      fmt.Sprintf("Circuit breaker open for %s — skipping retry", stage),
+		})
 		return
 	}
 
@@ -300,6 +346,11 @@ func (s *Steward) retry(entry *store.Entry, stage string, diagnosis FailureType,
 	if retryErr != nil {
 		action.Notes += fmt.Sprintf(" — retry dispatch failed: %v", retryErr)
 		log.Printf("steward: retry dispatch failed for %s: %v", entryID, retryErr)
+		s.breaker.RecordFailure(stage)
+	} else {
+		// Dispatch succeeded — the agent is running. Record success on the breaker
+		// so half-open probes transition back to closed.
+		s.breaker.RecordSuccess(stage)
 	}
 
 	s.recordAction(action)
