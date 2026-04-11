@@ -75,8 +75,17 @@ func nextWakeTime(now time.Time, hours []int) time.Time {
 	return time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), hours[0], 0, 0, 0, now.Location())
 }
 
+// NudgeEntry sends an AI-generated nudge to a stale entry.
+// Exported so the steward can call it via the Nudger interface.
+func (p *Pipeline) NudgeEntry(entry *store.Entry) error {
+	return p.nudgeEntry(entry)
+}
+
 // StartReviewLoop launches a background goroutine that scans for stale pipeline
 // entries at fixed waking hours and posts AI-generated nudge questions.
+//
+// Deprecated: Use steward.StartWatchLoop instead. This remains for backward
+// compatibility but the steward's unified loop is preferred.
 func (p *Pipeline) StartReviewLoop(cfg ReviewConfig) {
 	if !cfg.Enabled || p.pool == nil {
 		log.Printf("Pipeline review loop: disabled (enabled=%v, pool=%v)", cfg.Enabled, p.pool != nil)

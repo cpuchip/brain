@@ -100,6 +100,7 @@ type Status struct {
 	RecentActions    []Action                `json:"recent_actions,omitempty"`
 	MaxCostPerEntry  float64                 `json:"max_cost_per_entry"`
 	CircuitBreakers  map[string]StageBreaker `json:"circuit_breakers,omitempty"`
+	NudgeBot         NudgeStatus             `json:"nudge_bot"`
 }
 
 // Steward watches for pipeline failures and orchestrates retries.
@@ -107,8 +108,11 @@ type Steward struct {
 	store    *store.Store
 	retrier  PipelineRetrier
 	notifier Notifier
+	nudger   Nudger
 	cfg      Config
+	nudgeCfg NudgeConfig
 	breaker  *CircuitBreaker
+	nudge    nudgeState
 	ctx      context.Context
 	cancel   context.CancelFunc
 
@@ -184,6 +188,7 @@ func (s *Steward) Status() Status {
 		RecentActions:    append([]Action(nil), s.recentActions...),
 		MaxCostPerEntry:  s.cfg.MaxCostPerEntry,
 		CircuitBreakers:  s.breaker.AllStatus(),
+		NudgeBot:         s.GetNudgeStatus(),
 	}
 }
 

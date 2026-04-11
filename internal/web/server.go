@@ -55,13 +55,15 @@ func NewServer(st *store.Store, cfg *config.Config, cl *classifier.Classifier, p
 	if pool != nil {
 		s.pipeline = pipeline.New(st, pool, cfg, wc)
 		s.pipeline.SetNotifier(s.hub)
-		s.pipeline.StartReviewLoop(pipeline.DefaultReviewConfig())
 
-		// Wire the steward — watches for failures, retries with context.
+		// Wire the steward — watches for failures, retries with context,
+		// and runs the nudge bot loop (unified background goroutine).
 		s.steward = steward.New(st, steward.DefaultConfig())
 		s.steward.SetNotifier(s.hub)
 		s.steward.SetRetrier(s.pipeline)
+		s.steward.SetNudger(s.pipeline)
 		s.pipeline.SetFailureHandler(s.steward)
+		s.steward.StartWatchLoop(steward.DefaultNudgeConfig())
 	}
 	s.routes()
 	return s
@@ -800,8 +802,8 @@ func (s *Server) cors(next http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		// Track user presence for nudge bot scheduling
-		if s.pipeline != nil {
-			s.pipeline.TouchActivity()
+		if s.steward != nil {
+			s.steward.TouchActivity()
 		}
 		next(w, r)
 	}
@@ -2668,16 +2670,16 @@ func (s *Server) handleTriggerTaskRun(w http.ResponseWriter, r *http.Request) {
 // --- Nudge Bot Handlers ---
 
 func (s *Server) handleNudgeBotStatus(w http.ResponseWriter, r *http.Request) {
-	if s.pipeline == nil {
+	if s.steward == nil {
 		jsonResponse(w, map[string]any{"enabled": false})
 		return
 	}
-	jsonResponse(w, s.pipeline.GetReviewStatus())
+	jsonResponse(w, s.steward.GetNudgeStatus())
 }
 
 func (s *Server) handleNudgeBotPause(w http.ResponseWriter, r *http.Request) {
-	if s.pipeline == nil {
-		jsonError(w, "pipeline not configured", nil, http.StatusServiceUnavailable)
+	if s.steward == nil {
+		jsonError(w, "steward not configured", nil, http.StatusServiceUnavailable)
 		return
 	}
 	var req struct {
@@ -2687,8 +2689,8 @@ func (s *Server) handleNudgeBotPause(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request body", err, http.StatusBadRequest)
 		return
 	}
-	s.pipeline.SetReviewPaused(req.Paused)
-	jsonResponse(w, s.pipeline.GetReviewStatus())
+	s.steward.SetNudgePaused(req.Paused)
+	jsonResponse(w, s.steward.GetNudgeStatus())
 }
 
 // --- Steward Handlers ---
