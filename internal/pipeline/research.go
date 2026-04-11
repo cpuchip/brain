@@ -102,10 +102,11 @@ const (
 
 // AdvanceRequest holds parameters for a pipeline advance operation.
 type AdvanceRequest struct {
-	EntryID   string        `json:"id"`
-	Action    AdvanceAction `json:"action"`
-	Feedback  string        `json:"feedback,omitempty"`  // human guidance for revision
-	Scenarios []string      `json:"scenarios,omitempty"` // for specced stage
+	EntryID       string        `json:"id"`
+	Action        AdvanceAction `json:"action"`
+	Feedback      string        `json:"feedback,omitempty"`       // human guidance for revision
+	Scenarios     []string      `json:"scenarios,omitempty"`      // for specced stage
+	ModelOverride string        `json:"model_override,omitempty"` // steward escalation: override the default model
 }
 
 // AdvanceResult holds the outcome of an advance operation.
@@ -169,10 +170,10 @@ func (p *Pipeline) advance(ctx context.Context, entry *store.Entry, oldMaturity 
 	switch oldMaturity {
 	case "raw":
 		// raw → researched: run research pass
-		return p.runResearch(ctx, entry, req.Feedback)
+		return p.runResearch(ctx, entry, req.Feedback, req.ModelOverride)
 	case "researched":
 		// researched → planned: run plan pass
-		return p.runPlan(ctx, entry, req.Feedback)
+		return p.runPlan(ctx, entry, req.Feedback, req.ModelOverride)
 	case "planned":
 		// planned → specced: requires scenarios, generates proposal file
 		if len(req.Scenarios) == 0 {
@@ -218,10 +219,10 @@ func (p *Pipeline) revise(ctx context.Context, entry *store.Entry, oldMaturity s
 	switch oldMaturity {
 	case "researched":
 		// Re-run research with feedback guidance
-		return p.runResearch(ctx, entry, req.Feedback)
+		return p.runResearch(ctx, entry, req.Feedback, req.ModelOverride)
 	case "planned":
 		// Re-run plan with feedback guidance
-		return p.runPlan(ctx, entry, req.Feedback)
+		return p.runPlan(ctx, entry, req.Feedback, req.ModelOverride)
 	default:
 		// Store the feedback as maturity notes
 		notes := fmt.Sprintf("Revision requested: %s", req.Feedback)
@@ -313,7 +314,7 @@ func (p *Pipeline) recordFailure(entry *store.Entry, stage string, err error) {
 }
 
 // runResearch executes the research pass for an entry.
-func (p *Pipeline) runResearch(ctx context.Context, entry *store.Entry, feedback string) (*AdvanceResult, error) {
+func (p *Pipeline) runResearch(ctx context.Context, entry *store.Entry, feedback, modelOverride string) (*AdvanceResult, error) {
 	if p.pool == nil {
 		return nil, fmt.Errorf("agent pool not available — research pass requires Copilot SDK")
 	}
@@ -379,8 +380,13 @@ Token budget guidance:
 - If you've found enough context on a subtopic, move on. Exhaustive coverage is less important than covering all sections.`
 
 	// Create agent with cheap model and research-specific config
+	model, cost := config.PipelineCheapModel, 0.33
+	if modelOverride != "" {
+		model = modelOverride
+		cost = config.ModelCost(modelOverride)
+	}
 	agentCfg := ai.AgentConfig{
-		Model:         config.PipelineCheapModel,
+		Model:         model,
 		SystemMessage: systemMsg,
 		MCPServers:    p.mcpDefsForCategory(entry.Category),
 		WorkingDir:    p.resolveWorkDir(entry),
@@ -389,7 +395,7 @@ Token budget guidance:
 			"research": {"study/.scratch", ".spec/scratch"},
 		},
 		TokenWarningThreshold: 100000,
-		PremiumRequestCost:    0.33, // Haiku 4.5
+		PremiumRequestCost:    cost,
 	}
 
 	agent := ai.NewAgent(p.pool.Client(), agentCfg)
@@ -575,7 +581,7 @@ func (p *Pipeline) mcpDefsForCategory(category string) map[string]ai.MCPDef {
 }
 
 // runPlan executes the plan pass for a researched entry.
-func (p *Pipeline) runPlan(ctx context.Context, entry *store.Entry, feedback string) (*AdvanceResult, error) {
+func (p *Pipeline) runPlan(ctx context.Context, entry *store.Entry, feedback, modelOverride string) (*AdvanceResult, error) {
 	if p.pool == nil {
 		return nil, fmt.Errorf("agent pool not available — plan pass requires Copilot SDK")
 	}
@@ -641,8 +647,13 @@ Rules:
 7. If the research is thin or missing, flag that as a blocker`
 
 	// Create agent with Opus model for high-quality planning
+	model, cost := config.PipelineBigModel, 3.0
+	if modelOverride != "" {
+		model = modelOverride
+		cost = config.ModelCost(modelOverride)
+	}
 	agentCfg := ai.AgentConfig{
-		Model:         config.PipelineBigModel,
+		Model:         model,
 		SystemMessage: systemMsg,
 		MCPServers:    p.mcpDefsForCategory(entry.Category),
 		WorkingDir:    p.resolveWorkDir(entry),
@@ -651,7 +662,7 @@ Rules:
 			"plan": {".spec/scratch", ".spec/proposals", "study/.scratch"},
 		},
 		TokenWarningThreshold: 150000,
-		PremiumRequestCost:    3.0, // Opus 4.6
+		PremiumRequestCost:    cost,
 	}
 
 	agent := ai.NewAgent(p.pool.Client(), agentCfg)

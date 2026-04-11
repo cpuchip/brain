@@ -34,8 +34,24 @@ var AvailableModels = map[string]ModelPreset{
 const (
 	PipelineCheapModel = "claude-haiku-4.5"  // Research, review/nudge, commit messages (0.33x)
 	PipelineSmartModel = "claude-sonnet-4.6" // Plan, execute, scaffold (1.0x)
-	PipelineBigModel   = "claude-opus-4.6"   // Very capable model for large tasks (3.0x)              // Deep work (1.0x, but can handle more complex prompts and reasoning)
+	PipelineBigModel   = "claude-opus-4.6"   // Very capable model for large tasks (3.0x)
 )
+
+// modelCosts maps model names to their premium request cost multiplier.
+var modelCosts = map[string]float64{
+	PipelineCheapModel: 0.33,
+	PipelineSmartModel: 1.0,
+	PipelineBigModel:   3.0,
+}
+
+// ModelCost returns the premium request cost for a model.
+// Returns 1.0 for unknown models (conservative default).
+func ModelCost(model string) float64 {
+	if cost, ok := modelCosts[model]; ok {
+		return cost
+	}
+	return 1.0
+}
 
 // Config holds all brain configuration.
 type Config struct {

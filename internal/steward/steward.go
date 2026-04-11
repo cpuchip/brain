@@ -1,5 +1,5 @@
 // Package steward implements the Watch→Diagnose→Act→Account loop for the
-// brain pipeline. Phase 1: automatic retry-with-context after failures.
+// brain pipeline. Phase 1: retry-with-context. Phase 2: model escalation.
 //
 // Scriptural frame: the steward watches for failures (D&C 101 tower),
 // diagnoses them (Ezek 34 shepherd seeking the lost), acts proportionally
@@ -26,10 +26,18 @@ type Notifier interface {
 type PipelineRetrier interface {
 	// RetryAdvance re-runs the current pipeline stage for an entry with
 	// the given feedback injected into the prompt as context.
-	RetryAdvance(ctx context.Context, entryID, feedback string) error
+	// If model is non-empty, it overrides the default model for the stage.
+	RetryAdvance(ctx context.Context, entryID, feedback, model string) error
 
 	// RetryExecute re-runs execution for a specced entry with feedback context.
-	RetryExecute(ctx context.Context, entryID, feedback string) error
+	// If model is non-empty, it overrides the default model for the stage.
+	RetryExecute(ctx context.Context, entryID, feedback, model string) error
+}
+
+// ModelTier defines a model with its cost multiplier for escalation.
+type ModelTier struct {
+	Model string  // e.g. "claude-haiku-4.5"
+	Cost  float64 // premium request cost (0.33, 1.0, 3.0)
 }
 
 // Config holds steward tuning parameters.
@@ -39,9 +47,13 @@ type Config struct {
 	BackoffMax      time.Duration // maximum delay between retries (default 5m)
 	QuarantineAfter int           // total attempts before dead-letter (default 3)
 	Enabled         bool          // master switch
+
+	// Phase 2: Model escalation
+	EscalationChain []ModelTier // ordered: cheapest → most capable → human
+	MaxCostPerEntry float64     // max premium requests before quarantining (default 10.0)
 }
 
-// DefaultConfig returns conservative Phase 1 defaults.
+// DefaultConfig returns conservative defaults.
 func DefaultConfig() Config {
 	return Config{
 		MaxRetries:      2,
@@ -49,6 +61,13 @@ func DefaultConfig() Config {
 		BackoffMax:      5 * time.Minute,
 		QuarantineAfter: 3,
 		Enabled:         true,
+		EscalationChain: []ModelTier{
+			{Model: "claude-haiku-4.5", Cost: 0.33},
+			{Model: "claude-sonnet-4.6", Cost: 1.0},
+			{Model: "claude-opus-4.6", Cost: 3.0},
+			// Beyond this: quarantine (human)
+		},
+		MaxCostPerEntry: 10.0,
 	}
 }
 
@@ -56,19 +75,23 @@ func DefaultConfig() Config {
 type Action struct {
 	EntryID    string      `json:"entry_id"`
 	Timestamp  time.Time   `json:"timestamp"`
-	ActionType string      `json:"action_type"` // "retry", "quarantine", "backoff_wait"
+	ActionType string      `json:"action_type"` // "retry", "escalate", "quarantine", "backoff_wait", "cost_limit"
 	Diagnosis  FailureType `json:"diagnosis"`
 	Attempt    int         `json:"attempt"`
+	Model      string      `json:"model,omitempty"`      // which model was used
+	Escalated  bool        `json:"escalated,omitempty"`   // was this an escalation?
 	Notes      string      `json:"notes"`
 }
 
 // Status is the observable state of the steward for the API.
 type Status struct {
-	Enabled       bool      `json:"enabled"`
-	TotalRetries  int       `json:"total_retries"`
-	TotalQuarant  int       `json:"total_quarantines"`
-	LastActionAt  time.Time `json:"last_action_at,omitempty"`
-	RecentActions []Action  `json:"recent_actions,omitempty"`
+	Enabled          bool      `json:"enabled"`
+	TotalRetries     int       `json:"total_retries"`
+	TotalEscalations int       `json:"total_escalations"`
+	TotalQuarant     int       `json:"total_quarantines"`
+	LastActionAt     time.Time `json:"last_action_at,omitempty"`
+	RecentActions    []Action  `json:"recent_actions,omitempty"`
+	MaxCostPerEntry  float64   `json:"max_cost_per_entry"`
 }
 
 // Steward watches for pipeline failures and orchestrates retries.
@@ -80,11 +103,12 @@ type Steward struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 
-	mu            sync.Mutex
-	totalRetries  int
-	totalQuarant  int
-	lastActionAt  time.Time
-	recentActions []Action // ring buffer, last 20
+	mu               sync.Mutex
+	totalRetries     int
+	totalEscalations int
+	totalQuarant     int
+	lastActionAt     time.Time
+	recentActions    []Action // ring buffer, last 20
 }
 
 // New creates a steward. Call SetNotifier and SetRetrier before use.
@@ -125,11 +149,13 @@ func (s *Steward) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return Status{
-		Enabled:       s.cfg.Enabled,
-		TotalRetries:  s.totalRetries,
-		TotalQuarant:  s.totalQuarant,
-		LastActionAt:  s.lastActionAt,
-		RecentActions: append([]Action(nil), s.recentActions...),
+		Enabled:          s.cfg.Enabled,
+		TotalRetries:     s.totalRetries,
+		TotalEscalations: s.totalEscalations,
+		TotalQuarant:     s.totalQuarant,
+		LastActionAt:     s.lastActionAt,
+		RecentActions:    append([]Action(nil), s.recentActions...),
+		MaxCostPerEntry:  s.cfg.MaxCostPerEntry,
 	}
 }
 
@@ -160,7 +186,25 @@ func (s *Steward) handleFailure(entryID, stage string, failErr error) {
 	diagnosis := Diagnose(failureReason, failureCount)
 
 	// Act: decide what to do
+
+	// Quarantine immediately for unknown failures or exhausted attempts
 	if failureCount >= s.cfg.QuarantineAfter || diagnosis == FailureUnknown {
+		s.quarantine(entry, diagnosis, failureReason)
+		return
+	}
+
+	// Cost guardrail: check premium request budget before spending more
+	if s.cfg.MaxCostPerEntry > 0 && entry.PremiumRequestsUsed >= s.cfg.MaxCostPerEntry {
+		s.quarantineCostLimit(entry, diagnosis, failureReason)
+		return
+	}
+
+	// Determine model: escalate if diagnosis suggests model can't handle it,
+	// or if we've already retried once with the same tier
+	model, escalated := s.pickModel(entry, stage, diagnosis)
+
+	// If pickModel returns "", we've exhausted the escalation chain → quarantine
+	if model == "" {
 		s.quarantine(entry, diagnosis, failureReason)
 		return
 	}
@@ -175,6 +219,8 @@ func (s *Steward) handleFailure(entryID, stage string, failErr error) {
 		ActionType: "backoff_wait",
 		Diagnosis:  diagnosis,
 		Attempt:    failureCount,
+		Model:      model,
+		Escalated:  escalated,
 		Notes:      fmt.Sprintf("Waiting %s before retry (attempt %d/%d)", delay, failureCount, s.cfg.QuarantineAfter),
 	})
 
@@ -198,14 +244,20 @@ func (s *Steward) handleFailure(entryID, stage string, failErr error) {
 		return
 	}
 
+	// Re-check cost after backoff (human may have added cost in the interim)
+	if s.cfg.MaxCostPerEntry > 0 && entry.PremiumRequestsUsed >= s.cfg.MaxCostPerEntry {
+		s.quarantineCostLimit(entry, diagnosis, failureReason)
+		return
+	}
+
 	// Build retry context from the failure
 	retryFeedback := BuildRetryContext(diagnosis, failureReason, failureCount)
 
-	s.retry(entry, stage, diagnosis, retryFeedback)
+	s.retry(entry, stage, diagnosis, retryFeedback, model, escalated)
 }
 
-// retry attempts to re-run the failed stage with diagnostic context.
-func (s *Steward) retry(entry *store.Entry, stage string, diagnosis FailureType, feedback string) {
+// retry attempts to re-run the failed stage with diagnostic context and optional model escalation.
+func (s *Steward) retry(entry *store.Entry, stage string, diagnosis FailureType, feedback, model string, escalated bool) {
 	entryID := entry.ID
 	maturity := entry.Maturity
 	if maturity == "" {
@@ -213,25 +265,36 @@ func (s *Steward) retry(entry *store.Entry, stage string, diagnosis FailureType,
 	}
 
 	// Post session message about the retry
-	msg := fmt.Sprintf("🔄 **Steward:** Retrying %s (diagnosis: %s, attempt %d/%d)\n\nFeedback for agent: %s",
-		stage, diagnosis, entry.FailureCount, s.cfg.QuarantineAfter, feedback)
+	actionWord := "Retrying"
+	if escalated {
+		actionWord = "Escalating"
+	}
+	msg := fmt.Sprintf("🔄 **Steward:** %s %s → **%s** (diagnosis: %s, attempt %d/%d)\n\nFeedback for agent: %s",
+		actionWord, stage, model, diagnosis, entry.FailureCount, s.cfg.QuarantineAfter, feedback)
 	s.store.DB().AddSessionMessage(entryID, "system", msg)
 	s.notify("message.new", entryID, nil)
+
+	actionType := "retry"
+	if escalated {
+		actionType = "escalate"
+	}
 
 	action := Action{
 		EntryID:    entryID,
 		Timestamp:  time.Now(),
-		ActionType: "retry",
+		ActionType: actionType,
 		Diagnosis:  diagnosis,
 		Attempt:    entry.FailureCount,
-		Notes:      fmt.Sprintf("Retrying %s stage with diagnostic context", stage),
+		Model:      model,
+		Escalated:  escalated,
+		Notes:      fmt.Sprintf("%s %s stage with %s", actionWord, stage, model),
 	}
 
 	var retryErr error
 	if maturity == "specced" || stage == "execute" {
-		retryErr = s.retrier.RetryExecute(s.ctx, entryID, feedback)
+		retryErr = s.retrier.RetryExecute(s.ctx, entryID, feedback, model)
 	} else {
-		retryErr = s.retrier.RetryAdvance(s.ctx, entryID, feedback)
+		retryErr = s.retrier.RetryAdvance(s.ctx, entryID, feedback, model)
 	}
 
 	if retryErr != nil {
@@ -243,6 +306,9 @@ func (s *Steward) retry(entry *store.Entry, stage string, diagnosis FailureType,
 
 	s.mu.Lock()
 	s.totalRetries++
+	if escalated {
+		s.totalEscalations++
+	}
 	s.mu.Unlock()
 }
 
@@ -285,7 +351,122 @@ func (s *Steward) quarantine(entry *store.Entry, diagnosis FailureType, reason s
 	log.Printf("steward: quarantined entry %s after %d failures (diagnosis: %s)", entryID, entry.FailureCount, diagnosis)
 }
 
-// backoff calculates exponential backoff with jitter.
+// quarantineCostLimit quarantines an entry because it has exceeded its premium request budget.
+func (s *Steward) quarantineCostLimit(entry *store.Entry, diagnosis FailureType, reason string) {
+	entryID := entry.ID
+
+	s.store.DB().UpdateRouteStatus(entryID, "your_turn")
+
+	msg := fmt.Sprintf("💰 **Steward: Cost limit reached** — entry has used %.1f premium requests (limit: %.1f).\n\n"+
+		"**Last diagnosis:** %s\n"+
+		"**Last failure:** %s\n\n"+
+		"The steward won't spend more on automatic retries. This entry needs your attention.\n\n"+
+		"You can:\n"+
+		"- **Advance** to retry manually (bypasses the cost limit)\n"+
+		"- **Revise** with guidance\n"+
+		"- **Defer** to revisit later",
+		entry.PremiumRequestsUsed, s.cfg.MaxCostPerEntry, diagnosis, reason)
+
+	s.store.DB().AddSessionMessage(entryID, "system", msg)
+	s.notify("message.new", entryID, nil)
+	s.notify("entry.updated", entryID, map[string]string{"route_status": "your_turn"})
+
+	s.recordAction(Action{
+		EntryID:    entryID,
+		Timestamp:  time.Now(),
+		ActionType: "cost_limit",
+		Diagnosis:  diagnosis,
+		Attempt:    entry.FailureCount,
+		Notes:      fmt.Sprintf("Cost limit: %.1f/%.1f premium requests used", entry.PremiumRequestsUsed, s.cfg.MaxCostPerEntry),
+	})
+
+	s.mu.Lock()
+	s.totalQuarant++
+	s.mu.Unlock()
+
+	log.Printf("steward: cost-limited entry %s (%.1f/%.1f premium requests)", entryID, entry.PremiumRequestsUsed, s.cfg.MaxCostPerEntry)
+}
+
+// pickModel determines which model to use for a retry, and whether this
+// constitutes an escalation from the stage's default.
+//
+// Decision logic:
+//   - model_limit or timeout on 2nd+ attempt → escalate to next tier
+//   - transient → retry with same model (the issue was external)
+//   - tool_error on 2nd+ attempt → escalate (might need a smarter model)
+//   - otherwise → use stage default
+//
+// Returns ("", false) if the escalation chain is exhausted (caller should quarantine).
+func (s *Steward) pickModel(entry *store.Entry, stage string, diagnosis FailureType) (model string, escalated bool) {
+	defaultModel := s.defaultModelForStage(stage, entry.Maturity)
+	failureCount := entry.FailureCount
+
+	// Should we escalate?
+	shouldEscalate := false
+	switch diagnosis {
+	case FailureModelLimit:
+		// Always escalate for model limit
+		shouldEscalate = true
+	case FailureTimeout:
+		// Escalate on 2nd+ timeout — the model may need more capability
+		shouldEscalate = failureCount >= 2
+	case FailureToolError:
+		// Escalate on 2nd+ tool error — smarter model may handle tools better
+		shouldEscalate = failureCount >= 2
+	case FailureTransient:
+		// Don't escalate for transient — the issue was external
+		shouldEscalate = false
+	}
+
+	if !shouldEscalate {
+		return defaultModel, false
+	}
+
+	// Find where the default model sits in the chain and go one tier up
+	chain := s.cfg.EscalationChain
+	defaultIdx := -1
+	for i, tier := range chain {
+		if tier.Model == defaultModel {
+			defaultIdx = i
+			break
+		}
+	}
+
+	if defaultIdx < 0 {
+		// Default model not in chain — try from the top of the chain
+		// (This shouldn't happen with correct config, but be safe)
+		return defaultModel, false
+	}
+
+	nextIdx := defaultIdx + 1
+	// For repeated escalation failures, try to go even higher
+	// failureCount-1 because the first failure uses the default
+	escalationSteps := failureCount - 1
+	if escalationSteps > 0 {
+		nextIdx = defaultIdx + escalationSteps
+	}
+
+	if nextIdx >= len(chain) {
+		// Exhausted the chain — signal caller to quarantine (human is next)
+		return "", false
+	}
+
+	return chain[nextIdx].Model, true
+}
+
+// defaultModelForStage returns the default model for a pipeline stage.
+func (s *Steward) defaultModelForStage(stage, maturity string) string {
+	switch {
+	case stage == "execute" || maturity == "specced":
+		return "claude-sonnet-4.6" // Execute default
+	case maturity == "researched" || maturity == "planned":
+		return "claude-opus-4.6" // Plan default
+	default:
+		return "claude-haiku-4.5" // Research default
+	}
+}
+
+// backoff calculates exponential backoff.
 func (s *Steward) backoff(attempt int) time.Duration {
 	base := s.cfg.BackoffBase
 	delay := time.Duration(float64(base) * math.Pow(2, float64(attempt-1)))

@@ -16,8 +16,9 @@ import (
 
 // ExecuteRequest holds parameters for kicking off execution of a specced entry.
 type ExecuteRequest struct {
-	EntryID  string `json:"id"`
-	Feedback string `json:"feedback,omitempty"` // optional human guidance
+	EntryID       string `json:"id"`
+	Feedback      string `json:"feedback,omitempty"`       // optional human guidance
+	ModelOverride string `json:"model_override,omitempty"` // steward escalation: override the default model
 }
 
 // ExecuteResult is returned immediately when execution is kicked off.
@@ -91,7 +92,7 @@ func (p *Pipeline) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteRes
 	p.notify("message.new", entry.ID, map[string]string{"role": "agent"})
 
 	// Fire and forget — execution runs in background
-	go p.runExecute(entry, req.Feedback)
+	go p.runExecute(entry, req.Feedback, req.ModelOverride)
 
 	return &ExecuteResult{
 		EntryID: entry.ID,
@@ -176,7 +177,7 @@ func (p *Pipeline) BuildExecutionContext(entry *store.Entry, feedback string) st
 }
 
 // runExecute is the background goroutine that actually runs the execution agent.
-func (p *Pipeline) runExecute(entry *store.Entry, feedback string) {
+func (p *Pipeline) runExecute(entry *store.Entry, feedback, modelOverride string) {
 	ctx := p.pool.StartTask(entry.ID, "execute")
 	defer p.pool.FinishTask(entry.ID)
 
@@ -215,8 +216,13 @@ Token budget guidance:
 - Write incrementally — don't buffer everything until the end.
 - If the implementation is large, break it into phases and complete each before starting the next.`
 
+	model, cost := config.PipelineSmartModel, 1.0
+	if modelOverride != "" {
+		model = modelOverride
+		cost = config.ModelCost(modelOverride)
+	}
 	agentCfg := ai.AgentConfig{
-		Model:         config.PipelineSmartModel,
+		Model:         model,
 		SystemMessage: systemMsg,
 		MCPServers:    p.mcpDefsForCategory(entry.Category),
 		WorkingDir:    p.resolveWorkDir(entry),
@@ -225,7 +231,7 @@ Token budget guidance:
 			"execute": {".", ".spec/scratch"}, // Execution can write broadly
 		},
 		TokenWarningThreshold: 200000,
-		PremiumRequestCost:    1.0, // Sonnet
+		PremiumRequestCost:    cost,
 		OnToolCall: func(toolName string, args any) {
 			p.notify("execution.tool", entry.ID, map[string]string{"tool": toolName})
 		},

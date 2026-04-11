@@ -6,13 +6,15 @@ import (
 )
 
 // RetryAdvance re-runs the current pipeline stage for an entry, injecting
-// the steward's diagnostic feedback into the prompt. Implements the steward's
+// the steward's diagnostic feedback into the prompt. If model is non-empty,
+// it overrides the default model for the stage. Implements the steward's
 // PipelineRetrier interface.
-func (p *Pipeline) RetryAdvance(ctx context.Context, entryID, feedback string) error {
+func (p *Pipeline) RetryAdvance(ctx context.Context, entryID, feedback, model string) error {
 	_, err := p.Advance(ctx, AdvanceRequest{
-		EntryID:  entryID,
-		Action:   ActionAdvance,
-		Feedback: feedback,
+		EntryID:       entryID,
+		Action:        ActionAdvance,
+		Feedback:      feedback,
+		ModelOverride: model,
 	})
 	if err != nil {
 		return fmt.Errorf("retry advance: %w", err)
@@ -21,11 +23,13 @@ func (p *Pipeline) RetryAdvance(ctx context.Context, entryID, feedback string) e
 }
 
 // RetryExecute re-runs execution for a specced entry, injecting the steward's
-// diagnostic feedback. Implements the steward's PipelineRetrier interface.
-func (p *Pipeline) RetryExecute(ctx context.Context, entryID, feedback string) error {
+// diagnostic feedback. If model is non-empty, it overrides the default model.
+// Implements the steward's PipelineRetrier interface.
+func (p *Pipeline) RetryExecute(ctx context.Context, entryID, feedback, model string) error {
 	_, err := p.Execute(ctx, ExecuteRequest{
-		EntryID:  entryID,
-		Feedback: feedback,
+		EntryID:       entryID,
+		Feedback:      feedback,
+		ModelOverride: model,
 	})
 	if err != nil {
 		return fmt.Errorf("retry execute: %w", err)

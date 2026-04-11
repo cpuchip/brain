@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/cpuchip/brain/internal/store"
 )
 
 func TestDiagnose(t *testing.T) {
@@ -177,4 +179,198 @@ func TestOnFailureNoRetrier(t *testing.T) {
 	s := New(nil, cfg)
 	// Enabled but no retrier — should return immediately
 	s.OnFailure("test-entry", "research", fmt.Errorf("test error"))
+}
+
+// --- Phase 2: Model Escalation Tests ---
+
+func TestDefaultModelForStage(t *testing.T) {
+	s := New(nil, DefaultConfig())
+
+	tests := []struct {
+		name     string
+		stage    string
+		maturity string
+		want     string
+	}{
+		{"execute stage", "execute", "specced", "claude-sonnet-4.6"},
+		{"specced maturity", "advance", "specced", "claude-sonnet-4.6"},
+		{"researched maturity", "advance", "researched", "claude-opus-4.6"},
+		{"planned maturity", "advance", "planned", "claude-opus-4.6"},
+		{"raw maturity", "advance", "raw", "claude-haiku-4.5"},
+		{"empty maturity", "advance", "", "claude-haiku-4.5"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := s.defaultModelForStage(tt.stage, tt.maturity)
+			if got != tt.want {
+				t.Errorf("defaultModelForStage(%q, %q) = %q, want %q", tt.stage, tt.maturity, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPickModel(t *testing.T) {
+	s := New(nil, DefaultConfig())
+
+	tests := []struct {
+		name          string
+		stage         string
+		maturity      string
+		failureCount  int
+		diagnosis     FailureType
+		wantModel     string
+		wantEscalated bool
+	}{
+		// Transient: never escalate, use default
+		{
+			"transient first failure research",
+			"advance", "raw", 1, FailureTransient,
+			"claude-haiku-4.5", false,
+		},
+		{
+			"transient second failure research",
+			"advance", "raw", 2, FailureTransient,
+			"claude-haiku-4.5", false,
+		},
+
+		// Model limit: always escalate
+		{
+			"model_limit first failure → escalate haiku to sonnet",
+			"advance", "raw", 1, FailureModelLimit,
+			"claude-sonnet-4.6", true, // model can't handle it, go up one tier
+		},
+
+		// Timeout: escalate on 2nd+
+		{
+			"timeout first failure → no escalation",
+			"advance", "raw", 1, FailureTimeout,
+			"claude-haiku-4.5", false,
+		},
+		{
+			"timeout second failure → escalate haiku to sonnet",
+			"advance", "raw", 2, FailureTimeout,
+			"claude-sonnet-4.6", true,
+		},
+		{
+			"timeout third failure → escalate haiku to opus",
+			"advance", "raw", 3, FailureTimeout,
+			"claude-opus-4.6", true,
+		},
+
+		// Tool error: escalate on 2nd+
+		{
+			"tool_error first failure → no escalation",
+			"advance", "raw", 1, FailureToolError,
+			"claude-haiku-4.5", false,
+		},
+		{
+			"tool_error second failure → escalate",
+			"advance", "raw", 2, FailureToolError,
+			"claude-sonnet-4.6", true,
+		},
+
+		// Execute stage (default: sonnet)
+		{
+			"timeout second on execute → escalate sonnet to opus",
+			"execute", "specced", 2, FailureTimeout,
+			"claude-opus-4.6", true,
+		},
+		{
+			"timeout third on execute → chain exhausted",
+			"execute", "specced", 3, FailureTimeout,
+			"", false, // beyond chain
+		},
+
+		// Plan stage (default: opus) — already at top
+		{
+			"timeout second on plan → chain exhausted",
+			"advance", "researched", 2, FailureTimeout,
+			"", false, // opus is already top of chain
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entry := &store.Entry{
+				ID:           "test",
+				Maturity:     tt.maturity,
+				FailureCount: tt.failureCount,
+			}
+			gotModel, gotEscalated := s.pickModel(entry, tt.stage, tt.diagnosis)
+			if gotModel != tt.wantModel || gotEscalated != tt.wantEscalated {
+				t.Errorf("pickModel(stage=%q, maturity=%q, failures=%d, diag=%s) = (%q, %v), want (%q, %v)",
+					tt.stage, tt.maturity, tt.failureCount, tt.diagnosis,
+					gotModel, gotEscalated, tt.wantModel, tt.wantEscalated)
+			}
+		})
+	}
+}
+
+func TestPickModelModelLimitAlwaysEscalates(t *testing.T) {
+	s := New(nil, DefaultConfig())
+
+	// model_limit with failureCount=1: shouldEscalate=true, nextIdx=defaultIdx+1
+	// haiku(0) → sonnet(1), always escalated even on first failure
+	entry := &store.Entry{ID: "test", Maturity: "raw", FailureCount: 1}
+	model, escalated := s.pickModel(entry, "advance", FailureModelLimit)
+	if model != "claude-sonnet-4.6" || !escalated {
+		t.Errorf("model_limit first failure: got (%q, %v), want (sonnet, true)", model, escalated)
+	}
+
+	// failureCount=2 → escalate further: haiku(0) + escalationSteps(1) → sonnet(1)
+	entry.FailureCount = 2
+	model, escalated = s.pickModel(entry, "advance", FailureModelLimit)
+	if model != "claude-sonnet-4.6" || !escalated {
+		t.Errorf("model_limit second failure: got (%q, %v), want (sonnet, true)", model, escalated)
+	}
+
+	// failureCount=3 → escalate further: haiku(0) + escalationSteps(2) → opus(2)
+	entry.FailureCount = 3
+	model, escalated = s.pickModel(entry, "advance", FailureModelLimit)
+	if model != "claude-opus-4.6" || !escalated {
+		t.Errorf("model_limit third failure: got (%q, %v), want (opus, true)", model, escalated)
+	}
+
+	// failureCount=4 → chain exhausted
+	entry.FailureCount = 4
+	model, escalated = s.pickModel(entry, "advance", FailureModelLimit)
+	if model != "" {
+		t.Errorf("model_limit fourth failure: got model %q, want empty (chain exhausted)", model)
+	}
+}
+
+func TestDefaultConfigEscalationChain(t *testing.T) {
+	cfg := DefaultConfig()
+	if len(cfg.EscalationChain) != 3 {
+		t.Fatalf("EscalationChain length = %d, want 3", len(cfg.EscalationChain))
+	}
+	expected := []struct {
+		model string
+		cost  float64
+	}{
+		{"claude-haiku-4.5", 0.33},
+		{"claude-sonnet-4.6", 1.0},
+		{"claude-opus-4.6", 3.0},
+	}
+	for i, want := range expected {
+		got := cfg.EscalationChain[i]
+		if got.Model != want.model || got.Cost != want.cost {
+			t.Errorf("chain[%d] = {%q, %.2f}, want {%q, %.2f}", i, got.Model, got.Cost, want.model, want.cost)
+		}
+	}
+	if cfg.MaxCostPerEntry != 10.0 {
+		t.Errorf("MaxCostPerEntry = %.1f, want 10.0", cfg.MaxCostPerEntry)
+	}
+}
+
+func TestStatusIncludesEscalationFields(t *testing.T) {
+	s := New(nil, DefaultConfig())
+	status := s.Status()
+	if status.TotalEscalations != 0 {
+		t.Errorf("initial TotalEscalations = %d, want 0", status.TotalEscalations)
+	}
+	if status.MaxCostPerEntry != 10.0 {
+		t.Errorf("MaxCostPerEntry = %.1f, want 10.0", status.MaxCostPerEntry)
+	}
 }
