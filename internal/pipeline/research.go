@@ -379,8 +379,8 @@ Token budget guidance:
 - Write findings to the scratch file incrementally as you discover them. Don't wait until the end.
 - If you've found enough context on a subtopic, move on. Exhaustive coverage is less important than covering all sections.`
 
-	// Create agent with cheap model and research-specific config
-	model, cost := config.PipelineCheapModel, 0.33
+	// Create agent with smart model and research-specific config
+	model, cost := config.PipelineSmartModel, 1.0
 	if modelOverride != "" {
 		model = modelOverride
 		cost = config.ModelCost(modelOverride)
