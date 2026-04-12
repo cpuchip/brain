@@ -109,6 +109,34 @@ export interface NudgeBotStatus {
   user_present: boolean
 }
 
+export interface CommissionDecision {
+  id: number
+  commission_id: string
+  timestamp: string
+  entry_id: string
+  stage: string
+  action: string
+  reasoning: string
+  cost: number
+}
+
+export interface Commission {
+  id: string
+  entry_id: string
+  project_id: number | null
+  intent: string
+  scope: string
+  authority: string
+  model: string
+  max_cost: number
+  cost_used: number
+  status: string
+  started_at: string
+  expires_at: string
+  created_at: string
+  decisions: CommissionDecision[]
+}
+
 export interface ActivityEvent {
   id: string
   type: string
@@ -554,5 +582,33 @@ export const api = {
     return request<{ entry_id: string; status: string }>(`/entries/${encodeURIComponent(entryId)}/cancel-execution`, {
       method: 'POST',
     })
+  },
+
+  // Commissions
+  createCommission(data: { entry_id: string; intent: string; authority?: string; model?: string; max_cost?: number }) {
+    return request<Commission>('/commissions', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  },
+
+  listCommissions() {
+    return request<Commission[]>('/commissions')
+  },
+
+  getCommission(id: string) {
+    return request<Commission>(`/commissions/${encodeURIComponent(id)}`)
+  },
+
+  pauseCommission(id: string) {
+    return request<void>(`/commissions/${encodeURIComponent(id)}/pause`, { method: 'PUT' })
+  },
+
+  resumeCommission(id: string) {
+    return request<void>(`/commissions/${encodeURIComponent(id)}/resume`, { method: 'PUT' })
+  },
+
+  revokeCommission(id: string) {
+    return request<void>(`/commissions/${encodeURIComponent(id)}/revoke`, { method: 'PUT' })
   },
 }
