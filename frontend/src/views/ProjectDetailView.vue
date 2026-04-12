@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, type Project, type Entry, type SessionMessage } from '../api'
+import { api, type Project, type Entry, type SessionMessage, type Commission } from '../api'
 import { useWebSocket } from '../composables/useWebSocket'
+import CommissionDialog from '../components/CommissionDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -39,6 +40,12 @@ const verifySubmitting = ref(false)
 const scaffolding = ref(false)
 const scaffoldResult = ref<{ method: string; files_created: string[]; project_dir?: string; git_inited: boolean; gh_created: boolean; error?: string } | null>(null)
 const cancellingEntry = ref<string | null>(null)
+
+// Commission state
+const commissions = ref<Commission[]>([])
+const commissionDialog = ref(false)
+const commissionEntryId = ref('')
+const commissionEntryTitle = ref('')
 
 // Toast
 const toast = ref('')
@@ -191,9 +198,41 @@ async function load() {
     ])
     project.value = p
     entries.value = e
+
+    // Load commissions for project entries
+    try {
+      const allCommissions = await api.listCommissions()
+      const entryIds = new Set(e.map(en => en.id))
+      commissions.value = allCommissions.filter(c => entryIds.has(c.entry_id) && (c.status === 'active' || c.status === 'paused'))
+    } catch {
+      commissions.value = []
+    }
   } finally {
     loading.value = false
   }
+}
+
+function entryCommission(entryId: string): Commission | undefined {
+  return commissions.value.find(c => c.entry_id === entryId)
+}
+
+function canCommission(entry: Entry): boolean {
+  if (entry.notebook) return false
+  if (entryCommission(entry.id)) return false
+  const m = entry.maturity || 'raw'
+  return ['raw', 'researched', 'planned', 'specced'].includes(m)
+}
+
+function openCommissionDialog(entryId: string, entryTitle: string) {
+  commissionEntryId.value = entryId
+  commissionEntryTitle.value = entryTitle
+  commissionDialog.value = true
+}
+
+function onCommissioned(c: Commission) {
+  commissions.value.push(c)
+  commissionDialog.value = false
+  showToast('Steward commissioned', 'success')
 }
 
 function startEdit() {
@@ -856,10 +895,26 @@ subscribe('entry.created', () => {
                   v-if="routeStatusIndicator(entry)"
                   :class="['text-xs px-1.5 py-0.5 rounded', routeStatusIndicator(entry)!.badge]"
                 >{{ routeStatusIndicator(entry)!.icon }} {{ routeStatusIndicator(entry)!.label }}</span>
+                <!-- Commission badge -->
+                <span
+                  v-if="entryCommission(entry.id)"
+                  :class="['text-xs px-1.5 py-0.5 rounded', entryCommission(entry.id)!.status === 'active' ? 'bg-amber-900 text-amber-300' : 'bg-yellow-900 text-yellow-300']"
+                  :title="entryCommission(entry.id)!.intent"
+                >📜 {{ entryCommission(entry.id)!.status === 'active' ? 'Commissioned' : 'Paused' }}</span>
               </div>
 
-              <!-- Pipeline action buttons -->
-              <div v-if="canAdvance(entry) || canRevise(entry) || canExecute(entry) || canVerify(entry) || canCancel(entry) || canComplete(entry) || entry.maturity === 'complete'" class="flex gap-1.5 mt-2 pt-2 border-t border-gray-800" @click.stop>
+              <!-- Commission active — show steward info instead of manual buttons -->
+              <div v-if="entryCommission(entry.id)" class="flex items-center gap-2 mt-2 pt-2 border-t border-gray-800 text-xs text-gray-500" @click.stop>
+                <span>📜 Steward: {{ entryCommission(entry.id)!.cost_used.toFixed(1) }}/{{ entryCommission(entry.id)!.max_cost }}</span>
+              </div>
+
+              <!-- Pipeline action buttons (hidden when commissioned) -->
+              <div v-else-if="canAdvance(entry) || canRevise(entry) || canExecute(entry) || canVerify(entry) || canCancel(entry) || canComplete(entry) || canCommission(entry) || entry.maturity === 'complete'" class="flex gap-1.5 mt-2 pt-2 border-t border-gray-800 flex-wrap" @click.stop>
+                <button
+                  v-if="canCommission(entry)"
+                  @click.stop="openCommissionDialog(entry.id, entry.title)"
+                  class="px-2 py-1 text-xs bg-amber-900/50 text-amber-300 rounded hover:bg-amber-800 transition-colors"
+                >📜 Commission</button>
                 <button
                   v-if="canAdvance(entry)"
                   @click.stop="advanceEntry(entry.id)"
@@ -948,6 +1003,18 @@ subscribe('entry.created', () => {
                 </div>
               </div>
               <div class="flex items-center gap-1 ml-2 shrink-0">
+                <span
+                  v-if="entryCommission(entry.id)"
+                  class="px-2 py-1 text-xs text-amber-300"
+                  :title="entryCommission(entry.id)!.intent"
+                >📜</span>
+                <template v-if="!entryCommission(entry.id)">
+                <button
+                  v-if="canCommission(entry)"
+                  @click="openCommissionDialog(entry.id, entry.title)"
+                  class="px-2 py-1 text-xs bg-amber-900/50 text-amber-300 rounded hover:bg-amber-800 transition-colors"
+                  title="Commission steward"
+                >📜</button>
                 <button
                   v-if="canAdvance(entry)"
                   @click="advanceEntry(entry.id)"
@@ -994,6 +1061,7 @@ subscribe('entry.created', () => {
                   class="px-2 py-1 text-xs bg-amber-900/50 text-amber-300 rounded hover:bg-amber-800 transition-colors disabled:opacity-40"
                   title="Revise"
                 >↻</button>
+                </template>
                 <button
                   @click.prevent="removeEntry(entry.id)"
                   class="px-2 py-1 text-xs text-gray-600 hover:text-red-400"
@@ -1149,6 +1217,15 @@ subscribe('entry.created', () => {
           />
         </Transition>
       </Teleport>
+
+      <!-- Commission Dialog -->
+      <CommissionDialog
+        :open="commissionDialog"
+        :entry-id="commissionEntryId"
+        :entry-title="commissionEntryTitle"
+        @close="commissionDialog = false"
+        @commissioned="onCommissioned"
+      />
     </template>
   </div>
 </template>

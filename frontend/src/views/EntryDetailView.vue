@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, type Entry, type SubTask, type Project, type SessionMessage } from '../api'
+import { api, type Entry, type SubTask, type Project, type SessionMessage, type Commission } from '../api'
 import { useAutoExpand } from '../composables/useAutoExpand'
 import { renderMarkdown } from '../composables/useMarkdown'
 import { useFilePanel } from '../composables/useFilePanel'
 import { useWebSocket } from '../composables/useWebSocket'
 import FileViewer from '../components/FileViewer.vue'
+import CommissionDialog from '../components/CommissionDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -20,6 +21,13 @@ const toast = ref('')
 const toastTimeout = ref<ReturnType<typeof setTimeout>>()
 const agentContext = ref('')
 const showAgentContext = ref(false)
+
+// Commission state
+const commission = ref<Commission | null>(null)
+const commissionDialog = ref(false)
+const commissionPausing = ref(false)
+const commissionResuming = ref(false)
+const commissionRevoking = ref(false)
 
 const editForm = ref({
   title: '',
@@ -74,8 +82,78 @@ async function load() {
     } else {
       agentContext.value = ''
     }
+    // Load active commission for this entry
+    try {
+      const commissions = await api.listCommissions()
+      commission.value = commissions.find(c => c.entry_id === e.id && (c.status === 'active' || c.status === 'paused')) || null
+    } catch {
+      commission.value = null
+    }
   } finally {
     loading.value = false
+  }
+}
+
+// Commission actions
+const hasActiveCommission = computed(() => commission.value != null && (commission.value.status === 'active' || commission.value.status === 'paused'))
+
+function canCommission(): boolean {
+  if (!entry.value) return false
+  if (entry.value.notebook) return false
+  if (hasActiveCommission.value) return false
+  const m = entry.value.maturity || 'raw'
+  return ['raw', 'researched', 'planned', 'specced'].includes(m)
+}
+
+function openCommissionDialog() {
+  commissionDialog.value = true
+}
+
+function onCommissioned(c: Commission) {
+  commission.value = c
+  commissionDialog.value = false
+  showToast('Steward commissioned')
+}
+
+async function pauseCommission() {
+  if (!commission.value || commissionPausing.value) return
+  commissionPausing.value = true
+  try {
+    await api.pauseCommission(commission.value.id)
+    commission.value.status = 'paused'
+    showToast('Commission paused')
+  } catch (e: any) {
+    showToast(e.message || 'Failed to pause')
+  } finally {
+    commissionPausing.value = false
+  }
+}
+
+async function resumeCommission() {
+  if (!commission.value || commissionResuming.value) return
+  commissionResuming.value = true
+  try {
+    await api.resumeCommission(commission.value.id)
+    commission.value.status = 'active'
+    showToast('Commission resumed')
+  } catch (e: any) {
+    showToast(e.message || 'Failed to resume')
+  } finally {
+    commissionResuming.value = false
+  }
+}
+
+async function revokeCommission() {
+  if (!commission.value || commissionRevoking.value) return
+  commissionRevoking.value = true
+  try {
+    await api.revokeCommission(commission.value.id)
+    commission.value = null
+    showToast('Commission revoked — manual control restored')
+  } catch (e: any) {
+    showToast(e.message || 'Failed to revoke')
+  } finally {
+    commissionRevoking.value = false
   }
 }
 
@@ -603,8 +681,61 @@ subscribe('execution.started', (evt) => {
           </span>
         </div>
 
-        <!-- Pipeline gates -->
-        <div v-if="entry.maturity && !entry.notebook" class="mt-4 space-y-3">
+        <!-- Commission status -->
+        <div v-if="hasActiveCommission && commission" class="mt-4 bg-gray-900 border border-amber-800 rounded-lg p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-medium text-amber-400">📜 Commission {{ commission.status === 'paused' ? '(Paused)' : 'Active' }}</h3>
+            <span
+              :class="['text-xs px-2 py-0.5 rounded-full', commission.status === 'active' ? 'bg-green-900 text-green-300' : 'bg-amber-900 text-amber-300']"
+            >{{ commission.status }}</span>
+          </div>
+          <p class="text-sm text-gray-300">{{ commission.intent }}</p>
+          <div class="flex items-center gap-4 text-xs text-gray-500">
+            <span>Authority: <span class="text-gray-300">{{ commission.authority === 'advance_and_execute' ? 'Advance & Execute' : 'Advance Only' }}</span></span>
+            <span>Model: <span class="text-gray-300 font-mono">{{ commission.model }}</span></span>
+            <span>Budget: <span class="text-gray-300">{{ commission.cost_used.toFixed(1) }} / {{ commission.max_cost }}</span></span>
+          </div>
+          <div class="flex gap-2">
+            <button
+              v-if="commission.status === 'active'"
+              @click="pauseCommission"
+              :disabled="commissionPausing"
+              class="px-3 py-1.5 text-xs bg-amber-900/50 text-amber-300 rounded hover:bg-amber-800 transition-colors disabled:opacity-40"
+            >{{ commissionPausing ? 'Pausing...' : '⏸ Pause' }}</button>
+            <button
+              v-if="commission.status === 'paused'"
+              @click="resumeCommission"
+              :disabled="commissionResuming"
+              class="px-3 py-1.5 text-xs bg-green-900/50 text-green-300 rounded hover:bg-green-800 transition-colors disabled:opacity-40"
+            >{{ commissionResuming ? 'Resuming...' : '▶ Resume' }}</button>
+            <button
+              @click="revokeCommission"
+              :disabled="commissionRevoking"
+              class="px-3 py-1.5 text-xs bg-red-900/50 text-red-300 rounded hover:bg-red-800 transition-colors disabled:opacity-40"
+            >{{ commissionRevoking ? 'Revoking...' : '⏹ Revoke' }}</button>
+          </div>
+          <!-- Decision log -->
+          <div v-if="commission.decisions?.length" class="space-y-1">
+            <h4 class="text-xs text-gray-500 font-medium">Decision Log</h4>
+            <div v-for="d in commission.decisions" :key="d.id" class="text-xs text-gray-400 font-mono flex items-start gap-2">
+              <span class="text-gray-600 shrink-0">{{ d.stage }}</span>
+              <span class="text-gray-600">→</span>
+              <span :class="d.action === 'advance' || d.action === 'execute' ? 'text-green-400' : d.action === 'surface' ? 'text-amber-400' : 'text-gray-400'">{{ d.action }}</span>
+              <span class="text-gray-600">({{ d.cost.toFixed(2) }})</span>
+              <span class="text-gray-500 truncate" :title="d.reasoning">{{ d.reasoning }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pipeline gates (hidden when commission is active) -->
+        <div v-if="entry.maturity && !entry.notebook && !hasActiveCommission" class="mt-4 space-y-3">
+
+          <!-- Commission button -->
+          <button
+            v-if="canCommission()"
+            @click="openCommissionDialog"
+            class="px-3 py-1.5 text-sm bg-amber-900/50 text-amber-300 border border-amber-800 rounded-lg hover:bg-amber-800 transition-colors"
+          >📜 Commission Steward</button>
 
           <!-- Scenario input (planned → specced) -->
           <div v-if="entry.maturity === 'planned'" class="bg-gray-900 border border-indigo-800 rounded-lg p-4">
@@ -947,6 +1078,16 @@ subscribe('execution.started', (evt) => {
         :open="fileViewerOpen"
         :file-path="fileViewerPath"
         @close="fileViewerOpen = false"
+      />
+
+      <!-- Commission Dialog -->
+      <CommissionDialog
+        v-if="entry"
+        :open="commissionDialog"
+        :entry-id="entry.id"
+        :entry-title="entry.title"
+        @close="commissionDialog = false"
+        @commissioned="onCommissioned"
       />
     </div>
   </div>
