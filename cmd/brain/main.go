@@ -51,6 +51,14 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "reindex" {
+		if err := runReindex(); err != nil {
+			fmt.Fprintf(os.Stderr, "brain reindex: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -525,5 +533,77 @@ func runExec() error {
 	if response != "" {
 		fmt.Println()
 	}
+	return nil
+}
+
+// runReindex rebuilds the vector store from scratch. Deletes existing vectors
+// and re-embeds all entries from the SQLite database using the current
+// embedding model. Use after switching embedding models.
+func runReindex() error {
+	_ = godotenv.Load()
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	log.Printf("Brain reindex starting...")
+	log.Printf("  Data dir: %s", cfg.BrainDataDir)
+	log.Printf("  Vec dir:  %s", cfg.VecDir)
+	log.Printf("  Embedding: %s (model: %s)", cfg.EmbeddingBackend, cfg.EmbeddingModel)
+
+	ctx := context.Background()
+
+	// Initialize embedding function
+	embedFunc := chooseEmbedder(ctx, cfg)
+	if embedFunc == nil {
+		return fmt.Errorf("no embedding backend configured — cannot reindex")
+	}
+
+	// Open SQLite database (read-only for entries)
+	db, err := store.OpenDB(cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+
+	count, _ := db.EntryCount()
+	log.Printf("  Database entries: %d", count)
+
+	// Delete existing vec directory to start fresh
+	log.Printf("Deleting old vector store at %s...", cfg.VecDir)
+	if err := os.RemoveAll(cfg.VecDir); err != nil {
+		return fmt.Errorf("removing vec dir: %w", err)
+	}
+
+	// Create fresh vector store
+	vec, err := store.NewVecStore(cfg.VecDir, embedFunc, cfg.EmbeddingModel)
+	if err != nil {
+		return fmt.Errorf("creating vector store: %w", err)
+	}
+
+	// Load all entries from database
+	entries, err := db.ListAllForSync()
+	if err != nil {
+		return fmt.Errorf("listing entries: %w", err)
+	}
+
+	log.Printf("Re-embedding %d entries...", len(entries))
+
+	var success, failed int
+	for i, entry := range entries {
+		if err := vec.Embed(ctx, entry); err != nil {
+			log.Printf("  ❌ [%d/%d] %s: %v", i+1, len(entries), entry.ID, err)
+			failed++
+			continue
+		}
+		success++
+		if (i+1)%10 == 0 || i+1 == len(entries) {
+			log.Printf("  ✅ [%d/%d] embedded", i+1, len(entries))
+		}
+	}
+
+	log.Printf("")
+	log.Printf("✅ Reindex complete: %d embedded, %d failed (model: %s)", success, failed, cfg.EmbeddingModel)
 	return nil
 }
