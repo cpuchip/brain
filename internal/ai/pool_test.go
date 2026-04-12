@@ -2,6 +2,7 @@ package ai
 
 import (
 	"testing"
+	"time"
 
 	"github.com/cpuchip/brain/internal/config"
 )
@@ -112,4 +113,70 @@ func findSubstr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// --- activityContext tests ---
+
+func TestActivityContext_InactivityCancels(t *testing.T) {
+	ac := newActivityContext(50 * time.Millisecond)
+	defer ac.Cancel()
+
+	select {
+	case <-ac.ctx.Done():
+		// expected — timer fired
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("context should have been cancelled by inactivity timer")
+	}
+}
+
+func TestActivityContext_TouchResetsTimer(t *testing.T) {
+	ac := newActivityContext(80 * time.Millisecond)
+	defer ac.Cancel()
+
+	// Touch after 50ms — timer resets, so it shouldn't fire at 80ms from start
+	time.Sleep(50 * time.Millisecond)
+	ac.Touch()
+
+	// At 70ms from start (20ms after touch), should still be alive
+	select {
+	case <-ac.ctx.Done():
+		t.Fatal("context cancelled too early — touch should have reset the timer")
+	case <-time.After(20 * time.Millisecond):
+		// good, still alive at ~70ms
+	}
+
+	// But it should fire ~80ms after last touch (~130ms from start)
+	select {
+	case <-ac.ctx.Done():
+		// expected
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("context should have been cancelled after inactivity")
+	}
+}
+
+func TestActivityContext_CancelStopsTimer(t *testing.T) {
+	ac := newActivityContext(100 * time.Millisecond)
+
+	ac.Cancel()
+
+	select {
+	case <-ac.ctx.Done():
+		// expected — immediate cancellation
+	default:
+		t.Fatal("context should be cancelled after Cancel()")
+	}
+}
+
+func TestActivityContext_CancelIdempotent(t *testing.T) {
+	ac := newActivityContext(100 * time.Millisecond)
+	ac.Cancel()
+	ac.Cancel()
+	ac.Cancel()
+}
+
+func TestActivityContext_TouchAfterCancel(t *testing.T) {
+	ac := newActivityContext(100 * time.Millisecond)
+	ac.Cancel()
+	ac.Touch()
+	ac.Touch()
 }

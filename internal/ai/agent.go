@@ -34,6 +34,10 @@ type AgentConfig struct {
 	// Named agents (from entry routing) don't get these — they ARE the target agent.
 	CustomAgents []copilot.CustomAgentConfig
 
+	// OnActivity is invoked on every SDK event during streaming.
+	// Used by the pool's activityContext to reset the inactivity timer.
+	OnActivity func()
+
 	// OnToolCall is invoked after each tool call during the session.
 	// Useful for streaming progress events (e.g. "reading file X", "searching workspace").
 	OnToolCall func(toolName string, args any)
@@ -134,6 +138,9 @@ func (a *Agent) AskStreaming(ctx context.Context, prompt string, w io.Writer) (s
 		lastEventMu.Lock()
 		lastEvent = time.Now()
 		lastEventMu.Unlock()
+		if a.config.OnActivity != nil {
+			a.config.OnActivity()
+		}
 	}
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {

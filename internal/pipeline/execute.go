@@ -134,6 +134,7 @@ func (p *Pipeline) Verify(req VerifyRequest) (*VerifyResult, error) {
 		if err := p.store.DB().SetMaturity(entry.ID, "verified", "All scenarios passed"); err != nil {
 			return nil, fmt.Errorf("setting maturity to verified: %w", err)
 		}
+		p.store.DB().ResetFailureCount(entry.ID)
 		p.store.DB().AddSessionMessage(entry.ID, "agent",
 			fmt.Sprintf("Verified! All %d scenarios passed.\n\n"+
 				"**Sabbath moment:** Before we close this — what worked well? What would you do differently? Any loose ends?",
@@ -178,7 +179,7 @@ func (p *Pipeline) BuildExecutionContext(entry *store.Entry, feedback string) st
 
 // runExecute is the background goroutine that actually runs the execution agent.
 func (p *Pipeline) runExecute(entry *store.Entry, feedback, modelOverride string) {
-	ctx := p.pool.StartTask(entry.ID, "execute")
+	ctx, touch := p.pool.StartTask(entry.ID, "execute")
 	defer p.pool.FinishTask(entry.ID)
 
 	// Build prompt with scratch path (not content) to keep context small
@@ -232,6 +233,7 @@ Token budget guidance:
 		},
 		TokenWarningThreshold: 200000,
 		PremiumRequestCost:    cost,
+		OnActivity: touch,
 		OnToolCall: func(toolName string, args any) {
 			p.notify("execution.tool", entry.ID, map[string]string{"tool": toolName})
 		},

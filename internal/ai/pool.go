@@ -160,14 +160,66 @@ func (p *AgentPool) ResetAll() {
 	log.Printf("Agent pool: reset all agents")
 }
 
-// ExecutionTimeout is the maximum time an execution task can run before being cancelled.
-const ExecutionTimeout = 10 * time.Minute
+// InactivityTimeout is how long a task can go without SDK events before being cancelled.
+// The SDK sends events (reasoning deltas, tool calls, message deltas) continuously when
+// the agent is working. A 5-minute gap with zero events means the connection has stalled.
+// There is no wall clock cap — the human (or steward) is the circuit breaker for long tasks.
+const InactivityTimeout = 5 * time.Minute
 
-// StartTask registers a running task for an entry and returns a context with a timeout.
-// The caller should use the returned context for the agent work and call the
-// cancel function (or CancelTask) when done. Tasks are automatically cancelled
-// after ExecutionTimeout (10 minutes) to prevent stalled executions.
-func (p *AgentPool) StartTask(entryID, agentName string) context.Context {
+// activityContext wraps a cancellable context with an inactivity timer.
+// The timer resets on each Touch() call. If the timer fires (no activity for
+// InactivityTimeout), the context is cancelled.
+type activityContext struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	timer   *time.Timer
+	timeout time.Duration
+	mu      sync.Mutex
+	closed  bool
+}
+
+// newActivityContext creates a context that cancels after inactivityTimeout of silence.
+func newActivityContext(timeout time.Duration) *activityContext {
+	ctx, cancel := context.WithCancel(context.Background())
+	ac := &activityContext{
+		ctx:     ctx,
+		cancel:  cancel,
+		timeout: timeout,
+	}
+	ac.timer = time.AfterFunc(timeout, func() {
+		ac.mu.Lock()
+		defer ac.mu.Unlock()
+		if !ac.closed {
+			log.Printf("Agent pool: inactivity timeout (%s with no events) — cancelling task", timeout)
+			ac.cancel()
+		}
+	})
+	return ac
+}
+
+// Touch resets the inactivity timer. Called on every SDK event.
+func (ac *activityContext) Touch() {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	if !ac.closed {
+		ac.timer.Reset(ac.timeout)
+	}
+}
+
+// Cancel stops the timer and cancels the context.
+func (ac *activityContext) Cancel() {
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	ac.closed = true
+	ac.timer.Stop()
+	ac.cancel()
+}
+
+// StartTask registers a running task for an entry and returns a context with an
+// inactivity-based timeout plus a touch function. The context cancels only when
+// the agent goes silent (no SDK events for InactivityTimeout). Call touch() on
+// every SDK event to keep the timer alive. There is no wall clock cap.
+func (p *AgentPool) StartTask(entryID, agentName string) (context.Context, func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -177,14 +229,14 @@ func (p *AgentPool) StartTask(entryID, agentName string) context.Context {
 		delete(p.tasks, entryID)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), ExecutionTimeout)
+	ac := newActivityContext(InactivityTimeout)
 	p.tasks[entryID] = &runningTask{
 		EntryID:   entryID,
 		AgentName: agentName,
-		cancel:    cancel,
+		cancel:    ac.Cancel,
 	}
-	log.Printf("Agent pool: started task for entry %s (agent=%s, timeout=%s)", entryID, agentName, ExecutionTimeout)
-	return ctx
+	log.Printf("Agent pool: started task for entry %s (agent=%s, inactivity_timeout=%s)", entryID, agentName, InactivityTimeout)
+	return ac.ctx, ac.Touch
 }
 
 // FinishTask removes a task from tracking (called when agent work completes).

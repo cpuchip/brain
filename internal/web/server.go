@@ -1228,7 +1228,7 @@ func (s *Server) routeEntry(entry *store.Entry, route ai.RouteRule) {
 	_ = s.store.UpdateRouteStatus(entry.ID, ai.RouteStatusPending)
 
 	go func() {
-		ctx := s.pool.StartTask(entry.ID, route.AgentName)
+		ctx, _ := s.pool.StartTask(entry.ID, route.AgentName)
 		defer s.pool.FinishTask(entry.ID)
 
 		agent := s.pool.GetOrCreate(route.AgentName, s.wc)
