@@ -47,6 +47,13 @@ const commissionDialog = ref(false)
 const commissionEntryId = ref('')
 const commissionEntryTitle = ref('')
 
+// New Entry dialog state
+const newEntryDialog = ref(false)
+const newEntryBody = ref('')
+const newEntryCommission = ref(false)
+const creatingEntry = ref(false)
+const newEntryError = ref('')
+
 // Toast
 const toast = ref('')
 const toastType = ref<'error' | 'success' | 'info'>('info')
@@ -233,6 +240,35 @@ function onCommissioned(c: Commission) {
   commissions.value.push(c)
   commissionDialog.value = false
   showToast('Steward commissioned', 'success')
+}
+
+function openNewEntryDialog() {
+  newEntryBody.value = ''
+  newEntryCommission.value = false
+  newEntryError.value = ''
+  newEntryDialog.value = true
+}
+
+async function createEntryInProject() {
+  if (!project.value || !newEntryBody.value.trim()) return
+  creatingEntry.value = true
+  newEntryError.value = ''
+  try {
+    const title = newEntryBody.value.trim().slice(0, 60)
+    const entry = await api.createEntry({ title, body: newEntryBody.value.trim(), source: 'web' })
+    await api.setEntryProject(entry.id, project.value.id)
+    await load()
+    newEntryDialog.value = false
+    if (newEntryCommission.value) {
+      openCommissionDialog(entry.id, entry.title)
+    } else {
+      showToast('Entry created', 'success')
+    }
+  } catch (e: any) {
+    newEntryError.value = e.message || String(e)
+  } finally {
+    creatingEntry.value = false
+  }
 }
 
 function startEdit() {
@@ -552,6 +588,10 @@ subscribe('entry.created', () => {
             >List</button>
           </div>
           <button
+            @click="openNewEntryDialog"
+            class="px-3 py-1.5 text-sm text-sky-400 hover:text-sky-300 border border-gray-700 rounded-lg hover:border-sky-700 transition-colors"
+          >+ New Entry</button>
+          <button
             @click="doInitialize"
             :disabled="scaffolding"
             class="px-3 py-1.5 text-sm text-emerald-400 hover:text-emerald-300 border border-gray-700 rounded-lg hover:border-emerald-700 transition-colors disabled:opacity-40"
@@ -842,7 +882,11 @@ subscribe('entry.created', () => {
       <!-- Empty state -->
       <div v-if="entries.length === 0" class="text-center py-8">
         <div class="text-gray-600 mb-1">No entries in this project</div>
-        <div class="text-sm text-gray-500">Assign entries from the Entries view.</div>
+        <div class="text-sm text-gray-500 mb-3">Assign entries from the Entries view, or create one here.</div>
+        <button
+          @click="openNewEntryDialog"
+          class="px-4 py-2 text-sm bg-sky-600 text-white rounded-lg hover:bg-sky-500 transition-colors"
+        >+ New Entry</button>
       </div>
 
       <!-- ========== BOARD VIEW (3-column) ========== -->
@@ -860,6 +904,12 @@ subscribe('entry.created', () => {
               </span>
               <span class="text-xs text-gray-600">{{ col.entries.length }}</span>
             </div>
+            <button
+              v-if="col.key === 'inbox'"
+              @click="openNewEntryDialog"
+              class="text-xs text-sky-400 hover:text-sky-300 transition-colors"
+              title="New entry"
+            >+</button>
           </div>
 
           <!-- Column body -->
@@ -1216,6 +1266,46 @@ subscribe('entry.created', () => {
             @click="closePanel"
           />
         </Transition>
+      </Teleport>
+
+      <!-- New Entry Dialog -->
+      <Teleport to="body">
+        <dialog
+          :open="newEntryDialog"
+          class="fixed inset-0 z-40 flex items-center justify-center bg-transparent"
+          v-if="newEntryDialog"
+        >
+          <div class="fixed inset-0 bg-black/50" @click="newEntryDialog = false" />
+          <div class="relative bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-xl max-w-lg mx-auto w-full">
+            <h3 class="font-semibold mb-1">+ New Entry</h3>
+            <p class="text-sm text-gray-500 mb-4">Project: {{ project?.emoji }} {{ project?.name }}</p>
+
+            <div v-if="newEntryError" class="text-sm text-red-400 bg-red-900/30 border border-red-800 rounded-lg px-3 py-2 mb-3">{{ newEntryError }}</div>
+
+            <label class="block text-sm text-gray-400 mb-1">What needs to happen?</label>
+            <textarea
+              v-model="newEntryBody"
+              rows="4"
+              class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none mb-4"
+              placeholder="Describe the entry..."
+              @keydown.ctrl.enter.prevent="createEntryInProject"
+            />
+
+            <label class="flex items-center gap-2 text-sm text-gray-300 mb-4 cursor-pointer">
+              <input type="checkbox" v-model="newEntryCommission" class="accent-amber-500" />
+              📜 Commission steward immediately
+            </label>
+
+            <div class="flex justify-end gap-2">
+              <button @click="newEntryDialog = false" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
+              <button
+                @click="createEntryInProject"
+                :disabled="!newEntryBody.trim() || creatingEntry"
+                class="px-4 py-2 text-sm bg-sky-600 text-white rounded-lg hover:bg-sky-500 transition-colors disabled:opacity-40"
+              >{{ creatingEntry ? 'Creating...' : 'Create' }}</button>
+            </div>
+          </div>
+        </dialog>
       </Teleport>
 
       <!-- Commission Dialog -->
