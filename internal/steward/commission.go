@@ -445,28 +445,9 @@ func (s *Steward) commissionGenerateScenarios(ctx context.Context, c *store.Comm
 		return false, nil
 	}
 
-	// Advance to specced with the generated scenarios
-	advErr := runner.RetryAdvance(ctx, entryID, "", c.Model)
-	if advErr != nil {
-		// RetryAdvance for planned→specced needs scenarios on the entry.
-		// The scenarios were set by GenerateScenarios. But RetryAdvance calls
-		// Pipeline.Advance which needs scenarios in the request. We need to
-		// set them on the entry first.
-		// Actually, GenerateScenarios should have already saved them.
-		// If advance still fails, it might be because Advance() requires scenarios in the request.
-		// Let's record this and surface.
-		s.recordDecision(c, entryID, "spec", "fail", fmt.Sprintf("Advance to specced failed: %v", advErr), scenCost)
-		s.commissionSurface(c, "spec_advance_failed",
-			fmt.Sprintf("Scenarios generated but advance failed: %v. Please advance manually.", advErr))
-		return false, nil
-	}
-
-	specCost := s.modelCost(c.Model)
-	s.addCommissionCost(c, specCost)
-
 	s.recordDecision(c, entryID, "spec", "advance",
 		fmt.Sprintf("Generated %d scenarios and advanced to specced", len(scenarios)),
-		scenCost+specCost)
+		scenCost)
 
 	s.store.DB().AddSessionMessage(entryID, "system",
 		fmt.Sprintf("📜 **Steward:** Generated %d scenarios → **specced** ✓", len(scenarios)))
