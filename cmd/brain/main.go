@@ -592,7 +592,7 @@ func runReindex() error {
 
 	var success, failed int
 	for i, entry := range entries {
-		if err := vec.Embed(ctx, entry); err != nil {
+		if err := vec.EmbedNoSave(ctx, entry); err != nil {
 			log.Printf("  ❌ [%d/%d] %s: %v", i+1, len(entries), entry.ID, err)
 			failed++
 			continue
@@ -601,6 +601,12 @@ func runReindex() error {
 		if (i+1)%10 == 0 || i+1 == len(entries) {
 			log.Printf("  ✅ [%d/%d] embedded", i+1, len(entries))
 		}
+	}
+
+	// Save once at the end
+	log.Printf("Saving to %s...", cfg.VecDir)
+	if err := vec.Save(); err != nil {
+		return fmt.Errorf("saving vector store: %w", err)
 	}
 
 	log.Printf("")

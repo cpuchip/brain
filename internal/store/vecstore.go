@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/philippgille/chromem-go"
@@ -13,15 +15,18 @@ import (
 const thoughtsCollection = "thoughts"
 
 // VecStore wraps chromem-go for semantic search over brain entries.
+// Uses in-memory DB with single-file gob.gz persistence (not per-document files).
 // If embedFunc is nil, the vector store is disabled and all operations are no-ops.
 type VecStore struct {
 	db    *chromem.DB
 	embed chromem.EmbeddingFunc
 	model string // embedding model name for status tracking
 	dir   string // persistence directory
+	path  string // path to the single gob.gz file
+	mu    sync.Mutex
 }
 
-// NewVecStore creates a new vector store with persistence at the given directory.
+// NewVecStore creates a new vector store with single-file persistence.
 // If embedFunc is nil, returns a disabled VecStore (all operations are no-ops).
 func NewVecStore(dir string, embedFunc chromem.EmbeddingFunc, modelName string) (*VecStore, error) {
 	if embedFunc == nil {
@@ -33,9 +38,15 @@ func NewVecStore(dir string, embedFunc chromem.EmbeddingFunc, modelName string) 
 		return nil, fmt.Errorf("creating vec dir: %w", err)
 	}
 
-	db, err := chromem.NewPersistentDB(dir, true)
-	if err != nil {
-		return nil, fmt.Errorf("opening chromem-go DB: %w", err)
+	db := chromem.NewDB()
+	gobPath := filepath.Join(dir, "thoughts.gob.gz")
+
+	// Load existing data if present
+	if _, err := os.Stat(gobPath); err == nil {
+		if err := db.ImportFromFile(gobPath, ""); err != nil {
+			return nil, fmt.Errorf("loading %s: %w", gobPath, err)
+		}
+		log.Printf("Loaded vector store from %s", gobPath)
 	}
 
 	vs := &VecStore{
@@ -43,6 +54,7 @@ func NewVecStore(dir string, embedFunc chromem.EmbeddingFunc, modelName string) 
 		embed: embedFunc,
 		model: modelName,
 		dir:   dir,
+		path:  gobPath,
 	}
 
 	return vs, nil
@@ -51,6 +63,19 @@ func NewVecStore(dir string, embedFunc chromem.EmbeddingFunc, modelName string) 
 // Enabled returns true if the vector store has an embedding function configured.
 func (vs *VecStore) Enabled() bool {
 	return vs.db != nil && vs.embed != nil
+}
+
+// save persists the entire DB to a single gob.gz file using atomic write.
+func (vs *VecStore) save() error {
+	tmpPath := vs.path + ".tmp"
+	if err := vs.db.ExportToFile(tmpPath, true, ""); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("exporting: %w", err)
+	}
+	if err := os.Rename(tmpPath, vs.path); err != nil {
+		return fmt.Errorf("renaming: %w", err)
+	}
+	return nil
 }
 
 // collection returns (or creates) the "thoughts" collection.
@@ -67,6 +92,9 @@ func (vs *VecStore) Embed(ctx context.Context, entry *Entry) error {
 	if !vs.Enabled() {
 		return nil
 	}
+
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
 
 	col, err := vs.collection(ctx)
 	if err != nil {
@@ -91,6 +119,10 @@ func (vs *VecStore) Embed(ctx context.Context, entry *Entry) error {
 		return fmt.Errorf("adding document: %w", err)
 	}
 
+	if err := vs.save(); err != nil {
+		log.Printf("warning: vec save failed: %v", err)
+	}
+
 	return nil
 }
 
@@ -100,12 +132,22 @@ func (vs *VecStore) Remove(ctx context.Context, entryID string) error {
 		return nil
 	}
 
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
 	col, err := vs.collection(ctx)
 	if err != nil {
 		return fmt.Errorf("getting collection: %w", err)
 	}
 
-	return col.Delete(ctx, nil, nil, entryID)
+	if err := col.Delete(ctx, nil, nil, entryID); err != nil {
+		return err
+	}
+
+	if err := vs.save(); err != nil {
+		log.Printf("warning: vec save failed: %v", err)
+	}
+	return nil
 }
 
 // ReEmbed removes and re-adds a document (used after edits).
@@ -114,12 +156,76 @@ func (vs *VecStore) ReEmbed(ctx context.Context, entry *Entry) error {
 		return nil
 	}
 
-	if err := vs.Remove(ctx, entry.ID); err != nil {
-		// Don't fail if the document didn't exist
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	col, err := vs.collection(ctx)
+	if err != nil {
+		return fmt.Errorf("getting collection: %w", err)
+	}
+
+	// Remove old document (ignore errors if it didn't exist)
+	if err := col.Delete(ctx, nil, nil, entry.ID); err != nil {
 		log.Printf("warning: remove before re-embed: %v", err)
 	}
 
-	return vs.Embed(ctx, entry)
+	// Build searchable content: title + body
+	content := entry.Title + ". " + entry.Body
+
+	doc := chromem.Document{
+		ID:      entry.ID,
+		Content: content,
+		Metadata: map[string]string{
+			"category":   entry.Category,
+			"source":     entry.Source,
+			"created_at": entry.Created.UTC().Format(time.RFC3339),
+			"title":      entry.Title,
+		},
+	}
+
+	if err := col.AddDocument(ctx, doc); err != nil {
+		return fmt.Errorf("adding document: %w", err)
+	}
+
+	if err := vs.save(); err != nil {
+		log.Printf("warning: vec save failed: %v", err)
+	}
+	return nil
+}
+
+// EmbedNoSave adds a document without persisting. Use with Save() for batch operations.
+func (vs *VecStore) EmbedNoSave(ctx context.Context, entry *Entry) error {
+	if !vs.Enabled() {
+		return nil
+	}
+
+	col, err := vs.collection(ctx)
+	if err != nil {
+		return fmt.Errorf("getting collection: %w", err)
+	}
+
+	content := entry.Title + ". " + entry.Body
+
+	doc := chromem.Document{
+		ID:      entry.ID,
+		Content: content,
+		Metadata: map[string]string{
+			"category":   entry.Category,
+			"source":     entry.Source,
+			"created_at": entry.Created.UTC().Format(time.RFC3339),
+			"title":      entry.Title,
+		},
+	}
+
+	return col.AddDocument(ctx, doc)
+}
+
+// Save persists the vector store to disk. Called automatically by Embed/Remove/ReEmbed,
+// but exposed for batch operations (EmbedNoSave + Save).
+func (vs *VecStore) Save() error {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	return vs.save()
 }
 
 // SearchResult holds a semantic search match.
