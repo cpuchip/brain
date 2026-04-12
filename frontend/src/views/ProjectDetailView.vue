@@ -255,7 +255,7 @@ async function createEntryInProject() {
   newEntryError.value = ''
   try {
     const title = newEntryBody.value.trim().slice(0, 60)
-    const entry = await api.createEntry({ title, body: newEntryBody.value.trim(), source: 'web' })
+    const entry = await api.createEntry({ title, body: newEntryBody.value.trim(), source: 'web', category: 'ideas' })
     await api.setEntryProject(entry.id, project.value.id)
     await load()
     newEntryDialog.value = false

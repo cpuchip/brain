@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cpuchip/brain/internal/classifier"
 	"github.com/cpuchip/brain/internal/store"
 )
 
@@ -282,6 +283,18 @@ func (s *Steward) runCommission(commissionID string) {
 			log.Printf("steward: commission %s cannot read entry: %v", commissionID, err)
 			s.commissionFail(c, "entry_error", fmt.Sprintf("Cannot read entry: %v", err))
 			return
+		}
+
+		// Auto-reclassify non-pipeline entries (e.g. "inbox") so the pipeline can process them.
+		if !classifier.PipelineCategories[entry.Category] {
+			newCat := "ideas"
+			log.Printf("steward: commission %s — entry category %q is not a pipeline category, reclassifying to %q", commissionID, entry.Category, newCat)
+			if err := s.store.DB().Reclassify(entryID, newCat); err != nil {
+				s.commissionFail(c, "reclassify_error", fmt.Sprintf("Cannot reclassify entry from %s to %s: %v", entry.Category, newCat, err))
+				return
+			}
+			entry.Category = newCat
+			s.notify("entry.updated", entryID, nil)
 		}
 
 		maturity := entry.Maturity
