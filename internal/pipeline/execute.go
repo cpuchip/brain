@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cpuchip/brain/internal/ai"
 	"github.com/cpuchip/brain/internal/config"
@@ -235,7 +236,8 @@ Token budget guidance:
 		PremiumRequestCost:    cost,
 		OnActivity: touch,
 		OnToolCall: func(toolName string, args any) {
-			p.notify("execution.tool", entry.ID, map[string]string{"tool": toolName})
+			detail := toolCallSummary(toolName, args)
+			p.notify("execution.tool", entry.ID, map[string]string{"tool": toolName, "detail": detail})
 		},
 	}
 
@@ -249,9 +251,37 @@ Token budget guidance:
 
 	log.Printf("Execution starting for %s (%s)", entry.ID, entry.Title)
 
+	// Notify frontend that execution has started (for elapsed timer)
+	startedAt := time.Now().UTC().Format(time.RFC3339)
+	p.notify("execution.started", entry.ID, map[string]string{"started_at": startedAt})
+
+	// Heartbeat goroutine — emits every 30s so the frontend knows the agent is alive
+	heartbeatDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				p.notify("execution.heartbeat", entry.ID, nil)
+			case <-heartbeatDone:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	response, err := agent.Ask(ctx, prompt)
+	close(heartbeatDone)
 	if err != nil {
 		log.Printf("Execution failed for %s: %v", entry.ID, err)
+
+		// Preserve any work the agent produced before failure (selective git commit)
+		writtenFiles := agent.WrittenFiles()
+		if len(writtenFiles) > 0 {
+			p.commitAfterExecution(entry, writtenFiles)
+		}
 
 		// Guard against race: if entry was manually reset or cancelled while we ran, don't overwrite
 		current, getErr := p.store.DB().GetEntry(entry.ID)
@@ -268,7 +298,13 @@ Token budget guidance:
 			log.Printf("warning: failed to increment failure count for %s: %v", entry.ID, countErr)
 		}
 
-		msg := fmt.Sprintf("Execution failed: %v\n\nEntry returned to specced.", err)
+		// Smart failure message — distinguish "timed out with work" from "nothing produced"
+		var msg string
+		if len(writtenFiles) > 0 {
+			msg = fmt.Sprintf("Execution timed out, but the agent created %d file(s). The work may be complete — check the workspace before retrying.\n\nError: %v", len(writtenFiles), err)
+		} else {
+			msg = fmt.Sprintf("Execution failed: %v\n\nNo files were created. Entry returned to specced.", err)
+		}
 		if count >= 3 {
 			msg += fmt.Sprintf("\n\n🔴 This entry has failed %d consecutive times. Something structural may be wrong.", count)
 		}
@@ -396,6 +432,37 @@ func countScenarios(scenarios string) int {
 		count = 1 // at least one if there's any text
 	}
 	return count
+}
+
+// toolCallSummary extracts a short description from tool args for the execution progress log.
+// Returns a path for file tools, truncated query for search tools, or first string arg for others.
+func toolCallSummary(toolName string, args any) string {
+	m, ok := args.(map[string]any)
+	if !ok {
+		return ""
+	}
+
+	// File tools — show the path
+	for _, key := range []string{"path", "filePath", "dirPath", "old_path", "new_path"} {
+		if v, ok := m[key].(string); ok && v != "" {
+			return truncate(v, 120)
+		}
+	}
+
+	// Search/query tools — show the query
+	for _, key := range []string{"query", "pattern", "sql", "command"} {
+		if v, ok := m[key].(string); ok && v != "" {
+			return truncate(v, 80)
+		}
+	}
+
+	// Fallback — first string value
+	for _, v := range m {
+		if s, ok := v.(string); ok && s != "" {
+			return truncate(s, 80)
+		}
+	}
+	return ""
 }
 
 // commitAfterExecution selectively commits files written during the agent session.

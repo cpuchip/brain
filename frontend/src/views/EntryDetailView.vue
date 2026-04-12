@@ -315,7 +315,27 @@ const advancingPipeline = ref(false)
 const cancellingExecution = ref(false)
 const verifyScenarios = ref<{ scenario: string; passed: boolean; notes: string }[]>([])
 const verifySubmitting = ref(false)
-const executionTools = ref<string[]>([])
+const executionTools = ref<{ tool: string; detail: string }[]>([])
+const executionStartedAt = ref<number | null>(null)
+const executionElapsed = ref('')
+let elapsedInterval: ReturnType<typeof setInterval> | null = null
+
+function startElapsedTimer() {
+  stopElapsedTimer()
+  elapsedInterval = setInterval(() => {
+    if (!executionStartedAt.value) return
+    const secs = Math.floor((Date.now() - executionStartedAt.value) / 1000)
+    const m = Math.floor(secs / 60)
+    const s = secs % 60
+    executionElapsed.value = m > 0 ? `${m}m ${s.toString().padStart(2, '0')}s` : `${s}s`
+  }, 1000)
+}
+
+function stopElapsedTimer() {
+  if (elapsedInterval) { clearInterval(elapsedInterval); elapsedInterval = null }
+  executionElapsed.value = ''
+  executionStartedAt.value = null
+}
 
 const maturityLabel: Record<string, string> = {
   raw: 'Raw', researched: 'Researched', planned: 'Planned',
@@ -426,7 +446,7 @@ async function submitVerification() {
 }
 
 onMounted(load)
-onUnmounted(() => { filePanelOpen.value = false })
+onUnmounted(() => { filePanelOpen.value = false; stopElapsedTimer() })
 
 // Live updates via WebSocket
 const { subscribe } = useWebSocket()
@@ -444,9 +464,10 @@ subscribe('entry.updated', (evt) => {
     // Refresh the entry when it's updated
     api.getEntry(currentId.value).then(e => {
       entry.value = e
-      // Clear tool log when execution finishes
+      // Clear tool log and elapsed timer when execution finishes
       if (e.maturity !== 'executing' || e.route_status !== 'agent') {
         executionTools.value = []
+        stopElapsedTimer()
       }
     })
   }
@@ -454,11 +475,19 @@ subscribe('entry.updated', (evt) => {
 
 subscribe('execution.tool', (evt) => {
   if (evt.entry_id === currentId.value && evt.data?.tool) {
-    executionTools.value.push(evt.data.tool)
+    executionTools.value.push({ tool: evt.data.tool, detail: evt.data.detail || '' })
     // Keep only last 20 to avoid unbounded growth
     if (executionTools.value.length > 20) {
       executionTools.value = executionTools.value.slice(-20)
     }
+  }
+})
+
+subscribe('execution.started', (evt) => {
+  if (evt.entry_id === currentId.value) {
+    const ts = evt.data?.started_at
+    executionStartedAt.value = ts ? new Date(ts).getTime() : Date.now()
+    startElapsedTimer()
   }
 })
 </script>
@@ -611,6 +640,7 @@ subscribe('execution.tool', (evt) => {
               <div class="flex items-center gap-2">
                 <span class="inline-block w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
                 <span class="text-sm text-amber-300">Agent is executing...</span>
+                <span v-if="executionElapsed" class="text-xs text-gray-500 font-mono">({{ executionElapsed }})</span>
               </div>
               <button
                 @click="cancelExecution"
@@ -620,9 +650,10 @@ subscribe('execution.tool', (evt) => {
             </div>
             <!-- Tool call progress log -->
             <div v-if="executionTools.length > 0" class="mt-3 space-y-1 max-h-40 overflow-y-auto">
-              <div v-for="(tool, i) in executionTools" :key="i" class="text-xs text-gray-500 font-mono flex items-center gap-1.5">
+              <div v-for="(t, i) in executionTools" :key="i" class="text-xs text-gray-500 font-mono flex items-center gap-1.5">
                 <span class="text-gray-700">{{ i + 1 }}.</span>
-                <span>{{ tool }}</span>
+                <span>{{ t.tool }}</span>
+                <span v-if="t.detail" class="text-gray-600 truncate max-w-md" :title="t.detail">{{ t.detail }}</span>
               </div>
             </div>
           </div>
