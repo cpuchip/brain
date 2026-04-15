@@ -97,6 +97,19 @@ async function load() {
 // Commission actions
 const hasActiveCommission = computed(() => commission.value != null && (commission.value.status === 'active' || commission.value.status === 'paused'))
 
+const costBreakdown = computed(() => {
+  const decisions = commission.value?.decisions ?? []
+  const map = new Map<string, { cost: number; count: number }>()
+  for (const d of decisions) {
+    const t = d.cost_type || 'pipeline'
+    const entry = map.get(t) ?? { cost: 0, count: 0 }
+    entry.cost += d.cost
+    entry.count++
+    map.set(t, entry)
+  }
+  return Array.from(map.entries()).map(([type, v]) => ({ type, ...v }))
+})
+
 function canCommission(): boolean {
   if (!entry.value) return false
   if (entry.value.notebook) return false
@@ -695,6 +708,14 @@ subscribe('execution.started', (evt) => {
             <span>Model: <span class="text-gray-300 font-mono">{{ commission.model }}</span></span>
             <span>Budget: <span class="text-gray-300">{{ commission.cost_used.toFixed(1) }} / {{ commission.max_cost }}</span></span>
           </div>
+          <!-- Cost breakdown by type -->
+          <div v-if="commission.decisions?.length" class="grid grid-cols-3 gap-2 text-xs">
+            <div v-for="ct in costBreakdown" :key="ct.type" class="bg-gray-800 rounded px-2 py-1.5">
+              <span class="text-gray-500 capitalize">{{ ct.type }}</span>
+              <span class="ml-1 text-gray-300 font-mono">{{ ct.cost.toFixed(1) }}</span>
+              <span class="text-gray-600 ml-0.5">({{ ct.count }})</span>
+            </div>
+          </div>
           <div class="flex gap-2">
             <button
               v-if="commission.status === 'active'"
@@ -722,6 +743,7 @@ subscribe('execution.started', (evt) => {
               <span class="text-gray-600">→</span>
               <span :class="d.action === 'advance' || d.action === 'execute' ? 'text-green-400' : d.action === 'surface' ? 'text-amber-400' : 'text-gray-400'">{{ d.action }}</span>
               <span class="text-gray-600">({{ d.cost.toFixed(2) }})</span>
+              <span v-if="d.model" class="text-gray-700 shrink-0">{{ d.model.split('/').pop() }}</span>
               <span class="text-gray-500 truncate" :title="d.reasoning">{{ d.reasoning }}</span>
             </div>
           </div>

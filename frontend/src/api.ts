@@ -118,6 +118,8 @@ export interface CommissionDecision {
   action: string
   reasoning: string
   cost: number
+  model: string
+  cost_type: string
 }
 
 export interface Commission {

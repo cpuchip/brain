@@ -30,9 +30,9 @@ type CommissionRunner interface {
 
 // commissionState tracks running commissions.
 type commissionState struct {
-	mu       sync.Mutex
-	running  map[string]context.CancelFunc // commission ID → cancel func
-	runner   CommissionRunner
+	mu      sync.Mutex
+	running map[string]context.CancelFunc // commission ID → cancel func
+	runner  CommissionRunner
 }
 
 // SetCommissionRunner configures the pipeline operator for commissions.
@@ -367,7 +367,7 @@ func (s *Steward) commissionAdvanceStage(ctx context.Context, c *store.Commissio
 	advErr := runner.RetryAdvance(ctx, entryID, "", c.Model)
 	if advErr != nil {
 		// Record the failure as a decision
-		s.recordDecision(c, entryID, stage, "fail", fmt.Sprintf("Stage failed: %v", advErr), 0)
+		s.recordDecision(c, entryID, stage, "fail", fmt.Sprintf("Stage failed: %v", advErr), 0, c.Model, "pipeline")
 		return false, fmt.Errorf("%s stage failed: %w", stage, advErr)
 	}
 
@@ -378,7 +378,7 @@ func (s *Steward) commissionAdvanceStage(ctx context.Context, c *store.Commissio
 	// Evaluate the gate: should we advance, revise, or surface?
 	action, reasoning, feedback, evalErr := runner.EvaluateGate(ctx, entryID, c.Model)
 	if evalErr != nil {
-		s.recordDecision(c, entryID, stage, "fail", fmt.Sprintf("Gate evaluation failed: %v", evalErr), stageCost)
+		s.recordDecision(c, entryID, stage, "fail", fmt.Sprintf("Gate evaluation failed: %v", evalErr), stageCost, c.Model, "pipeline")
 		return false, fmt.Errorf("gate evaluation failed: %w", evalErr)
 	}
 
@@ -387,7 +387,7 @@ func (s *Steward) commissionAdvanceStage(ctx context.Context, c *store.Commissio
 	s.addCommissionCost(c, evalCost)
 	totalCost := stageCost + evalCost
 
-	s.recordDecision(c, entryID, stage, action, reasoning, totalCost)
+	s.recordDecision(c, entryID, stage, action, reasoning, totalCost, c.Model, "eval")
 
 	switch action {
 	case "advance":
@@ -408,7 +408,7 @@ func (s *Steward) commissionAdvanceStage(ctx context.Context, c *store.Commissio
 		}
 		revCost := s.modelCost(c.Model)
 		s.addCommissionCost(c, revCost)
-		s.recordDecision(c, entryID, stage, "revise_complete", "Revision applied", revCost)
+		s.recordDecision(c, entryID, stage, "revise_complete", "Revision applied", revCost, c.Model, "pipeline")
 
 		// After revision, re-evaluate (the next loop iteration will pick up the new state)
 		return false, nil
@@ -432,7 +432,7 @@ func (s *Steward) commissionGenerateScenarios(ctx context.Context, c *store.Comm
 
 	scenarios, genErr := runner.GenerateScenarios(ctx, entryID, c.Model)
 	if genErr != nil {
-		s.recordDecision(c, entryID, "spec", "fail", fmt.Sprintf("Scenario generation failed: %v", genErr), 0)
+		s.recordDecision(c, entryID, "spec", "fail", fmt.Sprintf("Scenario generation failed: %v", genErr), 0, c.Model, "pipeline")
 		return false, fmt.Errorf("scenario generation failed: %w", genErr)
 	}
 
@@ -440,14 +440,14 @@ func (s *Steward) commissionGenerateScenarios(ctx context.Context, c *store.Comm
 	s.addCommissionCost(c, scenCost)
 
 	if len(scenarios) == 0 {
-		s.recordDecision(c, entryID, "spec", "surface", "No scenarios generated — surfacing for human input", scenCost)
+		s.recordDecision(c, entryID, "spec", "surface", "No scenarios generated — surfacing for human input", scenCost, c.Model, "pipeline")
 		s.commissionSurface(c, "no_scenarios", "The steward could not generate acceptance criteria. Please provide scenarios manually.")
 		return false, nil
 	}
 
 	s.recordDecision(c, entryID, "spec", "advance",
 		fmt.Sprintf("Generated %d scenarios and advanced to specced", len(scenarios)),
-		scenCost)
+		scenCost, c.Model, "pipeline")
 
 	s.store.DB().AddSessionMessage(entryID, "system",
 		fmt.Sprintf("📜 **Steward:** Generated %d scenarios → **specced** ✓", len(scenarios)))
@@ -466,14 +466,14 @@ func (s *Steward) commissionExecute(ctx context.Context, c *store.Commission, en
 
 	execErr := runner.RetryExecute(ctx, entryID, "", c.Model)
 	if execErr != nil {
-		s.recordDecision(c, entryID, "execute", "fail", fmt.Sprintf("Execution start failed: %v", execErr), 0)
+		s.recordDecision(c, entryID, "execute", "fail", fmt.Sprintf("Execution start failed: %v", execErr), 0, c.Model, "pipeline")
 		return false, fmt.Errorf("execution start failed: %w", execErr)
 	}
 
 	execCost := s.modelCost(c.Model)
 	s.addCommissionCost(c, execCost)
 
-	s.recordDecision(c, entryID, "execute", "execute", "Execution started", execCost)
+	s.recordDecision(c, entryID, "execute", "execute", "Execution started", execCost, c.Model, "pipeline")
 
 	// Don't return done — the next loop iteration will see maturity="executing"
 	// and call commissionWaitForExecution
@@ -511,7 +511,7 @@ func (s *Steward) commissionWaitForExecution(ctx context.Context, c *store.Commi
 		// Maturity changed (e.g. back to planned due to failure)
 		if current.Maturity != "executing" {
 			s.recordDecision(c, entryID, "execute", "fail",
-				fmt.Sprintf("Execution ended with maturity=%s (expected executing→your_turn)", current.Maturity), 0)
+				fmt.Sprintf("Execution ended with maturity=%s (expected executing→your_turn)", current.Maturity), 0, c.Model, "pipeline")
 			// Let the main loop re-evaluate from the new maturity
 			return false, nil
 		}
@@ -522,7 +522,7 @@ func (s *Steward) commissionWaitForExecution(ctx context.Context, c *store.Commi
 	// Evaluate the execution output
 	passed, reasoning, evalErr := runner.EvaluateAndVerify(ctx, entryID, c.Model)
 	if evalErr != nil {
-		s.recordDecision(c, entryID, "verify", "fail", fmt.Sprintf("Verification evaluation failed: %v", evalErr), 0)
+		s.recordDecision(c, entryID, "verify", "fail", fmt.Sprintf("Verification evaluation failed: %v", evalErr), 0, c.Model, "verify")
 		return false, fmt.Errorf("verification evaluation failed: %w", evalErr)
 	}
 
@@ -530,7 +530,7 @@ func (s *Steward) commissionWaitForExecution(ctx context.Context, c *store.Commi
 	s.addCommissionCost(c, verifyCost)
 
 	if passed {
-		s.recordDecision(c, entryID, "verify", "complete", reasoning, verifyCost)
+		s.recordDecision(c, entryID, "verify", "complete", reasoning, verifyCost, c.Model, "verify")
 		s.store.DB().AddSessionMessage(entryID, "system",
 			fmt.Sprintf("📜 **Steward:** Verification → **passed** ✓\n\n%s", reasoning))
 		s.notify("message.new", entryID, nil)
@@ -539,7 +539,7 @@ func (s *Steward) commissionWaitForExecution(ctx context.Context, c *store.Commi
 	}
 
 	// Verification failed — surface to human or retry
-	s.recordDecision(c, entryID, "verify", "revise", reasoning, verifyCost)
+	s.recordDecision(c, entryID, "verify", "revise", reasoning, verifyCost, c.Model, "verify")
 	s.store.DB().AddSessionMessage(entryID, "system",
 		fmt.Sprintf("📜 **Steward:** Verification → **failed** — returning to planned.\n\n%s", reasoning))
 	s.notify("message.new", entryID, nil)
@@ -615,7 +615,7 @@ func (s *Steward) commissionSurface(c *store.Commission, concern, detail string)
 }
 
 // recordDecision persists a commission decision to the DB.
-func (s *Steward) recordDecision(c *store.Commission, entryID, stage, action, reasoning string, cost float64) {
+func (s *Steward) recordDecision(c *store.Commission, entryID, stage, action, reasoning string, cost float64, model, costType string) {
 	dec := &store.CommissionDecision{
 		CommissionID: c.ID,
 		Timestamp:    time.Now(),
@@ -624,6 +624,8 @@ func (s *Steward) recordDecision(c *store.Commission, entryID, stage, action, re
 		Action:       action,
 		Reasoning:    reasoning,
 		Cost:         cost,
+		Model:        model,
+		CostType:     costType,
 	}
 	if err := s.store.DB().AddCommissionDecision(dec); err != nil {
 		log.Printf("steward: failed to record decision for commission %s: %v", c.ID, err)

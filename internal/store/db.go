@@ -2190,6 +2190,15 @@ func (d *DB) migrateCommissions() error {
 			return fmt.Errorf("commission migration: %w", err)
 		}
 	}
+
+	// Add model and cost_type columns to commission_decisions (idempotent)
+	for _, alt := range []string{
+		`ALTER TABLE commission_decisions ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE commission_decisions ADD COLUMN cost_type TEXT NOT NULL DEFAULT 'pipeline'`,
+	} {
+		// SQLite returns error if column already exists — that's fine
+		d.db.Exec(alt)
+	}
 	return nil
 }
 
@@ -2263,16 +2272,17 @@ func (d *DB) UpdateCommissionCost(id string, cost float64) error {
 // AddCommissionDecision records a judgment call.
 func (d *DB) AddCommissionDecision(dec *CommissionDecision) error {
 	_, err := d.db.Exec(`INSERT INTO commission_decisions
-		(commission_id, timestamp, entry_id, stage, action, reasoning, cost)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		(commission_id, timestamp, entry_id, stage, action, reasoning, cost, model, cost_type)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		dec.CommissionID, dec.Timestamp.Format(time.RFC3339),
-		dec.EntryID, dec.Stage, dec.Action, dec.Reasoning, dec.Cost)
+		dec.EntryID, dec.Stage, dec.Action, dec.Reasoning, dec.Cost,
+		dec.Model, dec.CostType)
 	return err
 }
 
 // ListCommissionDecisions returns all decisions for a commission.
 func (d *DB) ListCommissionDecisions(commissionID string) ([]CommissionDecision, error) {
-	rows, err := d.db.Query(`SELECT id, commission_id, timestamp, entry_id, stage, action, reasoning, cost
+	rows, err := d.db.Query(`SELECT id, commission_id, timestamp, entry_id, stage, action, reasoning, cost, model, cost_type
 		FROM commission_decisions WHERE commission_id = ? ORDER BY id ASC`, commissionID)
 	if err != nil {
 		return nil, err
@@ -2282,7 +2292,7 @@ func (d *DB) ListCommissionDecisions(commissionID string) ([]CommissionDecision,
 	for rows.Next() {
 		var dec CommissionDecision
 		var ts string
-		if err := rows.Scan(&dec.ID, &dec.CommissionID, &ts, &dec.EntryID, &dec.Stage, &dec.Action, &dec.Reasoning, &dec.Cost); err != nil {
+		if err := rows.Scan(&dec.ID, &dec.CommissionID, &ts, &dec.EntryID, &dec.Stage, &dec.Action, &dec.Reasoning, &dec.Cost, &dec.Model, &dec.CostType); err != nil {
 			return nil, err
 		}
 		dec.Timestamp, _ = time.Parse(time.RFC3339, ts)
