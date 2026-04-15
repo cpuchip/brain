@@ -9,6 +9,10 @@ const newName = ref('')
 const newDesc = ref('')
 const newEmoji = ref('')
 const newInitInstructions = ref('')
+const newWorkspaceType = ref('integrated')
+const newWorkspacePath = ref('')
+const newGithubRepo = ref('')
+const newRepoVisibility = ref('private')
 const creating = ref(false)
 
 async function loadProjects() {
@@ -28,12 +32,20 @@ async function createProject() {
       name: newName.value.trim(),
       description: newDesc.value.trim() || undefined,
       emoji: newEmoji.value.trim() || undefined,
+      workspace_type: newWorkspaceType.value !== 'integrated' ? newWorkspaceType.value : undefined,
+      workspace_path: newWorkspacePath.value.trim() || undefined,
+      github_repo: newWorkspaceType.value === 'external' ? (newGithubRepo.value.trim() || undefined) : undefined,
+      repo_visibility: newWorkspaceType.value === 'external' ? newRepoVisibility.value : undefined,
       init_instructions: newInitInstructions.value.trim() || undefined,
     })
     newName.value = ''
     newDesc.value = ''
     newEmoji.value = ''
     newInitInstructions.value = ''
+    newWorkspaceType.value = 'integrated'
+    newWorkspacePath.value = ''
+    newGithubRepo.value = ''
+    newRepoVisibility.value = 'private'
     showCreate.value = false
     await loadProjects()
   } finally {
@@ -93,6 +105,48 @@ onMounted(loadProjects)
           rows="2"
           class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
         />
+
+        <!-- Workspace -->
+        <div class="space-y-3 border border-gray-800 rounded-lg p-3">
+          <label class="block text-xs text-gray-500 uppercase tracking-wide">Workspace</label>
+          <select
+            v-model="newWorkspaceType"
+            class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+          >
+            <option value="integrated">Integrated (within this workspace)</option>
+            <option value="subfolder">Subfolder (relative path)</option>
+            <option value="external">External (own repo)</option>
+          </select>
+
+          <input
+            v-if="newWorkspaceType === 'subfolder'"
+            v-model="newWorkspacePath"
+            placeholder="projects/my-project"
+            class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+          />
+
+          <input
+            v-if="newWorkspaceType === 'external'"
+            v-model="newWorkspacePath"
+            placeholder="projects\my-project"
+            class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+          />
+          <input
+            v-if="newWorkspaceType === 'external'"
+            v-model="newGithubRepo"
+            placeholder="GitHub repo (e.g. cpuchip/space-center)"
+            class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+          />
+          <select
+            v-if="newWorkspaceType === 'external'"
+            v-model="newRepoVisibility"
+            class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+          >
+            <option value="private">Private</option>
+            <option value="public">Public</option>
+          </select>
+        </div>
+
         <textarea
           v-model="newInitInstructions"
           placeholder="Initialization instructions (optional) — tech stack, architecture, conventions, goals..."

@@ -1270,13 +1270,15 @@ subscribe('entry.created', () => {
 
       <!-- New Entry Dialog -->
       <Teleport to="body">
-        <dialog
-          :open="newEntryDialog"
-          class="fixed inset-0 z-40 flex items-center justify-center bg-transparent"
+        <div
           v-if="newEntryDialog"
+          role="dialog"
+          aria-modal="true"
+          class="fixed inset-0 z-40 flex items-center justify-center text-gray-100"
+          @keydown.escape="newEntryDialog = false"
         >
           <div class="fixed inset-0 bg-black/50" @click="newEntryDialog = false" />
-          <div class="relative bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-xl max-w-lg mx-auto w-full">
+          <div class="relative bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-xl max-w-lg w-full">
             <h3 class="font-semibold mb-1">+ New Entry</h3>
             <p class="text-sm text-gray-500 mb-4">Project: {{ project?.emoji }} {{ project?.name }}</p>
 
@@ -1305,7 +1307,7 @@ subscribe('entry.created', () => {
               >{{ creatingEntry ? 'Creating...' : 'Create' }}</button>
             </div>
           </div>
-        </dialog>
+        </div>
       </Teleport>
 
       <!-- Commission Dialog -->

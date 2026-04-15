@@ -57,13 +57,15 @@ async function submit() {
 
 <template>
   <Teleport to="body">
-    <dialog
-      :open="open"
-      class="fixed inset-0 z-40 flex items-center justify-center bg-transparent"
+    <div
       v-if="open"
+      role="dialog"
+      aria-modal="true"
+      class="fixed inset-0 z-40 flex items-center justify-center text-gray-100"
+      @keydown.escape="emit('close')"
     >
       <div class="fixed inset-0 bg-black/50" @click="emit('close')" />
-      <div class="relative bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-xl max-w-lg mx-auto w-full">
+      <div class="relative bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-xl max-w-lg w-full">
         <h3 class="font-semibold mb-1 text-amber-400">📜 Commission Steward</h3>
         <p class="text-sm text-gray-400 mb-4 truncate" :title="entryTitle">for: {{ entryTitle }}</p>
 
@@ -143,6 +145,6 @@ async function submit() {
           </button>
         </div>
       </div>
-    </dialog>
+    </div>
   </Teleport>
 </template>
