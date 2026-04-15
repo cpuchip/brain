@@ -53,6 +53,19 @@ const newEntryBody = ref('')
 const newEntryCommission = ref(false)
 const creatingEntry = ref(false)
 const newEntryError = ref('')
+// Inline commission fields
+const newEntryCommissionIntent = ref('')
+const newEntryCommissionAuthority = ref('advance_and_execute')
+const newEntryCommissionModel = ref('claude-opus-4.6')
+const newEntryCommissionBudget = ref(50)
+const newEntryShowAdvanced = ref(false)
+
+// Pre-fill commission intent from entry body when checkbox is toggled on
+watch(newEntryCommission, (checked) => {
+  if (checked && !newEntryCommissionIntent.value.trim()) {
+    newEntryCommissionIntent.value = newEntryBody.value.trim()
+  }
+})
 
 // Toast
 const toast = ref('')
@@ -246,24 +259,44 @@ function openNewEntryDialog() {
   newEntryBody.value = ''
   newEntryCommission.value = false
   newEntryError.value = ''
+  newEntryCommissionIntent.value = ''
+  newEntryCommissionAuthority.value = 'advance_and_execute'
+  newEntryCommissionModel.value = 'claude-opus-4.6'
+  newEntryCommissionBudget.value = 50
+  newEntryShowAdvanced.value = false
   newEntryDialog.value = true
 }
 
 async function createEntryInProject() {
   if (!project.value || !newEntryBody.value.trim()) return
+  if (newEntryCommission.value && !newEntryCommissionIntent.value.trim()) return
   creatingEntry.value = true
   newEntryError.value = ''
   try {
     const title = newEntryBody.value.trim().slice(0, 60)
     const entry = await api.createEntry({ title, body: newEntryBody.value.trim(), source: 'web', category: 'ideas' })
     await api.setEntryProject(entry.id, project.value.id)
-    await load()
-    newEntryDialog.value = false
+
     if (newEntryCommission.value) {
-      openCommissionDialog(entry.id, entry.title)
+      try {
+        const c = await api.createCommission({
+          entry_id: entry.id,
+          intent: newEntryCommissionIntent.value.trim(),
+          authority: newEntryCommissionAuthority.value,
+          model: newEntryCommissionModel.value,
+          max_cost: newEntryCommissionBudget.value,
+        })
+        commissions.value.push(c)
+        showToast('Entry created & steward commissioned', 'success')
+      } catch (commErr: any) {
+        showToast(`Entry created but commission failed: ${commErr.message || commErr}`, 'error')
+      }
     } else {
       showToast('Entry created', 'success')
     }
+
+    await load()
+    newEntryDialog.value = false
   } catch (e: any) {
     newEntryError.value = e.message || String(e)
   } finally {
@@ -1298,13 +1331,70 @@ subscribe('entry.created', () => {
               📜 Commission steward immediately
             </label>
 
+            <!-- Inline commission fields -->
+            <div v-if="newEntryCommission" class="space-y-3 mb-4 pl-3 border-l-2 border-amber-800/60">
+              <label class="block text-sm text-gray-300 mb-1">What should the steward accomplish?</label>
+              <textarea
+                v-model="newEntryCommissionIntent"
+                rows="3"
+                class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+                placeholder="Research options, build a prototype, create a plan..."
+                @keydown.ctrl.enter.prevent="createEntryInProject"
+              />
+
+              <button
+                @click="newEntryShowAdvanced = !newEntryShowAdvanced"
+                type="button"
+                class="text-sm text-gray-500 hover:text-gray-300 flex items-center gap-1"
+              >
+                <span class="text-xs">{{ newEntryShowAdvanced ? '▾' : '▸' }}</span>
+                Advanced options
+              </button>
+
+              <div v-if="newEntryShowAdvanced" class="space-y-3 pl-2 border-l-2 border-gray-800">
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">Authority</label>
+                  <select
+                    v-model="newEntryCommissionAuthority"
+                    class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  >
+                    <option value="advance_and_execute">Advance & Execute</option>
+                    <option value="advance_only">Advance Only (stops before execution)</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">Model</label>
+                  <select
+                    v-model="newEntryCommissionModel"
+                    class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  >
+                    <option value="claude-opus-4.6">Claude Opus 4.6 (3.0×)</option>
+                    <option value="claude-sonnet-4">Claude Sonnet 4 (1.0×)</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs text-gray-500 mb-1">Budget (premium requests)</label>
+                  <input
+                    v-model.number="newEntryCommissionBudget"
+                    type="number"
+                    min="1"
+                    max="500"
+                    class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  />
+                </div>
+              </div>
+            </div>
+
             <div class="flex justify-end gap-2">
               <button @click="newEntryDialog = false" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
               <button
                 @click="createEntryInProject"
-                :disabled="!newEntryBody.trim() || creatingEntry"
-                class="px-4 py-2 text-sm bg-sky-600 text-white rounded-lg hover:bg-sky-500 transition-colors disabled:opacity-40"
-              >{{ creatingEntry ? 'Creating...' : 'Create' }}</button>
+                :disabled="!newEntryBody.trim() || (newEntryCommission && !newEntryCommissionIntent.trim()) || creatingEntry"
+                :class="[
+                  'px-4 py-2 text-sm text-white rounded-lg transition-colors disabled:opacity-40',
+                  newEntryCommission ? 'bg-amber-600 hover:bg-amber-500' : 'bg-sky-600 hover:bg-sky-500'
+                ]"
+              >{{ creatingEntry ? 'Creating...' : (newEntryCommission ? 'Create & Commission' : 'Create') }}</button>
             </div>
           </div>
         </div>
