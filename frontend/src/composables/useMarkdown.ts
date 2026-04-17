@@ -22,7 +22,7 @@ md.renderer.rules.link_open = function(tokens: any, idx: any, options: any, env:
 // File path pattern: workspace-relative paths like .spec/..., study/..., scripts/..., etc.
 // Matches paths with forward slashes (we normalize backslashes before matching).
 // The lookbehind includes > (for paths inside <code> tags from markdown-it) and backtick.
-const FILE_PATH_RE = /(?:^|\s|["'(>\x60])((\.spec|study|scripts|docs|lessons|journal|becoming|books|callings|data|teaching|yt|\.github|private-brain|public)\/[\w./_-]+(?:\.(?:md|yaml|yml|json|go|ts|vue|js|txt|sql|css|html))?)/g
+const FILE_PATH_RE = /(?:^|\s|["'(>\x60])(((?:projects\/[\w._-]+\/)?(?:\.spec|study|scripts|docs|lessons|journal|becoming|books|callings|data|teaching|yt|\.github|private-brain|public))\/[\w./_-]+(?:\.(?:md|yaml|yml|json|go|ts|vue|js|txt|sql|css|html))?)/g
 
 // Post-process rendered HTML to detect file paths and make them clickable.
 // Normalizes backslashes to forward slashes first (Windows agent messages use \).
@@ -31,7 +31,7 @@ function linkifyFilePaths(html: string): string {
   // so the regex can match them. We do this on the HTML, targeting only
   // path-like sequences (not all backslashes, which could be escape chars).
   const normalized = html.replace(
-    /(\.(spec|github)|study|scripts|docs|lessons|journal|becoming|books|callings|data|teaching|yt|private-brain|public)(\\[\w._-]+)+/g,
+    /(projects[\\/][\w._-]+[\\/])?(\.(spec|github)|study|scripts|docs|lessons|journal|becoming|books|callings|data|teaching|yt|private-brain|public)(\\[\w._-]+)+/g,
     (m) => m.replace(/\\/g, '/')
   )
 

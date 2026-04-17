@@ -8,6 +8,7 @@ import { useFilePanel } from '../composables/useFilePanel'
 import { useWebSocket } from '../composables/useWebSocket'
 import FileViewer from '../components/FileViewer.vue'
 import CommissionDialog from '../components/CommissionDialog.vue'
+import ResumeDialog from '../components/ResumeDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -28,6 +29,8 @@ const commissionDialog = ref(false)
 const commissionPausing = ref(false)
 const commissionResuming = ref(false)
 const commissionRevoking = ref(false)
+const showResumeDialog = ref(false)
+const resumeSurfaceReason = ref('')
 
 const editForm = ref({
   title: '',
@@ -148,12 +151,41 @@ async function resumeCommission() {
   try {
     await api.resumeCommission(commission.value.id)
     commission.value.status = 'active'
+    showResumeDialog.value = false
     showToast('Commission resumed')
   } catch (e: any) {
     showToast(e.message || 'Failed to resume')
   } finally {
     commissionResuming.value = false
   }
+}
+
+function openResumeDialog() {
+  // Extract the surface reason from the last system message about surfacing
+  const surfaceMsg = [...messages.value].reverse().find(
+    m => m.content.includes('Surfacing for your input')
+  )
+  if (surfaceMsg) {
+    // Extract the detail text after the header line
+    const lines = surfaceMsg.content.split('\n')
+    const detailLines = lines.filter(l => !l.includes('Surfacing for your input') && !l.includes('commission is paused') && l.trim())
+    resumeSurfaceReason.value = detailLines.join('\n').trim()
+  } else {
+    resumeSurfaceReason.value = ''
+  }
+  showResumeDialog.value = true
+}
+
+async function onResumeWithFeedback(feedback: string) {
+  if (!commission.value || !entry.value) return
+  if (feedback) {
+    try {
+      await api.reply(entry.value.id, feedback)
+    } catch {
+      // Non-fatal — proceed with resume even if reply fails
+    }
+  }
+  await resumeCommission()
 }
 
 async function revokeCommission() {
@@ -725,7 +757,7 @@ subscribe('execution.started', (evt) => {
             >{{ commissionPausing ? 'Pausing...' : '⏸ Pause' }}</button>
             <button
               v-if="commission.status === 'paused'"
-              @click="resumeCommission"
+              @click="openResumeDialog"
               :disabled="commissionResuming"
               class="px-3 py-1.5 text-xs bg-green-900/50 text-green-300 rounded hover:bg-green-800 transition-colors disabled:opacity-40"
             >{{ commissionResuming ? 'Resuming...' : '▶ Resume' }}</button>
@@ -748,6 +780,14 @@ subscribe('execution.started', (evt) => {
             </div>
           </div>
         </div>
+
+        <!-- Resume dialog -->
+        <ResumeDialog
+          :show="showResumeDialog"
+          :surfaceReason="resumeSurfaceReason"
+          @resume="onResumeWithFeedback"
+          @cancel="showResumeDialog = false"
+        />
 
         <!-- Pipeline gates (hidden when commission is active) -->
         <div v-if="entry.maturity && !entry.notebook && !hasActiveCommission" class="mt-4 space-y-3">

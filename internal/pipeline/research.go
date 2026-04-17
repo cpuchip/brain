@@ -425,7 +425,8 @@ Token budget guidance:
 	p.notify("entry.updated", entry.ID, map[string]string{"maturity": "researched"})
 
 	// Build a richer message: summarize open questions from the scratch file
-	message := fmt.Sprintf("Research pass complete. Findings at %s", scratchPath)
+	displayPath := filepath.ToSlash(scratchPath)
+	message := fmt.Sprintf("Research pass complete. Findings at %s", displayPath)
 	if summary := extractQuestionSummary(absPath); summary != "" {
 		message += "\n\n" + summary
 	}
@@ -510,7 +511,18 @@ func extractQuestionSummary(filePath string) string {
 	if len(categories) > 0 {
 		summary += " about " + strings.Join(categories, ", ")
 	}
-	summary += ". Your answers will drive the planning phase."
+	summary += ". Your answers will drive the planning phase.\n"
+
+	// Include actual question text (cap at 20 to keep messages readable)
+	limit := 20
+	for i, q := range questions {
+		if i >= limit {
+			summary += fmt.Sprintf("\n*(... and %d more — see scratch file for all)*", len(questions)-limit)
+			break
+		}
+		summary += "\n" + q
+	}
+
 	return summary
 }
 
