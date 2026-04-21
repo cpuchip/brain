@@ -153,11 +153,11 @@ func TestBackoff(t *testing.T) {
 		minDelay float64 // seconds
 		maxDelay float64 // seconds, capped at BackoffMax
 	}{
-		{1, 30, 30},   // base * 2^0 = 30s
-		{2, 60, 60},   // base * 2^1 = 60s
-		{3, 120, 120}, // base * 2^2 = 120s
-		{4, 240, 240}, // base * 2^3 = 240s
-		{5, 300, 300}, // base * 2^4 = 480s but capped at 300s
+		{1, 30, 30},    // base * 2^0 = 30s
+		{2, 60, 60},    // base * 2^1 = 60s
+		{3, 120, 120},  // base * 2^2 = 120s
+		{4, 240, 240},  // base * 2^3 = 240s
+		{5, 300, 300},  // base * 2^4 = 480s but capped at 300s
 		{10, 300, 300}, // way above cap
 	}
 
@@ -219,8 +219,8 @@ func TestDefaultModelForStage(t *testing.T) {
 	}{
 		{"execute stage", "execute", "specced", "claude-sonnet-4.6"},
 		{"specced maturity", "advance", "specced", "claude-sonnet-4.6"},
-		{"researched maturity", "advance", "researched", "claude-opus-4.6"},
-		{"planned maturity", "advance", "planned", "claude-opus-4.6"},
+		{"researched maturity", "advance", "researched", "claude-opus-4.7"},
+		{"planned maturity", "advance", "planned", "claude-opus-4.7"},
 		{"raw maturity", "advance", "raw", "claude-haiku-4.5"},
 		{"empty maturity", "advance", "", "claude-haiku-4.5"},
 	}
@@ -280,7 +280,7 @@ func TestPickModel(t *testing.T) {
 		{
 			"timeout third failure → escalate haiku to opus",
 			"advance", "raw", 3, FailureTimeout,
-			"claude-opus-4.6", true,
+			"claude-opus-4.7", true,
 		},
 
 		// Tool error: escalate on 2nd+
@@ -299,7 +299,7 @@ func TestPickModel(t *testing.T) {
 		{
 			"timeout second on execute → escalate sonnet to opus",
 			"execute", "specced", 2, FailureTimeout,
-			"claude-opus-4.6", true,
+			"claude-opus-4.7", true,
 		},
 		{
 			"timeout third on execute → chain exhausted",
@@ -353,7 +353,7 @@ func TestPickModelModelLimitAlwaysEscalates(t *testing.T) {
 	// failureCount=3 → escalate further: haiku(0) + escalationSteps(2) → opus(2)
 	entry.FailureCount = 3
 	model, escalated = s.pickModel(entry, "advance", FailureModelLimit)
-	if model != "claude-opus-4.6" || !escalated {
+	if model != "claude-opus-4.7" || !escalated {
 		t.Errorf("model_limit third failure: got (%q, %v), want (opus, true)", model, escalated)
 	}
 
@@ -376,7 +376,7 @@ func TestDefaultConfigEscalationChain(t *testing.T) {
 	}{
 		{"claude-haiku-4.5", 0.33},
 		{"claude-sonnet-4.6", 1.0},
-		{"claude-opus-4.6", 3.0},
+		{"claude-opus-4.7", 7.5},
 	}
 	for i, want := range expected {
 		got := cfg.EscalationChain[i]
@@ -384,8 +384,8 @@ func TestDefaultConfigEscalationChain(t *testing.T) {
 			t.Errorf("chain[%d] = {%q, %.2f}, want {%q, %.2f}", i, got.Model, got.Cost, want.model, want.cost)
 		}
 	}
-	if cfg.MaxCostPerEntry != 10.0 {
-		t.Errorf("MaxCostPerEntry = %.1f, want 10.0", cfg.MaxCostPerEntry)
+	if cfg.MaxCostPerEntry != 20.0 {
+		t.Errorf("MaxCostPerEntry = %.1f, want 20.0", cfg.MaxCostPerEntry)
 	}
 }
 
@@ -395,8 +395,8 @@ func TestStatusIncludesEscalationFields(t *testing.T) {
 	if status.TotalEscalations != 0 {
 		t.Errorf("initial TotalEscalations = %d, want 0", status.TotalEscalations)
 	}
-	if status.MaxCostPerEntry != 10.0 {
-		t.Errorf("MaxCostPerEntry = %.1f, want 10.0", status.MaxCostPerEntry)
+	if status.MaxCostPerEntry != 20.0 {
+		t.Errorf("MaxCostPerEntry = %.1f, want 20.0", status.MaxCostPerEntry)
 	}
 }
 
@@ -486,8 +486,8 @@ func TestUnquarantine(t *testing.T) {
 
 	// Set up quarantine state
 	st.DB().SetQuarantined(id, true)
-	st.DB().IncrementFailureCount(id, "test failure reason")    //nolint:errcheck
-	st.DB().IncrementFailureCount(id, "test failure reason 2")  //nolint:errcheck
+	st.DB().IncrementFailureCount(id, "test failure reason")   //nolint:errcheck
+	st.DB().IncrementFailureCount(id, "test failure reason 2") //nolint:errcheck
 
 	// Verify preconditions
 	entry, _ := st.DB().GetEntry(id)

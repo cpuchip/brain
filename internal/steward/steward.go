@@ -70,10 +70,10 @@ func DefaultConfig() Config {
 		EscalationChain: []ModelTier{
 			{Model: "claude-haiku-4.5", Cost: 0.33},
 			{Model: "claude-sonnet-4.6", Cost: 1.0},
-			{Model: "claude-opus-4.6", Cost: 3.0},
+			{Model: "claude-opus-4.7", Cost: 7.5},
 			// Beyond this: quarantine (human)
 		},
-		MaxCostPerEntry: 10.0,
+		MaxCostPerEntry: 20.0,
 		BreakerConfig:   DefaultBreakerConfig(),
 	}
 }
@@ -85,23 +85,23 @@ type Action struct {
 	ActionType string      `json:"action_type"` // "retry", "escalate", "quarantine", "backoff_wait", "cost_limit"
 	Diagnosis  FailureType `json:"diagnosis"`
 	Attempt    int         `json:"attempt"`
-	Model      string      `json:"model,omitempty"`      // which model was used
-	Escalated  bool        `json:"escalated,omitempty"`   // was this an escalation?
+	Model      string      `json:"model,omitempty"`     // which model was used
+	Escalated  bool        `json:"escalated,omitempty"` // was this an escalation?
 	Notes      string      `json:"notes"`
 }
 
 // Status is the observable state of the steward for the API.
 type Status struct {
-	Enabled          bool                    `json:"enabled"`
-	TotalRetries     int                     `json:"total_retries"`
-	TotalEscalations int                     `json:"total_escalations"`
-	TotalQuarant     int                     `json:"total_quarantines"`
-	LastActionAt     time.Time               `json:"last_action_at,omitempty"`
-	RecentActions    []Action                `json:"recent_actions,omitempty"`
-	MaxCostPerEntry  float64                 `json:"max_cost_per_entry"`
-	CircuitBreakers  map[string]StageBreaker `json:"circuit_breakers,omitempty"`
-	NudgeBot         NudgeStatus             `json:"nudge_bot"`
-	ActiveCommissions int                    `json:"active_commissions"`
+	Enabled           bool                    `json:"enabled"`
+	TotalRetries      int                     `json:"total_retries"`
+	TotalEscalations  int                     `json:"total_escalations"`
+	TotalQuarant      int                     `json:"total_quarantines"`
+	LastActionAt      time.Time               `json:"last_action_at,omitempty"`
+	RecentActions     []Action                `json:"recent_actions,omitempty"`
+	MaxCostPerEntry   float64                 `json:"max_cost_per_entry"`
+	CircuitBreakers   map[string]StageBreaker `json:"circuit_breakers,omitempty"`
+	NudgeBot          NudgeStatus             `json:"nudge_bot"`
+	ActiveCommissions int                     `json:"active_commissions"`
 }
 
 // Steward watches for pipeline failures and orchestrates retries.
@@ -552,7 +552,7 @@ func (s *Steward) defaultModelForStage(stage, maturity string) string {
 	case stage == "execute" || maturity == "specced":
 		return "claude-sonnet-4.6" // Execute default
 	case maturity == "researched" || maturity == "planned":
-		return "claude-opus-4.6" // Plan default
+		return "claude-opus-4.7" // Plan default
 	default:
 		return "claude-haiku-4.5" // Research default
 	}

@@ -60,7 +60,7 @@ func (s *Steward) CreateCommission(entryID, intent, authority, model string, max
 		authority = "advance_and_execute"
 	}
 	if model == "" {
-		model = "claude-opus-4.6"
+		model = "claude-opus-4.7"
 	}
 	if maxCost <= 0 {
 		maxCost = 50.0

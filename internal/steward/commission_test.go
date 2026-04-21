@@ -12,20 +12,20 @@ import (
 
 // mockCommissionRunner implements CommissionRunner for testing.
 type mockCommissionRunner struct {
-	mu                sync.Mutex
-	advanceCalls      []string // entry IDs
-	advanceCount      map[string]int // how many times RetryAdvance called per entry
-	executeCalls      []string
-	gateResults       map[string]gateResult // keyed by entryID
-	scenarioResults   map[string][]string   // keyed by entryID
-	verifyResults     map[string]verifyResult
-	failAdvance       map[string]error
-	failExecute       map[string]error
-	failGate          map[string]error
-	failScenarios     map[string]error
-	failVerify        map[string]error
-	advanceSequence   map[string][]string // ordered list of maturities to set per entry
-	db                *store.DB           // to update maturity after "advance"
+	mu              sync.Mutex
+	advanceCalls    []string       // entry IDs
+	advanceCount    map[string]int // how many times RetryAdvance called per entry
+	executeCalls    []string
+	gateResults     map[string]gateResult // keyed by entryID
+	scenarioResults map[string][]string   // keyed by entryID
+	verifyResults   map[string]verifyResult
+	failAdvance     map[string]error
+	failExecute     map[string]error
+	failGate        map[string]error
+	failScenarios   map[string]error
+	failVerify      map[string]error
+	advanceSequence map[string][]string // ordered list of maturities to set per entry
+	db              *store.DB           // to update maturity after "advance"
 }
 
 type gateResult struct {
@@ -144,7 +144,7 @@ func TestCreateCommission(t *testing.T) {
 		Intent:    "Build the thing",
 		Scope:     "single",
 		Authority: "advance_and_execute",
-		Model:     "claude-opus-4.6",
+		Model:     "claude-opus-4.7",
 		MaxCost:   50.0,
 		Status:    "active",
 	}
@@ -165,7 +165,7 @@ func TestGetCommission(t *testing.T) {
 		Intent:    "Ship it",
 		Scope:     "single",
 		Authority: "advance_and_execute",
-		Model:     "claude-opus-4.6",
+		Model:     "claude-opus-4.7",
 		MaxCost:   25.0,
 		Status:    "active",
 	}
@@ -319,8 +319,8 @@ func TestCreateCommissionValidation(t *testing.T) {
 	if c.Authority != "advance_and_execute" {
 		t.Errorf("authority = %q, want %q", c.Authority, "advance_and_execute")
 	}
-	if c.Model != "claude-opus-4.6" {
-		t.Errorf("model = %q, want %q", c.Model, "claude-opus-4.6")
+	if c.Model != "claude-opus-4.7" {
+		t.Errorf("model = %q, want %q", c.Model, "claude-opus-4.7")
 	}
 	if c.MaxCost != 50.0 {
 		t.Errorf("max_cost = %f, want 50.0", c.MaxCost)
@@ -476,7 +476,7 @@ func TestRunCommissionFullLifecycle(t *testing.T) {
 
 	s.SetCommissionRunner(runner)
 
-	c, err := s.CreateCommission(entryID, "Full lifecycle test", "", "", 50.0)
+	c, err := s.CreateCommission(entryID, "Full lifecycle test", "", "", 100.0)
 	if err != nil {
 		t.Fatalf("CreateCommission: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestRunCommissionBudgetExceeded(t *testing.T) {
 		Intent:    "Budget test",
 		Scope:     "single",
 		Authority: "advance_and_execute",
-		Model:     "claude-opus-4.6",
+		Model:     "claude-opus-4.7",
 		MaxCost:   0.1, // Tiny budget — will be exceeded immediately
 		Status:    "active",
 	}
@@ -603,7 +603,7 @@ func TestRunCommissionAdvanceOnlyStopsAtSpecced(t *testing.T) {
 		Intent:    "Advance only test",
 		Scope:     "single",
 		Authority: "advance_only",
-		Model:     "claude-opus-4.6",
+		Model:     "claude-opus-4.7",
 		MaxCost:   50.0,
 		Status:    "active",
 	}
@@ -666,7 +666,7 @@ func TestRunCommissionStageFails(t *testing.T) {
 		Intent:    "Stage failure test",
 		Scope:     "single",
 		Authority: "advance_and_execute",
-		Model:     "claude-opus-4.6",
+		Model:     "claude-opus-4.7",
 		MaxCost:   50.0,
 		Status:    "active",
 	}
@@ -735,7 +735,7 @@ func TestModelCost(t *testing.T) {
 	}{
 		{"claude-haiku-4.5", 0.33},
 		{"claude-sonnet-4.6", 1.0},
-		{"claude-opus-4.6", 3.0},
+		{"claude-opus-4.7", 7.5},
 		{"unknown-model", 1.0}, // default
 	}
 
