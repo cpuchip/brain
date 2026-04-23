@@ -231,6 +231,7 @@ func (s *Server) handleListEntries(w http.ResponseWriter, r *http.Request) {
 	category := r.URL.Query().Get("category")
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
+	includeParked := r.URL.Query().Get("include_parked") == "1" || r.URL.Query().Get("include_parked") == "true"
 
 	limit := 50
 	offset := 0
@@ -264,6 +265,21 @@ func (s *Server) handleListEntries(w http.ResponseWriter, r *http.Request) {
 	if entries == nil {
 		entries = []*store.Entry{}
 	}
+
+	// Filter parked (someday/archived) unless explicitly opted in. Defaults to hidden
+	// because the audit work that parks entries is meaningless if every list still
+	// surfaces them. Opt-in via ?include_parked=1.
+	if !includeParked {
+		filtered := entries[:0]
+		for _, e := range entries {
+			if e.Status == "someday" || e.Status == "archived" {
+				continue
+			}
+			filtered = append(filtered, e)
+		}
+		entries = filtered
+	}
+
 	jsonResponse(w, entries)
 }
 

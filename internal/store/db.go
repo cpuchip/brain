@@ -1082,7 +1082,7 @@ func (d *DB) ListStaleEntries(rawCutoff, researchedCutoff, completeCutoff time.T
 // Returns a map of maturity stage -> entries, with entries ordered by updated_at desc.
 func (d *DB) ListPipeline(stageFilter, categoryFilter string, limitPerStage int) (map[string][]*Entry, error) {
 	query := `
-		SELECT id, title, category, maturity, maturity_updated_at, scratch_path, created_at, updated_at
+		SELECT id, title, category, maturity, maturity_updated_at, scratch_path, created_at, updated_at, status
 		FROM entries
 		WHERE category IN ('ideas', 'projects', 'study')`
 	var args []interface{}
@@ -1109,8 +1109,8 @@ func (d *DB) ListPipeline(stageFilter, categoryFilter string, limitPerStage int)
 	for rows.Next() {
 		e := &Entry{}
 		var createdStr, updatedStr string
-		var maturity, maturityUpdated, scratchPath sql.NullString
-		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &maturity, &maturityUpdated, &scratchPath, &createdStr, &updatedStr); err != nil {
+		var maturity, maturityUpdated, scratchPath, entryStatus sql.NullString
+		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &maturity, &maturityUpdated, &scratchPath, &createdStr, &updatedStr, &entryStatus); err != nil {
 			return nil, err
 		}
 		e.Maturity = maturity.String
@@ -1119,6 +1119,7 @@ func (d *DB) ListPipeline(stageFilter, categoryFilter string, limitPerStage int)
 		}
 		e.MaturityUpdated = maturityUpdated.String
 		e.ScratchPath = scratchPath.String
+		e.Status = entryStatus.String
 		e.Created, _ = time.Parse(time.RFC3339, createdStr)
 		e.Updated, _ = time.Parse(time.RFC3339, updatedStr)
 
@@ -1343,7 +1344,7 @@ func (d *DB) ListUnassigned(limit int) ([]*Entry, error) {
 	}
 	rows, err := d.db.Query(`
 		SELECT id, title, category, body, confidence, needs_review, source, created_at, updated_at, project_id,
-			agent_route, route_status, maturity
+			agent_route, route_status, maturity, status
 		FROM entries WHERE project_id IS NULL ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -1356,9 +1357,9 @@ func (d *DB) ListUnassigned(limit int) ([]*Entry, error) {
 		var needsReview int
 		var createdStr, updatedStr string
 		var projectID sql.NullInt64
-		var agentRoute, routeStatus, maturity sql.NullString
+		var agentRoute, routeStatus, maturity, entryStatus sql.NullString
 		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr, &projectID,
-			&agentRoute, &routeStatus, &maturity); err != nil {
+			&agentRoute, &routeStatus, &maturity, &entryStatus); err != nil {
 			return nil, err
 		}
 		e.NeedsReview = needsReview != 0
@@ -1376,6 +1377,9 @@ func (d *DB) ListUnassigned(limit int) ([]*Entry, error) {
 		}
 		if maturity.Valid {
 			e.Maturity = maturity.String
+		}
+		if entryStatus.Valid {
+			e.Status = entryStatus.String
 		}
 		entries = append(entries, e)
 	}
