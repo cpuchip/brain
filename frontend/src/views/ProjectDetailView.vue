@@ -96,13 +96,19 @@ const stageLabels: Record<string, string> = {
   unset: 'No Stage',
 }
 
+// Entries visible after status filter (used by both board lanes and list-view stages).
+const visibleEntries = computed(() => {
+  if (showParkedOnBoard.value) return entries.value
+  return entries.value.filter(e => !(e.status === 'someday' || e.status === 'archived' || isStaleDone(e)))
+})
+
 const entriesByMaturity = computed(() => {
   const grouped: Record<string, Entry[]> = {}
   for (const stage of maturityStages) {
     grouped[stage] = []
   }
   grouped['unset'] = []
-  for (const e of entries.value) {
+  for (const e of visibleEntries.value) {
     const m = e.maturity || 'unset'
     if (grouped[m]) {
       grouped[m].push(e)
@@ -1078,22 +1084,33 @@ subscribe('entry.created', () => {
             >No entries</div>
           </div>
         </div>
-      </div>
 
-      <!-- Parked footer (someday/archived/stale-done) -->
-      <div v-if="viewMode === 'board' && parkedEntries.length > 0" class="mt-4 flex items-center justify-end">
-        <button
-          @click="toggleShowParkedOnBoard"
-          class="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-          :title="`${parkedEntries.length} entries parked: someday, archived, or done >${DONE_ROLLOFF_DAYS}d ago`"
-        >
-          <span v-if="!showParkedOnBoard">{{ parkedEntries.length }} parked · show all</span>
-          <span v-else>showing all · hide parked</span>
-        </button>
+        <!-- Parked footer (board) -->
+        <div v-if="parkedEntries.length > 0" class="col-span-3 mt-2 flex items-center justify-end">
+          <button
+            @click="toggleShowParkedOnBoard"
+            class="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            :title="`${parkedEntries.length} entries parked: someday, archived, or done >${DONE_ROLLOFF_DAYS}d ago`"
+          >
+            <span v-if="!showParkedOnBoard">{{ parkedEntries.length }} parked · show all</span>
+            <span v-else>showing all · hide parked</span>
+          </button>
+        </div>
       </div>
 
       <!-- ========== LIST VIEW (original) ========== -->
       <div v-else class="space-y-6">
+        <!-- Parked toggle (list) -->
+        <div v-if="parkedEntries.length > 0" class="flex items-center justify-end -mb-2">
+          <button
+            @click="toggleShowParkedOnBoard"
+            class="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            :title="`${parkedEntries.length} entries parked: someday, archived, or done >${DONE_ROLLOFF_DAYS}d ago`"
+          >
+            <span v-if="!showParkedOnBoard">{{ parkedEntries.length }} parked · show all</span>
+            <span v-else>showing all · hide parked</span>
+          </button>
+        </div>
         <div v-for="stage in nonEmptyStages" :key="stage">
           <div class="flex items-center gap-2 mb-2">
             <span :class="['px-2 py-0.5 text-xs rounded-full font-medium', maturityColor(stage)]">
