@@ -639,6 +639,21 @@ subscribe('entry.created', () => {
           </div>
         </div>
         <div class="flex gap-2 items-center">
+          <!-- Show parked toggle (visible when there's anything parked) -->
+          <label
+            v-if="parkedEntries.length > 0"
+            class="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none px-2 py-1.5 rounded hover:bg-gray-800 transition-colors"
+            :title="`${parkedEntries.length} entries parked: someday, archived, or done >${DONE_ROLLOFF_DAYS}d ago`"
+          >
+            <input
+              type="checkbox"
+              :checked="showParkedOnBoard"
+              @change="toggleShowParkedOnBoard"
+              class="accent-sky-500"
+            />
+            <span>Show {{ parkedEntries.length }} parked</span>
+          </label>
+
           <!-- Board/List toggle -->
           <div class="flex bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
             <button
@@ -1084,33 +1099,10 @@ subscribe('entry.created', () => {
             >No entries</div>
           </div>
         </div>
-
-        <!-- Parked footer (board) -->
-        <div v-if="parkedEntries.length > 0" class="col-span-3 mt-2 flex items-center justify-end">
-          <button
-            @click="toggleShowParkedOnBoard"
-            class="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-            :title="`${parkedEntries.length} entries parked: someday, archived, or done >${DONE_ROLLOFF_DAYS}d ago`"
-          >
-            <span v-if="!showParkedOnBoard">{{ parkedEntries.length }} parked · show all</span>
-            <span v-else>showing all · hide parked</span>
-          </button>
-        </div>
       </div>
 
       <!-- ========== LIST VIEW (original) ========== -->
       <div v-else class="space-y-6">
-        <!-- Parked toggle (list) -->
-        <div v-if="parkedEntries.length > 0" class="flex items-center justify-end -mb-2">
-          <button
-            @click="toggleShowParkedOnBoard"
-            class="text-xs text-gray-500 hover:text-gray-300 transition-colors"
-            :title="`${parkedEntries.length} entries parked: someday, archived, or done >${DONE_ROLLOFF_DAYS}d ago`"
-          >
-            <span v-if="!showParkedOnBoard">{{ parkedEntries.length }} parked · show all</span>
-            <span v-else>showing all · hide parked</span>
-          </button>
-        </div>
         <div v-for="stage in nonEmptyStages" :key="stage">
           <div class="flex items-center gap-2 mb-2">
             <span :class="['px-2 py-0.5 text-xs rounded-full font-medium', maturityColor(stage)]">

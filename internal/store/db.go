@@ -365,7 +365,7 @@ func (d *DB) SetAgentOutput(entryID, agentOutput string, tokensUsed int64) error
 func (d *DB) ListByRouteStatus(status string) ([]*Entry, error) {
 	rows, err := d.db.Query(`
 		SELECT id, title, category, body, confidence, source, created_at, updated_at,
-			agent_route, route_status, agent_output, tokens_used
+			agent_route, route_status, agent_output, tokens_used, status
 		FROM entries WHERE route_status = ? AND COALESCE(notebook, 0) = 0 ORDER BY updated_at DESC`, status)
 	if err != nil {
 		return nil, err
@@ -376,10 +376,10 @@ func (d *DB) ListByRouteStatus(status string) ([]*Entry, error) {
 	for rows.Next() {
 		e := &Entry{}
 		var createdStr, updatedStr string
-		var agentRoute, routeStatus, agentOutput sql.NullString
+		var agentRoute, routeStatus, agentOutput, entryStatus sql.NullString
 		var tokensUsed sql.NullInt64
 		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &e.Source, &createdStr, &updatedStr,
-			&agentRoute, &routeStatus, &agentOutput, &tokensUsed); err != nil {
+			&agentRoute, &routeStatus, &agentOutput, &tokensUsed, &entryStatus); err != nil {
 			return nil, err
 		}
 		e.Created, _ = time.Parse(time.RFC3339, createdStr)
@@ -388,6 +388,7 @@ func (d *DB) ListByRouteStatus(status string) ([]*Entry, error) {
 		e.RouteStatus = routeStatus.String
 		e.AgentOutput = agentOutput.String
 		e.TokensUsed = tokensUsed.Int64
+		e.Status = entryStatus.String
 		entries = append(entries, e)
 	}
 	return entries, nil

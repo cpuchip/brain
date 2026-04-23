@@ -1310,6 +1310,10 @@ func (s *Server) handleAgentRoutable(w http.ResponseWriter, r *http.Request) {
 			if e.RouteStatus == ai.RouteStatusComplete || e.RouteStatus == ai.RouteStatusRunning || e.RouteStatus == ai.RouteStatusPending || e.RouteStatus == ai.RouteStatusDismissed {
 				continue
 			}
+			// Skip parked entries (someday/archived) — agent surfaces should not surface deliberately set-aside work.
+			if e.Status == "someday" || e.Status == "archived" {
+				continue
+			}
 			result = append(result, routableEntry{
 				ID:        e.ID,
 				Title:     e.Title,
@@ -1371,6 +1375,9 @@ func (s *Server) handleAgentReviewQueue(w http.ResponseWriter, r *http.Request) 
 	}
 	result := make([]reviewEntry, 0, len(entries))
 	for _, e := range entries {
+		if e.Status == "someday" || e.Status == "archived" {
+			continue
+		}
 		result = append(result, reviewEntry{
 			ID:          e.ID,
 			Title:       e.Title,
@@ -2485,6 +2492,9 @@ func (s *Server) handleYourTurn(w http.ResponseWriter, r *http.Request) {
 
 	result := make([]turnEntry, 0, len(entries))
 	for _, e := range entries {
+		if e.Status == "someday" || e.Status == "archived" {
+			continue
+		}
 		bodyPreview := e.Body
 		if len(bodyPreview) > 200 {
 			bodyPreview = bodyPreview[:200]
