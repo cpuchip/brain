@@ -34,9 +34,13 @@ if (-not $SkipBuild) {
     Pop-Location
 
     # 2. Build Go binary (frontend dist/ is embedded via go:embed)
+    # NOTE: -tags fts5 is REQUIRED — brain uses SQLite FTS5 for full-text search.
+    # Without it the binary either fails to compile (depending on go-sqlite3
+    # version) or crashes at runtime on the first FTS5 query. Drift from this
+    # is the most common cause of `.\start.ps1` exiting with code 1.
     Write-Host "  [2/2] Building server..." -ForegroundColor Yellow
     Push-Location $base
-    go build -o brain.exe ./cmd/brain/
+    go build -tags fts5 -o brain.exe ./cmd/brain/
     if ($LASTEXITCODE -ne 0) { Pop-Location; throw "Go build failed" }
     Pop-Location
 }
@@ -53,7 +57,7 @@ Write-Host "  Press Ctrl+C to stop`n" -ForegroundColor DarkGray
 Push-Location $base
 try {
     if ($UseGoRun) {
-        go run ./cmd/brain/
+        go run -tags fts5 ./cmd/brain/
     } else {
         & "$base\brain.exe"
     }
@@ -62,8 +66,8 @@ catch {
     $msg = $_.Exception.Message
     if ($msg -match "Application Control policy has blocked this file") {
         Write-Host "  brain.exe blocked by Application Control policy." -ForegroundColor Yellow
-        Write-Host "  Falling back to: go run ./cmd/brain/" -ForegroundColor Yellow
-        go run ./cmd/brain/
+        Write-Host "  Falling back to: go run -tags fts5 ./cmd/brain/" -ForegroundColor Yellow
+        go run -tags fts5 ./cmd/brain/
     } else {
         throw
     }
