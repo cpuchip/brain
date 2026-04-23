@@ -83,7 +83,7 @@ const scenarioDialog = ref(false)
 const scenarioEntryId = ref('')
 const scenarioText = ref('')
 
-const editForm = ref({ name: '', description: '', emoji: '', status: '', context_file: '', workspace_type: 'integrated', workspace_path: '', github_repo: '', repo_visibility: 'private', init_instructions: '' })
+const editForm = ref({ name: '', description: '', emoji: '', status: '', context_file: '', workspace_type: 'integrated', workspace_path: '', github_repo: '', repo_visibility: 'private', init_instructions: '', pipeline_enabled: true })
 
 const maturityStages = ['raw', 'researched', 'planned', 'specced', 'executing', 'verified'] as const
 const stageLabels: Record<string, string> = {
@@ -347,6 +347,7 @@ function startEdit() {
     github_repo: project.value.github_repo || '',
     repo_visibility: project.value.repo_visibility || 'private',
     init_instructions: project.value.init_instructions || '',
+    pipeline_enabled: project.value.pipeline_enabled !== false,
   }
   editing.value = true
 }
@@ -366,6 +367,7 @@ async function saveEdit() {
       github_repo: editForm.value.github_repo || undefined,
       repo_visibility: editForm.value.repo_visibility,
       init_instructions: editForm.value.init_instructions || undefined,
+      pipeline_enabled: editForm.value.pipeline_enabled,
     })
     editing.value = false
     await load()
@@ -627,6 +629,9 @@ subscribe('entry.created', () => {
             <span :class="['px-2 py-0.5 text-xs rounded-full', statusColor(project.status)]">
               {{ project.status }}
             </span>
+            <span v-if="project.pipeline_enabled === false" class="px-2 py-0.5 text-xs rounded-full bg-purple-900/40 text-purple-300" title="Manual project — entries skip the AI pipeline">
+              📓 manual
+            </span>
           </div>
           <p v-if="project.description" class="text-sm text-gray-400">{{ project.description }}</p>
           <div class="flex items-center gap-3 mt-1">
@@ -750,6 +755,17 @@ subscribe('entry.created', () => {
             rows="4"
             class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 focus:outline-none focus:ring-2 focus:ring-sky-500 resize-y"
           />
+        </div>
+
+        <!-- Pipeline opt-out -->
+        <div class="border-t border-gray-800 pt-3">
+          <label class="flex items-start gap-2 text-sm text-gray-300 cursor-pointer">
+            <input type="checkbox" v-model="editForm.pipeline_enabled" class="mt-0.5 accent-sky-500" />
+            <span>
+              <span class="font-medium">AI pipeline enabled</span>
+              <span class="block text-xs text-gray-500 mt-0.5">When off, new entries skip auto-classification, routing, and research. Manual / notebook projects.</span>
+            </span>
+          </label>
         </div>
 
         <div class="flex justify-end gap-2">

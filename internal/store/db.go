@@ -1283,6 +1283,23 @@ func (d *DB) migrateProjects() error {
 			return fmt.Errorf("adding context_file to projects: %w", err)
 		}
 	}
+
+	// Add pipeline_enabled column to projects if not exists.
+	// Default 1 = pipeline-managed (existing behavior).
+	// Set to 0 for manual/notebook projects whose entries skip routing/classification.
+	projCols2, err := d.columnNames("projects")
+	if err != nil {
+		return err
+	}
+	if !projCols2["pipeline_enabled"] {
+		_, err = d.db.Exec("ALTER TABLE projects ADD COLUMN pipeline_enabled INTEGER NOT NULL DEFAULT 1")
+		if err != nil {
+			return fmt.Errorf("adding pipeline_enabled to projects: %w", err)
+		}
+		// Idempotent: flip Notebook off if it exists and is still pipeline-managed.
+		// Safe to no-op if there is no Notebook project on this DB.
+		_, _ = d.db.Exec("UPDATE projects SET pipeline_enabled = 0 WHERE name = 'Notebook' AND pipeline_enabled = 1")
+	}
 	return nil
 }
 
@@ -1290,11 +1307,11 @@ func (d *DB) migrateProjects() error {
 func (d *DB) CreateProject(p *Project) (int, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := d.db.Exec(`
-		INSERT INTO projects (name, description, status, emoji, context_file, workspace_type, workspace_path, github_repo, repo_visibility, init_instructions, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO projects (name, description, status, emoji, context_file, workspace_type, workspace_path, github_repo, repo_visibility, init_instructions, pipeline_enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), nullStr(p.ContextFile),
 		nullStr(p.WorkspaceType), nullStr(p.WorkspacePath), nullStr(p.GithubRepo), nullStr(p.RepoVisibility),
-		nullStr(p.InitInstructions),
+		nullStr(p.InitInstructions), boolToInt(p.PipelineEnabled),
 		now, now,
 	)
 	if err != nil {
@@ -1312,14 +1329,15 @@ func (d *DB) GetProject(id int) (*Project, error) {
 	p := &Project{}
 	var createdStr, updatedStr string
 	var desc, emoji, contextFile, wsType, wsPath, ghRepo, repoVis, initInstr sql.NullString
+	var pipelineEnabled int
 	err := d.db.QueryRow(`
 		SELECT id, name, description, status, emoji, context_file,
 			workspace_type, workspace_path, github_repo, repo_visibility,
-			init_instructions, created_at, updated_at
+			init_instructions, pipeline_enabled, created_at, updated_at
 		FROM projects WHERE id = ?`, id).Scan(
 		&p.ID, &p.Name, &desc, &p.Status, &emoji, &contextFile,
 		&wsType, &wsPath, &ghRepo, &repoVis, &initInstr,
-		&createdStr, &updatedStr,
+		&pipelineEnabled, &createdStr, &updatedStr,
 	)
 	if err != nil {
 		return nil, err
@@ -1332,6 +1350,7 @@ func (d *DB) GetProject(id int) (*Project, error) {
 	p.GithubRepo = ghRepo.String
 	p.RepoVisibility = repoVis.String
 	p.InitInstructions = initInstr.String
+	p.PipelineEnabled = pipelineEnabled != 0
 	p.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
 	p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
 	return p, nil
@@ -1398,7 +1417,7 @@ func (d *DB) ListProjects() ([]*Project, error) {
 	rows, err := d.db.Query(`
 		SELECT p.id, p.name, p.description, p.status, p.emoji, p.context_file,
 			p.workspace_type, p.workspace_path, p.github_repo, p.repo_visibility,
-			p.init_instructions, p.created_at, p.updated_at,
+			p.init_instructions, p.pipeline_enabled, p.created_at, p.updated_at,
 			COUNT(e.id) AS entry_count
 		FROM projects p
 		LEFT JOIN entries e ON e.project_id = p.id
@@ -1416,9 +1435,10 @@ func (d *DB) ListProjects() ([]*Project, error) {
 		p := &Project{}
 		var createdStr, updatedStr string
 		var desc, emoji, contextFile, wsType, wsPath, ghRepo, repoVis, initInstr sql.NullString
+		var pipelineEnabled int
 		if err := rows.Scan(&p.ID, &p.Name, &desc, &p.Status, &emoji, &contextFile,
 			&wsType, &wsPath, &ghRepo, &repoVis, &initInstr,
-			&createdStr, &updatedStr, &p.EntryCount); err != nil {
+			&pipelineEnabled, &createdStr, &updatedStr, &p.EntryCount); err != nil {
 			return nil, err
 		}
 		p.Description = desc.String
@@ -1428,6 +1448,7 @@ func (d *DB) ListProjects() ([]*Project, error) {
 		p.WorkspacePath = wsPath.String
 		p.GithubRepo = ghRepo.String
 		p.RepoVisibility = repoVis.String
+		p.PipelineEnabled = pipelineEnabled != 0
 		p.InitInstructions = initInstr.String
 		p.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
 		p.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
@@ -1442,11 +1463,11 @@ func (d *DB) UpdateProject(p *Project) error {
 	_, err := d.db.Exec(`
 		UPDATE projects SET name = ?, description = ?, status = ?, emoji = ?, context_file = ?,
 			workspace_type = ?, workspace_path = ?, github_repo = ?, repo_visibility = ?,
-			init_instructions = ?, updated_at = ?
+			init_instructions = ?, pipeline_enabled = ?, updated_at = ?
 		WHERE id = ?`,
 		p.Name, nullStr(p.Description), p.Status, nullStr(p.Emoji), nullStr(p.ContextFile),
 		nullStr(p.WorkspaceType), nullStr(p.WorkspacePath), nullStr(p.GithubRepo), nullStr(p.RepoVisibility),
-		nullStr(p.InitInstructions), now, p.ID,
+		nullStr(p.InitInstructions), boolToInt(p.PipelineEnabled), now, p.ID,
 	)
 	return err
 }

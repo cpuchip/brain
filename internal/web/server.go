@@ -1241,6 +1241,15 @@ func (s *Server) handleAgentRoute(w http.ResponseWriter, r *http.Request) {
 // routeEntry runs agent routing for an entry in the background.
 // It marks the entry as pending, then spawns a goroutine to run the agent.
 func (s *Server) routeEntry(entry *store.Entry, route ai.RouteRule) {
+	// Non-pipeline projects (e.g. "Notebook") opt out of all auto-routing.
+	// Manual entries belong to the user, not to the agent loop.
+	if entry.ProjectID != nil {
+		if proj, err := s.store.DB().GetProject(*entry.ProjectID); err == nil && proj != nil && !proj.PipelineEnabled {
+			log.Printf("Skipping route for entry %s: project %q is non-pipeline", entry.ID, proj.Name)
+			return
+		}
+	}
+
 	_ = s.store.UpdateRouteStatus(entry.ID, ai.RouteStatusPending)
 
 	go func() {
@@ -1916,6 +1925,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		GithubRepo       string `json:"github_repo"`
 		RepoVisibility   string `json:"repo_visibility"`
 		InitInstructions string `json:"init_instructions"`
+		PipelineEnabled  *bool  `json:"pipeline_enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "invalid JSON", err, http.StatusBadRequest)
@@ -1934,6 +1944,11 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	if repoVis == "" {
 		repoVis = "private"
 	}
+	// Default pipeline_enabled = true to preserve existing behavior.
+	pipelineEnabled := true
+	if req.PipelineEnabled != nil {
+		pipelineEnabled = *req.PipelineEnabled
+	}
 
 	p := &store.Project{
 		Name:             req.Name,
@@ -1946,6 +1961,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		GithubRepo:       req.GithubRepo,
 		RepoVisibility:   repoVis,
 		InitInstructions: req.InitInstructions,
+		PipelineEnabled:  pipelineEnabled,
 	}
 	id, err := s.store.DB().CreateProject(p)
 	if err != nil {
@@ -2020,6 +2036,9 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if v, ok := updates["init_instructions"].(string); ok {
 		existing.InitInstructions = v
+	}
+	if v, ok := updates["pipeline_enabled"].(bool); ok {
+		existing.PipelineEnabled = v
 	}
 
 	if err := s.store.DB().UpdateProject(existing); err != nil {

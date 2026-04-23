@@ -82,7 +82,9 @@ type siblingEntry struct {
 }
 
 // BuildProjectContext assembles project context for an entry that belongs to a project.
-// Returns nil if the entry has no project assignment.
+// Returns nil if the entry has no project assignment, or if the project is
+// non-pipeline (manual). Non-pipeline projects must not feed any data into
+// agent prompts — they're the user's private workspace.
 func (p *Pipeline) BuildProjectContext(entry *store.Entry) *ProjectContext {
 	if entry.ProjectID == nil {
 		return nil
@@ -90,6 +92,9 @@ func (p *Pipeline) BuildProjectContext(entry *store.Entry) *ProjectContext {
 
 	project, err := p.store.DB().GetProject(*entry.ProjectID)
 	if err != nil {
+		return nil
+	}
+	if !project.PipelineEnabled {
 		return nil
 	}
 

@@ -58,6 +58,7 @@ export interface Project {
   github_repo?: string
   repo_visibility?: string
   init_instructions?: string
+  pipeline_enabled?: boolean
   entry_count?: number
   created_at: string
   updated_at: string
@@ -373,7 +374,7 @@ export const api = {
     return request<Project[]>('/projects')
   },
 
-  createProject(data: { name: string; description?: string; emoji?: string; workspace_type?: string; workspace_path?: string; github_repo?: string; repo_visibility?: string; init_instructions?: string }) {
+  createProject(data: { name: string; description?: string; emoji?: string; workspace_type?: string; workspace_path?: string; github_repo?: string; repo_visibility?: string; init_instructions?: string; pipeline_enabled?: boolean }) {
     return request<Project>('/projects', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -384,7 +385,7 @@ export const api = {
     return request<Project>(`/projects/${id}`)
   },
 
-  updateProject(id: number, updates: Partial<Pick<Project, 'name' | 'description' | 'status' | 'emoji' | 'context_file' | 'workspace_type' | 'workspace_path' | 'github_repo' | 'repo_visibility' | 'init_instructions'>>) {
+  updateProject(id: number, updates: Partial<Pick<Project, 'name' | 'description' | 'status' | 'emoji' | 'context_file' | 'workspace_type' | 'workspace_path' | 'github_repo' | 'repo_visibility' | 'init_instructions' | 'pipeline_enabled'>>) {
     return request<Project>(`/projects/${id}`, {
       method: 'PUT',
       body: JSON.stringify(updates),

@@ -13,6 +13,7 @@ const newWorkspaceType = ref('integrated')
 const newWorkspacePath = ref('')
 const newGithubRepo = ref('')
 const newRepoVisibility = ref('private')
+const newPipelineEnabled = ref(true)
 const creating = ref(false)
 
 async function loadProjects() {
@@ -37,6 +38,7 @@ async function createProject() {
       github_repo: newWorkspaceType.value === 'external' ? (newGithubRepo.value.trim() || undefined) : undefined,
       repo_visibility: newWorkspaceType.value === 'external' ? newRepoVisibility.value : undefined,
       init_instructions: newInitInstructions.value.trim() || undefined,
+      pipeline_enabled: newPipelineEnabled.value,
     })
     newName.value = ''
     newDesc.value = ''
@@ -46,6 +48,7 @@ async function createProject() {
     newWorkspacePath.value = ''
     newGithubRepo.value = ''
     newRepoVisibility.value = 'private'
+    newPipelineEnabled.value = true
     showCreate.value = false
     await loadProjects()
   } finally {
@@ -153,6 +156,16 @@ onMounted(loadProjects)
           rows="3"
           class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
         />
+
+        <!-- Pipeline opt-out -->
+        <label class="flex items-start gap-2 text-sm text-gray-300 cursor-pointer">
+          <input type="checkbox" v-model="newPipelineEnabled" class="mt-0.5 accent-sky-500" />
+          <span>
+            <span class="font-medium">AI pipeline enabled</span>
+            <span class="block text-xs text-gray-500 mt-0.5">When off, entries skip auto-classification, routing, and research. Use for personal notebooks, errand lists, family items.</span>
+          </span>
+        </label>
+
         <div class="flex justify-end">
           <button
             type="submit"
@@ -184,6 +197,7 @@ onMounted(loadProjects)
           <div class="flex items-center gap-2">
             <span v-if="project.emoji" class="text-lg">{{ project.emoji }}</span>
             <h2 class="font-semibold text-gray-100">{{ project.name }}</h2>
+            <span v-if="project.pipeline_enabled === false" class="text-xs px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-300" title="Manual project — entries skip the AI pipeline">📓 manual</span>
           </div>
           <span :class="['px-2 py-0.5 text-xs rounded-full', statusColor(project.status)]">
             {{ project.status }}

@@ -17,6 +17,7 @@ type Project struct {
 	GithubRepo       string    `json:"github_repo,omitempty"`       // e.g. "cpuchip/space-center"
 	RepoVisibility   string    `json:"repo_visibility,omitempty"`   // public, private
 	InitInstructions string    `json:"init_instructions,omitempty"` // detailed instructions for agent initialization
+	PipelineEnabled  bool      `json:"pipeline_enabled"`            // false = manual project (skip auto-routing/classification/research)
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 
