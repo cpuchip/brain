@@ -256,6 +256,35 @@ async function toggleDone() {
   }
 }
 
+// Status verbs for one-tap status change. `null` clears the status.
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: '(none)' },
+  { value: 'active', label: 'Active' },
+  { value: 'waiting', label: 'Waiting' },
+  { value: 'roadmap', label: 'Roadmap' },
+  { value: 'someday', label: 'Someday' },
+  { value: 'done', label: 'Done' },
+  { value: 'archived', label: 'Archived' },
+]
+const statusMenuOpen = ref(false)
+const changingStatus = ref(false)
+async function changeStatus(newStatus: string) {
+  if (!entry.value || changingStatus.value) return
+  statusMenuOpen.value = false
+  if ((entry.value.status || '') === newStatus) return
+  changingStatus.value = true
+  try {
+    // Empty string means clear the status field.
+    await api.updateEntry(entry.value.id, { status: newStatus || undefined as any })
+    showToast(newStatus ? `Status: ${newStatus}` : 'Status cleared')
+    await load()
+  } catch {
+    showToast('Failed to change status')
+  } finally {
+    changingStatus.value = false
+  }
+}
+
 async function deleteEntry() {
   if (!entry.value) return
   await api.deleteEntry(entry.value.id)
@@ -652,7 +681,44 @@ subscribe('execution.started', (evt) => {
           <div class="flex items-center gap-2 mt-1 text-sm text-gray-500 flex-wrap">
             <span class="px-2 py-0.5 rounded-full bg-gray-800 text-sky-400 text-xs">{{ entry.category }}</span>
             <span v-if="entry.maturity" :class="['px-2 py-0.5 rounded-full text-xs', maturityColor(entry.maturity)]">{{ maturityLabel[entry.maturity] || entry.maturity }}</span>
-            <span v-if="entry.status" class="px-2 py-0.5 rounded-full bg-gray-800 text-amber-400 text-xs">{{ entry.status }}</span>
+            <!-- Status pill: click to change -->
+            <div class="relative inline-block">
+              <button
+                @click="statusMenuOpen = !statusMenuOpen"
+                :disabled="changingStatus"
+                class="px-2 py-0.5 rounded-full text-xs flex items-center gap-1 transition-colors"
+                :class="entry.status
+                  ? (entry.status === 'someday' || entry.status === 'archived'
+                      ? 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                      : 'bg-gray-800 text-amber-400 hover:bg-gray-700')
+                  : 'bg-gray-800/50 text-gray-600 hover:text-gray-400 border border-dashed border-gray-700'"
+                :title="entry.status ? `Status: ${entry.status} — click to change` : 'Set status'"
+              >
+                <span>{{ entry.status || '+ status' }}</span>
+                <span class="text-[10px] opacity-60">▾</span>
+              </button>
+              <!-- Backdrop closes menu on outside click -->
+              <div
+                v-if="statusMenuOpen"
+                @click="statusMenuOpen = false"
+                class="fixed inset-0 z-10"
+              ></div>
+              <div
+                v-if="statusMenuOpen"
+                class="absolute z-20 mt-1 left-0 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[140px]"
+              >
+                <button
+                  v-for="opt in STATUS_OPTIONS"
+                  :key="opt.value"
+                  @click="changeStatus(opt.value)"
+                  class="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-800 transition-colors flex items-center justify-between"
+                  :class="(entry.status || '') === opt.value ? 'text-sky-400' : 'text-gray-300'"
+                >
+                  <span>{{ opt.label }}</span>
+                  <span v-if="(entry.status || '') === opt.value" class="text-sky-400">✓</span>
+                </button>
+              </div>
+            </div>
             <RouterLink
               v-if="entry.project_id"
               :to="`/projects/${entry.project_id}`"

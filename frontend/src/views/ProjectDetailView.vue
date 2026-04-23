@@ -118,12 +118,36 @@ const nonEmptyStages = computed(() => {
 })
 
 // 3-column board: Inbox / Working / Done
+// Honors `status`: someday/archived are parked (footer); old done rolls off.
+const showParkedOnBoard = ref(localStorage.getItem('project-board-show-parked') === '1')
+function toggleShowParkedOnBoard() {
+  showParkedOnBoard.value = !showParkedOnBoard.value
+  localStorage.setItem('project-board-show-parked', showParkedOnBoard.value ? '1' : '0')
+}
+
+const DONE_ROLLOFF_DAYS = 30
+function isStaleDone(e: Entry): boolean {
+  if (e.status !== 'done') return false
+  const ts = e.updated_at || e.created_at
+  if (!ts) return false
+  const ageDays = (Date.now() - new Date(ts).getTime()) / (1000 * 60 * 60 * 24)
+  return ageDays > DONE_ROLLOFF_DAYS
+}
+
+const parkedEntries = computed(() => {
+  return entries.value.filter(e => e.status === 'someday' || e.status === 'archived' || isStaleDone(e))
+})
+
 const boardColumns = computed(() => {
   const inbox: Entry[] = []
   const working: Entry[] = []
   const done: Entry[] = []
 
   for (const e of entries.value) {
+    // Park someday/archived and stale-done unless toggle is on.
+    const isParked = e.status === 'someday' || e.status === 'archived' || isStaleDone(e)
+    if (isParked && !showParkedOnBoard.value) continue
+
     if (e.notebook || !e.maturity || e.maturity === 'raw') {
       inbox.push(e)
     } else if (e.maturity === 'verified' || e.maturity === 'complete') {
@@ -1054,6 +1078,18 @@ subscribe('entry.created', () => {
             >No entries</div>
           </div>
         </div>
+      </div>
+
+      <!-- Parked footer (someday/archived/stale-done) -->
+      <div v-if="viewMode === 'board' && parkedEntries.length > 0" class="mt-4 flex items-center justify-end">
+        <button
+          @click="toggleShowParkedOnBoard"
+          class="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          :title="`${parkedEntries.length} entries parked: someday, archived, or done >${DONE_ROLLOFF_DAYS}d ago`"
+        >
+          <span v-if="!showParkedOnBoard">{{ parkedEntries.length }} parked · show all</span>
+          <span v-else>showing all · hide parked</span>
+        </button>
       </div>
 
       <!-- ========== LIST VIEW (original) ========== -->

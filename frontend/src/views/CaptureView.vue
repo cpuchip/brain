@@ -1,12 +1,19 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { api, type Entry, type Stats } from '../api'
+import { useStatusFilter } from '../composables/useStatusFilter'
 
 const text = ref('')
 const submitting = ref(false)
 const asNotebook = ref(false)
 const recentEntries = ref<Entry[]>([])
 const stats = ref<Stats | null>(null)
+
+// Hide someday/archived from Recent. Roll off done after 7 days.
+const { showParked, setShowParked, visibleEntries, hiddenCount, hiddenBreakdown } = useStatusFilter(
+  recentEntries,
+  { doneRollOffDays: 7, storageKey: 'capture-show-parked' },
+)
 
 async function capture() {
   const body = text.value.trim()
@@ -29,8 +36,9 @@ async function capture() {
 }
 
 async function load() {
+  // Pull more than 10 so the filter has room — Recent still shows up to 10.
   const [entries, s] = await Promise.all([
-    api.listEntries({ limit: 10 }),
+    api.listEntries({ limit: 30 }),
     api.stats(),
   ])
   recentEntries.value = entries
@@ -87,20 +95,35 @@ onMounted(load)
 
     <!-- Recent entries -->
     <div>
-      <h2 class="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">Recent</h2>
-      <div v-if="recentEntries.length === 0" class="text-center py-8 text-gray-600">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-medium text-gray-500 uppercase tracking-wider">Recent</h2>
+        <button
+          v-if="hiddenCount > 0 || showParked"
+          @click="setShowParked(!showParked)"
+          class="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          :title="`${hiddenBreakdown.parked} parked (someday/archived) + ${hiddenBreakdown.staleDone} done >7d`"
+        >
+          <span v-if="!showParked">{{ hiddenCount }} hidden · show all</span>
+          <span v-else>showing all · hide parked</span>
+        </button>
+      </div>
+      <div v-if="visibleEntries.length === 0" class="text-center py-8 text-gray-600">
         No thoughts yet. Capture one above.
       </div>
       <div v-else class="space-y-2">
         <RouterLink
-          v-for="entry in recentEntries"
+          v-for="entry in visibleEntries.slice(0, 10)"
           :key="entry.id"
           :to="`/entries/${entry.id}`"
           class="block bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 hover:border-sky-600 transition-colors"
+          :class="{ 'opacity-60': entry.status === 'someday' || entry.status === 'archived' }"
         >
           <div class="flex items-center justify-between mb-1">
             <span class="font-medium text-sm">{{ entry.title }}</span>
-            <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-sky-400">{{ entry.category }}</span>
+            <div class="flex items-center gap-1.5">
+              <span v-if="entry.status" class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-amber-400">{{ entry.status }}</span>
+              <span class="text-xs px-2 py-0.5 rounded-full bg-gray-800 text-sky-400">{{ entry.category }}</span>
+            </div>
           </div>
           <div class="text-sm text-gray-500 truncate">{{ entry.body }}</div>
           <div class="text-xs text-gray-600 mt-1">

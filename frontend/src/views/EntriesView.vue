@@ -2,6 +2,7 @@
 import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, type Entry, type Stats, type Project } from '../api'
+import { useStatusFilter } from '../composables/useStatusFilter'
 
 const route = useRoute()
 const router = useRouter()
@@ -10,6 +11,12 @@ const stats = ref<Stats | null>(null)
 const projects = ref<Project[]>([])
 const loading = ref(true)
 const activeCategory = ref('')
+
+// Hide someday/archived from default list. Roll off done after 30 days.
+const { showParked, setShowParked, visibleEntries, hiddenCount, hiddenBreakdown } = useStatusFilter(
+  entries,
+  { doneRollOffDays: 30, storageKey: 'entries-show-parked' },
+)
 
 // Bulk selection
 const selectMode = ref(false)
@@ -26,10 +33,10 @@ function toggleSelect(id: string) {
 }
 
 function toggleSelectAll() {
-  if (selectedIds.value.size === entries.value.length) {
+  if (selectedIds.value.size === visibleEntries.value.length) {
     selectedIds.value = new Set()
   } else {
-    selectedIds.value = new Set(entries.value.map(e => e.id))
+    selectedIds.value = new Set(visibleEntries.value.map(e => e.id))
   }
 }
 
@@ -134,17 +141,28 @@ onMounted(async () => {
 
     <!-- Entry list -->
     <div v-if="loading" class="text-center py-8 text-gray-500">Loading...</div>
-    <div v-else-if="entries.length === 0" class="text-center py-12 text-gray-600">
-      No entries{{ activeCategory ? ` in "${activeCategory}"` : '' }}.
+    <div v-else-if="visibleEntries.length === 0" class="text-center py-12 text-gray-600">
+      No entries{{ activeCategory ? ` in "${activeCategory}"` : '' }}{{ hiddenCount > 0 ? ` (${hiddenCount} hidden by status)` : '' }}.
     </div>
     <div v-else class="space-y-2">
+      <!-- Status filter affordance -->
+      <div v-if="hiddenCount > 0 || showParked" class="flex items-center justify-end px-1 pb-1">
+        <button
+          @click="setShowParked(!showParked)"
+          class="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          :title="`${hiddenBreakdown.parked} parked (someday/archived) + ${hiddenBreakdown.staleDone} done >30d`"
+        >
+          <span v-if="!showParked">{{ hiddenCount }} hidden by status · show all</span>
+          <span v-else>showing all · hide parked</span>
+        </button>
+      </div>
       <!-- Select all toggle -->
       <div v-if="selectMode" class="flex items-center gap-2 px-4 py-1 text-xs text-gray-500">
-        <input type="checkbox" :checked="selectedIds.size === entries.length && entries.length > 0" @change="toggleSelectAll" class="accent-sky-500 w-3.5 h-3.5">
-        <span>{{ selectedIds.size === entries.length ? 'Deselect all' : 'Select all' }}</span>
+        <input type="checkbox" :checked="selectedIds.size === visibleEntries.length && visibleEntries.length > 0" @change="toggleSelectAll" class="accent-sky-500 w-3.5 h-3.5">
+        <span>{{ selectedIds.size === visibleEntries.length ? 'Deselect all' : 'Select all' }}</span>
       </div>
       <div
-        v-for="entry in entries"
+        v-for="entry in visibleEntries"
         :key="entry.id"
         class="flex items-start gap-2"
       >
