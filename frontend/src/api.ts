@@ -8,6 +8,16 @@ export interface SubTask {
   updated_at?: string
 }
 
+export interface ModelCatalogEntry {
+  id: string
+  display_name: string
+  family: string
+  cost: number
+  preset_key?: string
+  in_escalation: boolean
+  escalation_rank?: number
+}
+
 export interface Entry {
   id: string
   title: string
@@ -559,6 +569,10 @@ export const api = {
 
   executionContext(entryId: string) {
     return request<{ entry_id: string; title: string; maturity: string; scenarios: string[]; model: string; cost: number; prompt: string; has_scratch: boolean }>(`/entries/${encodeURIComponent(entryId)}/execution-context`)
+  },
+
+  listModels() {
+    return request<{ models: ModelCatalogEntry[]; stage_defaults: Record<string, string> }>('/models')
   },
 
   async readFile(path: string): Promise<string> {

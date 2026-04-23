@@ -3,6 +3,7 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, type Project, type Entry, type SessionMessage, type Commission } from '../api'
 import { useWebSocket } from '../composables/useWebSocket'
+import { useModelCatalog } from '../composables/useModelCatalog'
 import CommissionDialog from '../components/CommissionDialog.vue'
 
 const route = useRoute()
@@ -56,9 +57,17 @@ const newEntryError = ref('')
 // Inline commission fields
 const newEntryCommissionIntent = ref('')
 const newEntryCommissionAuthority = ref('advance_and_execute')
-const newEntryCommissionModel = ref('claude-opus-4.6')
+const { models: modelCatalog, stageDefaults: modelStageDefaults, load: loadModelCatalog } = useModelCatalog()
+const newEntryCommissionModel = ref(modelStageDefaults.value?.commission ?? 'claude-opus-4.7')
 const newEntryCommissionBudget = ref(50)
 const newEntryShowAdvanced = ref(false)
+
+// Sync default once catalog loads (fetch happens in onMounted below).
+watch(modelStageDefaults, (sd) => {
+  if (sd?.commission && !creatingEntry.value) {
+    newEntryCommissionModel.value = sd.commission
+  }
+})
 
 // Pre-fill commission intent from entry body when checkbox is toggled on
 watch(newEntryCommission, (checked) => {
@@ -310,7 +319,7 @@ function openNewEntryDialog() {
   newEntryError.value = ''
   newEntryCommissionIntent.value = ''
   newEntryCommissionAuthority.value = 'advance_and_execute'
-  newEntryCommissionModel.value = 'claude-opus-4.6'
+  newEntryCommissionModel.value = modelStageDefaults.value?.commission ?? 'claude-opus-4.7'
   newEntryCommissionBudget.value = 50
   newEntryShowAdvanced.value = false
   newEntryDialog.value = true
@@ -719,6 +728,7 @@ async function submitVerification() {
 }
 
 onMounted(load)
+onMounted(() => { loadModelCatalog() })
 
 // Live updates — refresh entries when any entry changes
 const { subscribe } = useWebSocket()
@@ -916,10 +926,12 @@ subscribe('entry.created', () => {
 
       <!-- Feedback dialog for revise/defer -->
       <Teleport to="body">
-        <dialog
-          :open="feedbackDialog"
-          class="fixed inset-0 z-40 flex items-center justify-center bg-transparent"
+        <div
           v-if="feedbackDialog"
+          role="dialog"
+          aria-modal="true"
+          class="fixed inset-0 z-40 flex items-center justify-center text-gray-100"
+          @keydown.escape="feedbackDialog = false"
         >
           <div class="fixed inset-0 bg-black/50" @click="feedbackDialog = false" />
           <div class="relative bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-xl max-w-md mx-auto w-full">
@@ -931,7 +943,7 @@ subscribe('entry.created', () => {
               v-model="feedbackText"
               :placeholder="feedbackAction === 'revise' ? 'What needs to change...' : 'Reason for deferring...'"
               rows="3"
-              class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none mb-4"
+              class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none mb-4"
             />
             <div class="flex justify-end gap-2">
               <button @click="feedbackDialog = false" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
@@ -943,7 +955,7 @@ subscribe('entry.created', () => {
               >{{ feedbackAction === 'revise' ? 'Revise' : 'Defer' }}</button>
             </div>
           </div>
-        </dialog>
+        </div>
       </Teleport>
 
       <!-- Manual Done dialog (non-pipeline projects) — optional reason -->
@@ -983,10 +995,12 @@ subscribe('entry.created', () => {
 
       <!-- Execute confirmation dialog (Phase 4e) -->
       <Teleport to="body">
-        <dialog
-          :open="executeDialog"
-          class="fixed inset-0 z-40 flex items-center justify-center bg-transparent"
+        <div
           v-if="executeDialog"
+          role="dialog"
+          aria-modal="true"
+          class="fixed inset-0 z-40 flex items-center justify-center text-gray-100"
+          @keydown.escape="executeDialog = false"
         >
           <div class="fixed inset-0 bg-black/50" @click="executeDialog = false" />
           <div class="relative bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-xl max-w-lg mx-auto w-full">
@@ -1017,7 +1031,7 @@ subscribe('entry.created', () => {
                 v-model="executeFeedback"
                 placeholder="Optional guidance for the agent..."
                 rows="2"
-                class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none mb-4"
+                class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-green-500 resize-none mb-4"
               />
               <div class="flex justify-end gap-2">
                 <button @click="executeDialog = false" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
@@ -1028,7 +1042,7 @@ subscribe('entry.created', () => {
               </div>
             </template>
           </div>
-        </dialog>
+        </div>
       </Teleport>
 
       <!-- Verify dialog (Phase 4e) -->
@@ -1667,8 +1681,7 @@ subscribe('entry.created', () => {
                     v-model="newEntryCommissionModel"
                     class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
                   >
-                    <option value="claude-opus-4.6">Claude Opus 4.6 (3.0×)</option>
-                    <option value="claude-sonnet-4">Claude Sonnet 4 (1.0×)</option>
+                    <option v-for="m in modelCatalog" :key="m.id" :value="m.id">{{ m.display_name }} ({{ m.cost }}×)</option>
                   </select>
                 </div>
                 <div>

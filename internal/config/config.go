@@ -13,6 +13,9 @@ import (
 )
 
 // ModelPreset maps a friendly name to a Copilot SDK model identifier.
+// Kept for structural compatibility with Discord routing code that consumes
+// AvailableModels as a map[string]ModelPreset. The data is derived from
+// Catalog in models.go — do not edit this struct shape independently.
 type ModelPreset struct {
 	ID          string // Copilot model ID (e.g. "gpt-5-mini")
 	DisplayName string // Human-friendly name
@@ -20,35 +23,51 @@ type ModelPreset struct {
 }
 
 // AvailableModels are the presets the user can switch between via Discord.
-var AvailableModels = map[string]ModelPreset{
-	"raptor":   {ID: "raptor-mini", DisplayName: "Raptor Mini", PremiumRate: "0x"},
-	"gpt-mini": {ID: "gpt-5-mini", DisplayName: "GPT-5 Mini", PremiumRate: "0x"},
-	"haiku":    {ID: "claude-haiku-4.5", DisplayName: "Claude Haiku 4.5", PremiumRate: "0.33x"},
-	"sonnet":   {ID: "claude-sonnet-4.6", DisplayName: "Claude Sonnet 4.6", PremiumRate: "1x"},
-	"flash":    {ID: "gemini-3-flash", DisplayName: "Gemini 3 Flash", PremiumRate: "0.33x"},
-	"gpt5":     {ID: "gpt-5", DisplayName: "GPT-5", PremiumRate: "1x"},
+// Derived from Catalog (see models.go) for any model with a PresetKey.
+var AvailableModels = buildAvailableModels()
+
+func buildAvailableModels() map[string]ModelPreset {
+	m := make(map[string]ModelPreset, len(Catalog))
+	for _, model := range Catalog {
+		if model.PresetKey == "" {
+			continue
+		}
+		m[model.PresetKey] = ModelPreset{
+			ID:          model.ID,
+			DisplayName: model.DisplayName,
+			PremiumRate: formatPremiumRate(model.Cost),
+		}
+	}
+	return m
+}
+
+func formatPremiumRate(cost float64) string {
+	switch cost {
+	case 0:
+		return "0x"
+	case 1:
+		return "1x"
+	case 0.33:
+		return "0.33x"
+	}
+	// Fallback: trim trailing zeros.
+	return strconv.FormatFloat(cost, 'f', -1, 64) + "x"
 }
 
 // Pipeline model assignments — update these when new model versions are released.
 // All pipeline agents reference these constants instead of hard-coding model strings.
+// The canonical cost multipliers live in Catalog (models.go).
 const (
 	PipelineCheapModel = "claude-haiku-4.5"  // Research, review/nudge, commit messages (0.33x)
 	PipelineSmartModel = "claude-sonnet-4.6" // Plan, execute, scaffold (1.0x)
-	PipelineBigModel   = "claude-opus-4.7"   // Very capable model for large tasks (3.0x)
+	PipelineBigModel   = "claude-opus-4.7"   // Very capable model for large tasks (7.5x)
 )
-
-// modelCosts maps model names to their premium request cost multiplier.
-var modelCosts = map[string]float64{
-	PipelineCheapModel: 0.33,
-	PipelineSmartModel: 1.0,
-	PipelineBigModel:   7.5,
-}
 
 // ModelCost returns the premium request cost for a model.
 // Returns 1.0 for unknown models (conservative default).
 func ModelCost(model string) float64 {
-	if cost, ok := modelCosts[model]; ok {
-		return cost
+	if m := LookupModel(model); m != nil {
+		return m.Cost
 	}
 	return 1.0
 }

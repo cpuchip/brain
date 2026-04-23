@@ -122,8 +122,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/brain/history", s.cors(s.handleBrainHistory))
 	s.mux.HandleFunc("GET /api/brain/status", s.cors(s.handleBrainStatus))
 
-	// Model profiles
-	s.mux.HandleFunc("GET /api/models", s.cors(s.handleListModels))
+	// Model catalog (source of truth for Commission dialog dropdown etc.)
+	s.mux.HandleFunc("GET /api/models", s.cors(s.handleModelCatalog))
+	// LM Studio / classifier model profiles (legacy — moved off /api/models
+	// when the catalog took that path).
+	s.mux.HandleFunc("GET /api/models/profiles", s.cors(s.handleListModels))
 	s.mux.HandleFunc("GET /api/models/active", s.cors(s.handleActiveModel))
 
 	// Agent (Copilot SDK + MCP tools)
@@ -1087,6 +1090,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Model Profile Handlers ---
+
+// handleModelCatalog returns the authoritative model catalog plus the
+// per-stage defaults. Used by the Commission dialog to render options.
+func (s *Server) handleModelCatalog(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, map[string]any{
+		"models":         config.Catalog,
+		"stage_defaults": config.StageDefaults,
+	})
+}
 
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	type profileJSON struct {

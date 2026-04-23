@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { api, type Commission } from '../api'
+import { useModelCatalog } from '../composables/useModelCatalog'
 
 const props = defineProps<{
   open: boolean
@@ -13,10 +14,17 @@ const emit = defineEmits<{
   commissioned: [commission: Commission]
 }>()
 
+const { models, stageDefaults, load: loadCatalog } = useModelCatalog()
+onMounted(() => { loadCatalog() })
+
+function defaultModel(): string {
+  return stageDefaults.value?.commission ?? 'claude-opus-4.7'
+}
+
 const intent = ref('')
 const showAdvanced = ref(false)
 const authority = ref('advance_and_execute')
-const model = ref('claude-opus-4.6')
+const model = ref(defaultModel())
 const maxCost = ref(50)
 const submitting = ref(false)
 const error = ref('')
@@ -27,10 +35,18 @@ watch(() => props.open, (isOpen) => {
     intent.value = ''
     showAdvanced.value = false
     authority.value = 'advance_and_execute'
-    model.value = 'claude-opus-4.6'
+    model.value = defaultModel()
     maxCost.value = 50
     submitting.value = false
     error.value = ''
+  }
+})
+
+// If the catalog loads after the dialog is already open, update the default
+// so the user sees the right model rather than the fallback literal.
+watch(stageDefaults, (sd) => {
+  if (props.open && sd?.commission && !submitting.value) {
+    model.value = sd.commission
   }
 })
 
@@ -109,8 +125,7 @@ async function submit() {
               class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
               :disabled="submitting"
             >
-              <option value="claude-opus-4.6">Claude Opus 4.6 (3.0×)</option>
-              <option value="claude-sonnet-4">Claude Sonnet 4 (1.0×)</option>
+              <option v-for="m in models" :key="m.id" :value="m.id">{{ m.display_name }} ({{ m.cost }}×)</option>
             </select>
           </div>
           <div>

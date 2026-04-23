@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/store"
 )
 
@@ -67,15 +69,30 @@ func DefaultConfig() Config {
 		BackoffMax:      5 * time.Minute,
 		QuarantineAfter: 3,
 		Enabled:         true,
-		EscalationChain: []ModelTier{
-			{Model: "claude-haiku-4.5", Cost: 0.33},
-			{Model: "claude-sonnet-4.6", Cost: 1.0},
-			{Model: "claude-opus-4.7", Cost: 7.5},
-			// Beyond this: quarantine (human)
-		},
+		EscalationChain: defaultEscalationChain(),
 		MaxCostPerEntry: 20.0,
 		BreakerConfig:   DefaultBreakerConfig(),
 	}
+}
+
+// defaultEscalationChain derives the steward's escalation ladder from the
+// model catalog: every model flagged InEscalation, sorted by EscalationRank.
+// Cheapest first, most capable last. Beyond this: quarantine (human).
+func defaultEscalationChain() []ModelTier {
+	var models []config.Model
+	for _, m := range config.Catalog {
+		if m.InEscalation {
+			models = append(models, m)
+		}
+	}
+	sort.Slice(models, func(i, j int) bool {
+		return models[i].EscalationRank < models[j].EscalationRank
+	})
+	chain := make([]ModelTier, 0, len(models))
+	for _, m := range models {
+		chain = append(chain, ModelTier{Model: m.ID, Cost: m.Cost})
+	}
+	return chain
 }
 
 // Action records what the steward decided to do.
