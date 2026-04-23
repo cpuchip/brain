@@ -198,6 +198,10 @@ type Commission struct {
 	ExpiresAt string    `json:"expires_at,omitempty"` // RFC3339 or empty
 	CreatedAt time.Time `json:"created_at"`
 
+	// RevisionCount tracks how many verifier-driven revise cycles this
+	// commission has executed. Capped at 2 — third rejection surfaces.
+	RevisionCount int `json:"revision_count"`
+
 	// Loaded separately
 	Decisions []CommissionDecision `json:"decisions,omitempty"`
 }

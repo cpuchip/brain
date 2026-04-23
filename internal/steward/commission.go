@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cpuchip/brain/internal/classifier"
+	"github.com/cpuchip/brain/internal/config"
 	"github.com/cpuchip/brain/internal/store"
 )
 
@@ -358,31 +359,33 @@ func (s *Steward) runCommission(commissionID string) {
 // evaluates the gate to decide whether to advance, revise, or surface.
 func (s *Steward) commissionAdvanceStage(ctx context.Context, c *store.Commission, entry *store.Entry, runner CommissionRunner, stage string) (done bool, err error) {
 	entryID := entry.ID
+	stageModel := s.modelForStage(c, stage)
 
 	// Run the pipeline stage
 	s.store.DB().AddSessionMessage(entryID, "system",
 		fmt.Sprintf("📜 **Steward:** Running %s pass...", stage))
 	s.notify("message.new", entryID, nil)
 
-	advErr := runner.RetryAdvance(ctx, entryID, "", c.Model)
+	advErr := runner.RetryAdvance(ctx, entryID, "", stageModel)
 	if advErr != nil {
 		// Record the failure as a decision
-		s.recordDecision(c, entryID, stage, "fail", fmt.Sprintf("Stage failed: %v", advErr), 0, c.Model, "pipeline")
+		s.recordDecision(c, entryID, stage, "fail", fmt.Sprintf("Stage failed: %v", advErr), 0, stageModel, "pipeline")
 		return false, fmt.Errorf("%s stage failed: %w", stage, advErr)
 	}
 
 	// Track cost for the advance
-	stageCost := s.modelCost(c.Model)
+	stageCost := s.modelCost(stageModel)
 	s.addCommissionCost(c, stageCost)
 
 	// Evaluate the gate: should we advance, revise, or surface?
+	// Gate evaluation IS the steward's judgment call — uses commission's chosen model.
 	action, reasoning, feedback, evalErr := runner.EvaluateGate(ctx, entryID, c.Model)
 	if evalErr != nil {
 		s.recordDecision(c, entryID, stage, "fail", fmt.Sprintf("Gate evaluation failed: %v", evalErr), stageCost, c.Model, "pipeline")
 		return false, fmt.Errorf("gate evaluation failed: %w", evalErr)
 	}
 
-	// Track cost for the evaluation
+	// Track cost for the evaluation (steward judgment model)
 	evalCost := s.modelCost(c.Model)
 	s.addCommissionCost(c, evalCost)
 	totalCost := stageCost + evalCost
@@ -397,18 +400,36 @@ func (s *Steward) commissionAdvanceStage(ctx context.Context, c *store.Commissio
 		return false, nil // continue to next stage
 
 	case "revise":
+		// Loop cap — surface on third rejection.
+		if c.RevisionCount >= 2 {
+			s.commissionSurface(c, "loop_limit_exceeded",
+				fmt.Sprintf("Verifier rejected the work %d times at %s gate. Surfacing for human review.\n\nLast feedback: %s",
+					c.RevisionCount, stage, feedback))
+			s.recordDecision(c, entryID, stage, "surface",
+				fmt.Sprintf("Loop limit exceeded (%d revisions). Last feedback: %s", c.RevisionCount, feedback),
+				0, c.Model, "eval")
+			return false, nil
+		}
+
+		c.RevisionCount++
+		if err := s.store.DB().UpdateCommissionRevisionCount(c.ID, c.RevisionCount); err != nil {
+			log.Printf("steward: commission %s — failed to persist revision_count: %v", c.ID, err)
+		}
+
+		reviseModel := s.modelForStage(c, "revise")
 		s.store.DB().AddSessionMessage(entryID, "system",
-			fmt.Sprintf("📜 **Steward:** %s gate → **revise** 🔄\n\n%s\n\nFeedback: %s", stage, reasoning, feedback))
+			fmt.Sprintf("📜 **Steward:** %s gate → **revise** 🔄 (%d/2)\n\n%s\n\nFeedback: %s", stage, c.RevisionCount, reasoning, feedback))
 		s.notify("message.new", entryID, nil)
 
 		// Run the revision
-		revErr := runner.RetryAdvance(ctx, entryID, feedback, c.Model)
+		revErr := runner.RetryAdvance(ctx, entryID, feedback, reviseModel)
 		if revErr != nil {
 			return false, fmt.Errorf("revision failed: %w", revErr)
 		}
-		revCost := s.modelCost(c.Model)
+		revCost := s.modelCost(reviseModel)
 		s.addCommissionCost(c, revCost)
-		s.recordDecision(c, entryID, stage, "revise_complete", "Revision applied", revCost, c.Model, "pipeline")
+		s.recordDecision(c, entryID, stage, "revise_complete",
+			fmt.Sprintf("Revision %d/2 applied", c.RevisionCount), revCost, reviseModel, "pipeline")
 
 		// After revision, re-evaluate (the next loop iteration will pick up the new state)
 		return false, nil
@@ -425,29 +446,30 @@ func (s *Steward) commissionAdvanceStage(ctx context.Context, c *store.Commissio
 // commissionGenerateScenarios generates acceptance criteria and advances to specced.
 func (s *Steward) commissionGenerateScenarios(ctx context.Context, c *store.Commission, entry *store.Entry, runner CommissionRunner) (done bool, err error) {
 	entryID := entry.ID
+	specModel := s.modelForStage(c, "spec")
 
 	s.store.DB().AddSessionMessage(entryID, "system",
 		"📜 **Steward:** Generating acceptance criteria (scenarios)...")
 	s.notify("message.new", entryID, nil)
 
-	scenarios, genErr := runner.GenerateScenarios(ctx, entryID, c.Model)
+	scenarios, genErr := runner.GenerateScenarios(ctx, entryID, specModel)
 	if genErr != nil {
-		s.recordDecision(c, entryID, "spec", "fail", fmt.Sprintf("Scenario generation failed: %v", genErr), 0, c.Model, "pipeline")
+		s.recordDecision(c, entryID, "spec", "fail", fmt.Sprintf("Scenario generation failed: %v", genErr), 0, specModel, "pipeline")
 		return false, fmt.Errorf("scenario generation failed: %w", genErr)
 	}
 
-	scenCost := s.modelCost(c.Model)
+	scenCost := s.modelCost(specModel)
 	s.addCommissionCost(c, scenCost)
 
 	if len(scenarios) == 0 {
-		s.recordDecision(c, entryID, "spec", "surface", "No scenarios generated — surfacing for human input", scenCost, c.Model, "pipeline")
+		s.recordDecision(c, entryID, "spec", "surface", "No scenarios generated — surfacing for human input", scenCost, specModel, "pipeline")
 		s.commissionSurface(c, "no_scenarios", "The steward could not generate acceptance criteria. Please provide scenarios manually.")
 		return false, nil
 	}
 
 	s.recordDecision(c, entryID, "spec", "advance",
 		fmt.Sprintf("Generated %d scenarios and advanced to specced", len(scenarios)),
-		scenCost, c.Model, "pipeline")
+		scenCost, specModel, "pipeline")
 
 	s.store.DB().AddSessionMessage(entryID, "system",
 		fmt.Sprintf("📜 **Steward:** Generated %d scenarios → **specced** ✓", len(scenarios)))
@@ -459,21 +481,22 @@ func (s *Steward) commissionGenerateScenarios(ctx context.Context, c *store.Comm
 // commissionExecute kicks off execution for a specced entry.
 func (s *Steward) commissionExecute(ctx context.Context, c *store.Commission, entry *store.Entry, runner CommissionRunner) (done bool, err error) {
 	entryID := entry.ID
+	execModel := s.modelForStage(c, "execute")
 
 	s.store.DB().AddSessionMessage(entryID, "system",
 		"📜 **Steward:** Starting execution...")
 	s.notify("message.new", entryID, nil)
 
-	execErr := runner.RetryExecute(ctx, entryID, "", c.Model)
+	execErr := runner.RetryExecute(ctx, entryID, "", execModel)
 	if execErr != nil {
-		s.recordDecision(c, entryID, "execute", "fail", fmt.Sprintf("Execution start failed: %v", execErr), 0, c.Model, "pipeline")
+		s.recordDecision(c, entryID, "execute", "fail", fmt.Sprintf("Execution start failed: %v", execErr), 0, execModel, "pipeline")
 		return false, fmt.Errorf("execution start failed: %w", execErr)
 	}
 
-	execCost := s.modelCost(c.Model)
+	execCost := s.modelCost(execModel)
 	s.addCommissionCost(c, execCost)
 
-	s.recordDecision(c, entryID, "execute", "execute", "Execution started", execCost, c.Model, "pipeline")
+	s.recordDecision(c, entryID, "execute", "execute", "Execution started", execCost, execModel, "pipeline")
 
 	// Don't return done — the next loop iteration will see maturity="executing"
 	// and call commissionWaitForExecution
@@ -483,6 +506,7 @@ func (s *Steward) commissionExecute(ctx context.Context, c *store.Commission, en
 // commissionWaitForExecution polls until execution completes, then evaluates.
 func (s *Steward) commissionWaitForExecution(ctx context.Context, c *store.Commission, entry *store.Entry, runner CommissionRunner) (done bool, err error) {
 	entryID := entry.ID
+	verifyModel := s.modelForStage(c, "verify")
 
 	// Poll until the entry is no longer executing
 	for {
@@ -511,7 +535,7 @@ func (s *Steward) commissionWaitForExecution(ctx context.Context, c *store.Commi
 		// Maturity changed (e.g. back to planned due to failure)
 		if current.Maturity != "executing" {
 			s.recordDecision(c, entryID, "execute", "fail",
-				fmt.Sprintf("Execution ended with maturity=%s (expected executing→your_turn)", current.Maturity), 0, c.Model, "pipeline")
+				fmt.Sprintf("Execution ended with maturity=%s (expected executing→your_turn)", current.Maturity), 0, s.modelForStage(c, "execute"), "pipeline")
 			// Let the main loop re-evaluate from the new maturity
 			return false, nil
 		}
@@ -519,18 +543,18 @@ func (s *Steward) commissionWaitForExecution(ctx context.Context, c *store.Commi
 		break
 	}
 
-	// Evaluate the execution output
-	passed, reasoning, evalErr := runner.EvaluateAndVerify(ctx, entryID, c.Model)
+	// Evaluate the execution output (verify is hard-pinned to haiku)
+	passed, reasoning, evalErr := runner.EvaluateAndVerify(ctx, entryID, verifyModel)
 	if evalErr != nil {
-		s.recordDecision(c, entryID, "verify", "fail", fmt.Sprintf("Verification evaluation failed: %v", evalErr), 0, c.Model, "verify")
+		s.recordDecision(c, entryID, "verify", "fail", fmt.Sprintf("Verification evaluation failed: %v", evalErr), 0, verifyModel, "verify")
 		return false, fmt.Errorf("verification evaluation failed: %w", evalErr)
 	}
 
-	verifyCost := s.modelCost(c.Model)
+	verifyCost := s.modelCost(verifyModel)
 	s.addCommissionCost(c, verifyCost)
 
 	if passed {
-		s.recordDecision(c, entryID, "verify", "complete", reasoning, verifyCost, c.Model, "verify")
+		s.recordDecision(c, entryID, "verify", "complete", reasoning, verifyCost, verifyModel, "verify")
 		s.store.DB().AddSessionMessage(entryID, "system",
 			fmt.Sprintf("📜 **Steward:** Verification → **passed** ✓\n\n%s", reasoning))
 		s.notify("message.new", entryID, nil)
@@ -538,10 +562,25 @@ func (s *Steward) commissionWaitForExecution(ctx context.Context, c *store.Commi
 		return false, nil
 	}
 
-	// Verification failed — surface to human or retry
-	s.recordDecision(c, entryID, "verify", "revise", reasoning, verifyCost, c.Model, "verify")
+	// Verification failed — apply same loop cap as gate-revise.
+	if c.RevisionCount >= 2 {
+		s.commissionSurface(c, "loop_limit_exceeded",
+			fmt.Sprintf("Verifier rejected the execution %d times. Surfacing for human review.\n\nLast feedback: %s",
+				c.RevisionCount, reasoning))
+		s.recordDecision(c, entryID, "verify", "surface",
+			fmt.Sprintf("Loop limit exceeded (%d revisions). Last feedback: %s", c.RevisionCount, reasoning),
+			verifyCost, verifyModel, "verify")
+		return false, nil
+	}
+
+	c.RevisionCount++
+	if err := s.store.DB().UpdateCommissionRevisionCount(c.ID, c.RevisionCount); err != nil {
+		log.Printf("steward: commission %s — failed to persist revision_count: %v", c.ID, err)
+	}
+
+	s.recordDecision(c, entryID, "verify", "revise", reasoning, verifyCost, verifyModel, "verify")
 	s.store.DB().AddSessionMessage(entryID, "system",
-		fmt.Sprintf("📜 **Steward:** Verification → **failed** — returning to planned.\n\n%s", reasoning))
+		fmt.Sprintf("📜 **Steward:** Verification → **failed** (revision %d/2) — returning to planned.\n\n%s", c.RevisionCount, reasoning))
 	s.notify("message.new", entryID, nil)
 	// The EvaluateAndVerify should have already called Pipeline.Verify which
 	// returns the entry to planned. The next loop iteration will pick that up.
@@ -648,6 +687,21 @@ func (s *Steward) modelCost(model string) float64 {
 		}
 	}
 	return 1.0 // default
+}
+
+// modelForStage returns the model to use for a given pipeline stage in a
+// commission. Verify is hard-pinned to haiku regardless of catalog. Other
+// stages use config.StageDefaults. The commission's Model field is reserved
+// for steward judgment (gate evaluation) and is the fallback for unknown
+// stages only.
+func (s *Steward) modelForStage(c *store.Commission, stage string) string {
+	if stage == "verify" {
+		return "claude-haiku-4.5"
+	}
+	if m, ok := config.StageDefaults[stage]; ok {
+		return m
+	}
+	return c.Model
 }
 
 // activeCommissionCount returns the number of currently running commission goroutines.

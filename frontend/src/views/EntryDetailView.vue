@@ -806,6 +806,16 @@ subscribe('execution.started', (evt) => {
             <span>Authority: <span class="text-gray-300">{{ commission.authority === 'advance_and_execute' ? 'Advance & Execute' : 'Advance Only' }}</span></span>
             <span>Model: <span class="text-gray-300 font-mono">{{ commission.model }}</span></span>
             <span>Budget: <span class="text-gray-300">{{ commission.cost_used.toFixed(1) }} / {{ commission.max_cost }}</span></span>
+            <span
+              v-if="(commission.revision_count ?? 0) > 0"
+              :class="[
+                'px-2 py-0.5 rounded-full font-medium',
+                (commission.revision_count ?? 0) >= 2
+                  ? 'bg-red-900/60 text-red-300 border border-red-700'
+                  : 'bg-yellow-900/60 text-yellow-300 border border-yellow-700',
+              ]"
+              :title="(commission.revision_count ?? 0) >= 2 ? 'Loop cap reached — next rejection will surface' : 'Verifier requested a revision'"
+            >Revised {{ commission.revision_count }}/2</span>
           </div>
           <!-- Cost breakdown by type -->
           <div v-if="commission.decisions?.length" class="grid grid-cols-3 gap-2 text-xs">

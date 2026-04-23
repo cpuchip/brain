@@ -746,3 +746,102 @@ func TestModelCost(t *testing.T) {
 		}
 	}
 }
+
+// TestModelForStageRespectsStageDefaults verifies that a commission set to
+// opus does NOT propagate opus to every pipeline stage. Spec/execute/revise
+// fall back to their cheaper StageDefaults; verify is hard-pinned to haiku.
+// Only the steward judgment (returned via the commission's Model field) stays
+// on opus.
+func TestModelForStageRespectsStageDefaults(t *testing.T) {
+	s := New(nil, DefaultConfig())
+	c := &store.Commission{Model: "claude-opus-4.7"}
+
+	cases := map[string]string{
+		"research": "claude-haiku-4.5",
+		"plan":     "claude-opus-4.7", // plan is the one stage that legitimately wants opus
+		"spec":     "claude-sonnet-4.6",
+		"execute":  "claude-sonnet-4.6",
+		"verify":   "claude-haiku-4.5", // hard-pinned regardless of catalog
+		"revise":   "claude-sonnet-4.6",
+	}
+	for stage, want := range cases {
+		got := s.modelForStage(c, stage)
+		if got != want {
+			t.Errorf("modelForStage(opus, %q) = %q, want %q", stage, got, want)
+		}
+	}
+
+	// Unknown stage falls back to commission's judgment model.
+	if got := s.modelForStage(c, "no-such-stage"); got != "claude-opus-4.7" {
+		t.Errorf("unknown stage fallback = %q, want %q", got, "claude-opus-4.7")
+	}
+
+	// Verify pin survives even if StageDefaults["verify"] is overridden.
+	cHaiku := &store.Commission{Model: "claude-haiku-4.5"}
+	if got := s.modelForStage(cHaiku, "verify"); got != "claude-haiku-4.5" {
+		t.Errorf("verify pin (haiku commission) = %q, want %q", got, "claude-haiku-4.5")
+	}
+}
+
+// TestRunCommissionReviseLoopCap verifies that when the gate keeps returning
+// "revise", the steward surfaces after exactly 2 revisions instead of looping
+// forever. This is the cost-discipline guard: a commission cannot burn
+// unbounded credits in verify→revise.
+func TestRunCommissionReviseLoopCap(t *testing.T) {
+	st := setupTestStore(t)
+	s := New(st, DefaultConfig())
+	runner := newMockCommissionRunner(st.DB())
+
+	entryID := insertTestEntry(t, st, "Loop Cap Entry")
+
+	// Mock holds maturity at "raw" (no advanceSequence), so the steward keeps
+	// retrying the research stage. Gate keeps saying "revise".
+	runner.gateResults[entryID] = gateResult{
+		action:    "revise",
+		reasoning: "still not good enough",
+		feedback:  "tighten the argument",
+	}
+
+	s.SetCommissionRunner(runner)
+
+	c, err := s.CreateCommission(entryID, "Loop cap test", "", "", 100.0)
+	if err != nil {
+		t.Fatalf("CreateCommission: %v", err)
+	}
+
+	deadline := time.Now().Add(45 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _ := st.DB().GetCommission(c.ID)
+		if got.Status == "paused" || got.Status == "failed" || got.Status == "completed" {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	got, _ := st.DB().GetCommission(c.ID)
+	if got.Status != "paused" {
+		t.Fatalf("status = %q, want paused (loop cap should surface) — cost=%.1f, revisions=%d",
+			got.Status, got.CostUsed, got.RevisionCount)
+	}
+	if got.RevisionCount != 2 {
+		t.Errorf("revision_count = %d, want 2", got.RevisionCount)
+	}
+
+	// Count revise_complete decisions — should be exactly 2 (not 3).
+	reviseCompletes := 0
+	sawSurfaceForLoopLimit := false
+	for _, d := range got.Decisions {
+		if d.Action == "revise_complete" {
+			reviseCompletes++
+		}
+		if d.Action == "surface" {
+			sawSurfaceForLoopLimit = true
+		}
+	}
+	if reviseCompletes != 2 {
+		t.Errorf("revise_complete decisions = %d, want 2 (third revision should not have run)", reviseCompletes)
+	}
+	if !sawSurfaceForLoopLimit {
+		t.Error("expected a surface decision after loop cap was hit")
+	}
+}

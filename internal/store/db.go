@@ -2224,6 +2224,7 @@ func (d *DB) migrateCommissions() error {
 	for _, alt := range []string{
 		`ALTER TABLE commission_decisions ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE commission_decisions ADD COLUMN cost_type TEXT NOT NULL DEFAULT 'pipeline'`,
+		`ALTER TABLE commissions ADD COLUMN revision_count INTEGER NOT NULL DEFAULT 0`,
 	} {
 		// SQLite returns error if column already exists — that's fine
 		d.db.Exec(alt)
@@ -2242,18 +2243,18 @@ func (d *DB) CreateCommission(c *Commission) error {
 		c.StartedAt = now
 	}
 	_, err := d.db.Exec(`INSERT INTO commissions
-		(id, entry_id, project_id, intent, scope, authority, model, max_cost, cost_used, status, started_at, expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, entry_id, project_id, intent, scope, authority, model, max_cost, cost_used, status, started_at, expires_at, created_at, revision_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.EntryID, c.ProjectID, c.Intent, c.Scope, c.Authority, c.Model,
 		c.MaxCost, c.CostUsed, c.Status, c.StartedAt.Format(time.RFC3339),
-		c.ExpiresAt, c.CreatedAt.Format(time.RFC3339))
+		c.ExpiresAt, c.CreatedAt.Format(time.RFC3339), c.RevisionCount)
 	return err
 }
 
 // GetCommission returns a commission by ID, including its decisions.
 func (d *DB) GetCommission(id string) (*Commission, error) {
 	row := d.db.QueryRow(`SELECT id, entry_id, project_id, intent, scope, authority, model,
-		max_cost, cost_used, status, started_at, expires_at, created_at
+		max_cost, cost_used, status, started_at, expires_at, created_at, revision_count
 		FROM commissions WHERE id = ?`, id)
 	c, err := scanCommission(row)
 	if err != nil {
@@ -2269,7 +2270,7 @@ func (d *DB) GetCommission(id string) (*Commission, error) {
 // ListCommissions returns all commissions ordered by creation date (newest first).
 func (d *DB) ListCommissions() ([]*Commission, error) {
 	rows, err := d.db.Query(`SELECT id, entry_id, project_id, intent, scope, authority, model,
-		max_cost, cost_used, status, started_at, expires_at, created_at
+		max_cost, cost_used, status, started_at, expires_at, created_at, revision_count
 		FROM commissions ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -2295,6 +2296,12 @@ func (d *DB) UpdateCommissionStatus(id, status string) error {
 // UpdateCommissionCost sets the commission's cost_used.
 func (d *DB) UpdateCommissionCost(id string, cost float64) error {
 	_, err := d.db.Exec(`UPDATE commissions SET cost_used = ? WHERE id = ?`, cost, id)
+	return err
+}
+
+// UpdateCommissionRevisionCount sets the commission's revision_count.
+func (d *DB) UpdateCommissionRevisionCount(id string, count int) error {
+	_, err := d.db.Exec(`UPDATE commissions SET revision_count = ? WHERE id = ?`, count, id)
 	return err
 }
 
@@ -2333,7 +2340,7 @@ func (d *DB) ListCommissionDecisions(commissionID string) ([]CommissionDecision,
 // GetActiveCommissionForEntry returns the active commission for an entry, if any.
 func (d *DB) GetActiveCommissionForEntry(entryID string) (*Commission, error) {
 	row := d.db.QueryRow(`SELECT id, entry_id, project_id, intent, scope, authority, model,
-		max_cost, cost_used, status, started_at, expires_at, created_at
+		max_cost, cost_used, status, started_at, expires_at, created_at, revision_count
 		FROM commissions WHERE entry_id = ? AND status = 'active' LIMIT 1`, entryID)
 	return scanCommission(row)
 }
@@ -2347,7 +2354,7 @@ func scanCommission(s commissionScanner) (*Commission, error) {
 	var startedStr, createdStr string
 	var expiresAt *string
 	if err := s.Scan(&c.ID, &c.EntryID, &c.ProjectID, &c.Intent, &c.Scope, &c.Authority,
-		&c.Model, &c.MaxCost, &c.CostUsed, &c.Status, &startedStr, &expiresAt, &createdStr); err != nil {
+		&c.Model, &c.MaxCost, &c.CostUsed, &c.Status, &startedStr, &expiresAt, &createdStr, &c.RevisionCount); err != nil {
 		return nil, err
 	}
 	c.StartedAt, _ = time.Parse(time.RFC3339, startedStr)

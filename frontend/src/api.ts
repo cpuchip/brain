@@ -147,6 +147,7 @@ export interface Commission {
   started_at: string
   expires_at: string
   created_at: string
+  revision_count: number
   decisions: CommissionDecision[]
 }
 

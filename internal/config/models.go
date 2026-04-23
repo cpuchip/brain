@@ -32,7 +32,10 @@ var Catalog = []Model{
 var StageDefaults = map[string]string{
 	"research":   "claude-haiku-4.5",
 	"plan":       "claude-opus-4.7",
+	"spec":       "claude-sonnet-4.6",
 	"execute":    "claude-sonnet-4.6",
+	"verify":     "claude-haiku-4.5",
+	"revise":     "claude-sonnet-4.6",
 	"commission": "claude-opus-4.7", // user picks this from the dialog
 }
 
