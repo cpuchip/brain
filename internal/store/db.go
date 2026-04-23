@@ -749,7 +749,7 @@ func (d *DB) Reclassify(id, newCategory string) error {
 func (d *DB) ListCategory(category string) ([]*Entry, error) {
 	rows, err := d.db.Query(`
 		SELECT id, title, category, body, confidence, needs_review, source, created_at, updated_at,
-			agent_route, route_status, project_id, maturity
+			agent_route, route_status, project_id, maturity, status
 		FROM entries WHERE category = ? ORDER BY created_at DESC`, category)
 	if err != nil {
 		return nil, err
@@ -763,9 +763,9 @@ func (d *DB) ListCategory(category string) ([]*Entry, error) {
 		var createdStr, updatedStr string
 		var agentRoute, routeStatus sql.NullString
 		var projectID sql.NullInt64
-		var maturity sql.NullString
+		var maturity, status sql.NullString
 		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr,
-			&agentRoute, &routeStatus, &projectID, &maturity); err != nil {
+			&agentRoute, &routeStatus, &projectID, &maturity, &status); err != nil {
 			return nil, err
 		}
 		e.NeedsReview = needsReview != 0
@@ -780,6 +780,7 @@ func (d *DB) ListCategory(category string) ([]*Entry, error) {
 		if maturity.Valid {
 			e.Maturity = maturity.String
 		}
+		e.Status = status.String
 		entries = append(entries, e)
 	}
 	return entries, nil
@@ -789,7 +790,7 @@ func (d *DB) ListCategory(category string) ([]*Entry, error) {
 func (d *DB) ListAll(limit, offset int) ([]*Entry, error) {
 	rows, err := d.db.Query(`
 		SELECT id, title, category, body, confidence, needs_review, source, created_at, updated_at, project_id,
-			agent_route, route_status, maturity
+			agent_route, route_status, maturity, status
 		FROM entries ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
@@ -802,9 +803,9 @@ func (d *DB) ListAll(limit, offset int) ([]*Entry, error) {
 		var needsReview int
 		var createdStr, updatedStr string
 		var projectID sql.NullInt64
-		var agentRoute, routeStatus, maturity sql.NullString
+		var agentRoute, routeStatus, maturity, status sql.NullString
 		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source, &createdStr, &updatedStr, &projectID,
-			&agentRoute, &routeStatus, &maturity); err != nil {
+			&agentRoute, &routeStatus, &maturity, &status); err != nil {
 			return nil, err
 		}
 		e.NeedsReview = needsReview != 0
@@ -823,6 +824,7 @@ func (d *DB) ListAll(limit, offset int) ([]*Entry, error) {
 		if maturity.Valid {
 			e.Maturity = maturity.String
 		}
+		e.Status = status.String
 		entries = append(entries, e)
 	}
 	return entries, nil
@@ -1520,7 +1522,7 @@ func (d *DB) GetProjectStats(projectID int) (*ProjectStats, error) {
 func (d *DB) ListEntriesByProject(projectID int) ([]*Entry, error) {
 	rows, err := d.db.Query(`
 		SELECT id, title, category, body, confidence, needs_review, source, created_at, updated_at,
-			agent_route, route_status, maturity, project_id, premium_requests_used
+			agent_route, route_status, maturity, project_id, premium_requests_used, status
 		FROM entries WHERE project_id = ? ORDER BY created_at DESC`, projectID)
 	if err != nil {
 		return nil, err
@@ -1532,11 +1534,11 @@ func (d *DB) ListEntriesByProject(projectID int) ([]*Entry, error) {
 		e := &Entry{}
 		var needsReview int
 		var createdStr, updatedStr string
-		var agentRoute, routeStatus, maturity sql.NullString
+		var agentRoute, routeStatus, maturity, status sql.NullString
 		var pid sql.NullInt64
 		var premiumCost sql.NullFloat64
 		if err := rows.Scan(&e.ID, &e.Title, &e.Category, &e.Body, &e.Confidence, &needsReview, &e.Source,
-			&createdStr, &updatedStr, &agentRoute, &routeStatus, &maturity, &pid, &premiumCost); err != nil {
+			&createdStr, &updatedStr, &agentRoute, &routeStatus, &maturity, &pid, &premiumCost, &status); err != nil {
 			return nil, err
 		}
 		e.NeedsReview = needsReview != 0
@@ -1553,6 +1555,7 @@ func (d *DB) ListEntriesByProject(projectID int) ([]*Entry, error) {
 			e.ProjectID = &v
 		}
 		e.PremiumRequestsUsed = premiumCost.Float64
+		e.Status = status.String
 		entries = append(entries, e)
 	}
 	return entries, nil

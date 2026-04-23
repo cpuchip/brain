@@ -44,3 +44,7 @@ vec/
 
 # Trash (files pending manual deletion)
 .trash/
+
+# Playwright test artifacts
+.playwright/
+.playwright-cli/
