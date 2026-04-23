@@ -149,17 +149,34 @@ const boardColumns = computed(() => {
   const working: Entry[] = []
   const done: Entry[] = []
 
+  // Non-pipeline projects have no `maturity` value (it's a pipeline field),
+  // so column placement is driven entirely by `status`.
+  const isManual = project.value?.pipeline_enabled === false
+
   for (const e of entries.value) {
     // Park someday/archived and stale-done unless toggle is on.
     const isParked = e.status === 'someday' || e.status === 'archived' || isStaleDone(e)
     if (isParked && !showParkedOnBoard.value) continue
 
-    if (e.notebook || !e.maturity || e.maturity === 'raw') {
-      inbox.push(e)
-    } else if (e.maturity === 'verified' || e.maturity === 'complete') {
-      done.push(e)
+    if (isManual) {
+      // Status-driven columns for manual projects.
+      if (e.status === 'done') {
+        done.push(e)
+      } else if (e.status === 'working') {
+        working.push(e)
+      } else {
+        // '', 'active', 'waiting', 'roadmap' all land in Inbox for manual flow.
+        inbox.push(e)
+      }
     } else {
-      working.push(e)
+      // Pipeline-driven columns (existing behavior).
+      if (e.notebook || !e.maturity || e.maturity === 'raw') {
+        inbox.push(e)
+      } else if (e.maturity === 'verified' || e.maturity === 'complete') {
+        done.push(e)
+      } else {
+        working.push(e)
+      }
     }
   }
 
@@ -169,6 +186,8 @@ const boardColumns = computed(() => {
     { key: 'done', label: 'Done', entries: done, color: 'bg-green-900 text-green-300', borderColor: 'border-green-800' },
   ]
 })
+
+const isManualProject = computed(() => project.value?.pipeline_enabled === false)
 
 const totalPremiumRequests = computed(() => {
   return entries.value.reduce((sum, e) => sum + (e.premium_requests_used || 0), 0)
@@ -512,6 +531,107 @@ async function uncompleteEntry(entryId: string) {
   }
 }
 
+// --- Manual (non-pipeline) status transitions ----------------------------
+// Used by the alternate button row on non-pipeline projects (Notebook etc.).
+// All routes go through PUT /api/entries/{id} with a partial { status } body
+// and rely on the server's existing read-modify-write handler.
+const transitioningEntry = ref<string | null>(null)
+async function setManualStatus(entryId: string, newStatus: string, verb: string) {
+  if (transitioningEntry.value) return
+  transitioningEntry.value = entryId
+  try {
+    await api.updateEntry(entryId, { status: newStatus } as any)
+    showToast(verb, 'success')
+    await load()
+    if (selectedEntry.value?.id === entryId) {
+      const updated = entries.value.find(e => e.id === entryId)
+      if (updated) selectedEntry.value = updated
+    }
+  } catch (e: any) {
+    showToast(e.message || `${verb} failed`, 'error')
+  } finally {
+    transitioningEntry.value = null
+  }
+}
+async function manualArchive(entryId: string) {
+  if (!confirm('Archive this entry? Archived entries are hidden from the board by default.')) return
+  await setManualStatus(entryId, 'archived', 'Archived')
+}
+
+// --- Drag & drop between board columns (manual projects only) -----------
+// Native HTML5 drag — no library dependency. Drop on a column sets the
+// status to that column's anchor value and re-derives the columns.
+const draggingEntryId = ref<string | null>(null)
+const dragOverColumn = ref<string | null>(null)
+function onDragStart(entryId: string, event: DragEvent) {
+  if (!isManualProject.value) return
+  draggingEntryId.value = entryId
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', entryId)
+  }
+}
+async function handleColumnDrop(columnKey: string) {
+  const id = draggingEntryId.value
+  draggingEntryId.value = null
+  dragOverColumn.value = null
+  if (!id) return
+  const entry = entries.value.find(e => e.id === id)
+  if (!entry) return
+  // Map column → status. 'inbox' clears working/done back to 'active'.
+  const targetStatus = columnKey === 'done'
+    ? 'done'
+    : columnKey === 'working'
+      ? 'working'
+      : 'active'
+  if ((entry.status || '') === targetStatus) return
+  // Done via DnD skips the reason dialog (drop is the fast path; the button
+  // is the deliberate path that prompts for a closing note).
+  await setManualStatus(id, targetStatus,
+    targetStatus === 'done' ? 'Done' : targetStatus === 'working' ? 'Started' : 'Reopened')
+}
+
+// Done dialog with optional reason. Skipping the reason is the fast path —
+// one click → Save closes the entry; typing first appends a closing note.
+const doneDialog = ref(false)
+const doneEntryId = ref('')
+const doneEntryTitle = ref('')
+const doneReason = ref('')
+function openDoneDialog(entryId: string, title: string) {
+  doneEntryId.value = entryId
+  doneEntryTitle.value = title
+  doneReason.value = ''
+  doneDialog.value = true
+}
+async function submitDone() {
+  if (!doneEntryId.value || transitioningEntry.value) return
+  const id = doneEntryId.value
+  const reason = doneReason.value.trim()
+  doneDialog.value = false
+  transitioningEntry.value = id
+  try {
+    if (reason) {
+      // Append a closing note to the entry body before flipping status.
+      const entry = entries.value.find(e => e.id === id)
+      const date = new Date().toISOString().slice(0, 10)
+      const newBody = `${entry?.body || ''}\n\n---\n_Closed ${date}: ${reason}_`
+      await api.updateEntry(id, { body: newBody, status: 'done' } as any)
+    } else {
+      await api.updateEntry(id, { status: 'done' } as any)
+    }
+    showToast('Done', 'success')
+    await load()
+    if (selectedEntry.value?.id === id) {
+      const updated = entries.value.find(e => e.id === id)
+      if (updated) selectedEntry.value = updated
+    }
+  } catch (e: any) {
+    showToast(e.message || 'Done failed', 'error')
+  } finally {
+    transitioningEntry.value = null
+  }
+}
+
 function openFeedbackDialog(entryId: string, action: 'revise' | 'defer') {
   feedbackEntryId.value = entryId
   feedbackAction.value = action
@@ -826,6 +946,41 @@ subscribe('entry.created', () => {
         </dialog>
       </Teleport>
 
+      <!-- Manual Done dialog (non-pipeline projects) — optional reason -->
+      <Teleport to="body">
+        <div
+          v-if="doneDialog"
+          role="dialog"
+          aria-modal="true"
+          class="fixed inset-0 z-40 flex items-center justify-center text-gray-100"
+          @keydown.escape="doneDialog = false"
+        >
+          <div class="fixed inset-0 bg-black/50" @click="doneDialog = false" />
+          <div class="relative bg-gray-900 border border-gray-700 rounded-xl p-6 shadow-xl max-w-lg w-full">
+            <h3 class="font-semibold mb-1 text-green-400">✓ Mark done</h3>
+            <p class="text-sm text-gray-500 mb-4 truncate">{{ doneEntryTitle }}</p>
+
+            <label class="block text-sm text-gray-400 mb-1">Optional — what closed it out?</label>
+            <textarea
+              v-model="doneReason"
+              rows="4"
+              class="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-green-500 resize-none mb-4"
+              placeholder="e.g. ordered Tuesday, picked up at lunch"
+              @keydown.ctrl.enter.prevent="submitDone"
+              @keydown.meta.enter.prevent="submitDone"
+            />
+
+            <div class="flex justify-end gap-2">
+              <button @click="doneDialog = false" class="px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
+              <button
+                @click="submitDone"
+                class="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-500 transition-colors"
+              >{{ doneReason.trim() ? 'Save & Done' : 'Done' }}</button>
+            </div>
+          </div>
+        </div>
+      </Teleport>
+
       <!-- Execute confirmation dialog (Phase 4e) -->
       <Teleport to="body">
         <dialog
@@ -989,9 +1144,12 @@ subscribe('entry.created', () => {
           v-for="col in boardColumns"
           :key="col.key"
           class="min-w-0"
+          @dragover.prevent="isManualProject ? (dragOverColumn = col.key) : null"
+          @dragleave="dragOverColumn === col.key ? (dragOverColumn = null) : null"
+          @drop.prevent="isManualProject && handleColumnDrop(col.key)"
         >
           <!-- Column header -->
-          <div :class="['flex items-center justify-between px-3 py-2 rounded-t-lg border-b-2', col.borderColor]">
+          <div :class="['flex items-center justify-between px-3 py-2 rounded-t-lg border-b-2', col.borderColor, dragOverColumn === col.key ? 'bg-gray-800/50' : '']">
             <div class="flex items-center gap-2">
               <span :class="['px-2 py-0.5 text-xs rounded-full font-medium', col.color]">
                 {{ col.label }}
@@ -1007,15 +1165,19 @@ subscribe('entry.created', () => {
           </div>
 
           <!-- Column body -->
-          <div class="space-y-2 mt-2 min-h-[100px]">
+          <div :class="['space-y-2 mt-2 min-h-[100px] rounded-b-lg transition-colors', dragOverColumn === col.key && isManualProject ? 'bg-gray-800/30 outline outline-1 outline-dashed outline-gray-700' : '']">
             <div
               v-for="entry in col.entries"
               :key="entry.id"
+              :draggable="isManualProject"
+              @dragstart="onDragStart(entry.id, $event)"
+              @dragend="dragOverColumn = null; draggingEntryId = null"
               @click="openPanel(entry)"
               :class="[
                 'bg-gray-900 border rounded-lg px-3 py-2.5 cursor-pointer hover:border-gray-600 transition-colors border-l-3',
                 routeStatusIndicator(entry)?.class || 'border-gray-800 border-l-gray-800',
-                selectedEntry?.id === entry.id ? 'ring-1 ring-sky-500' : ''
+                selectedEntry?.id === entry.id ? 'ring-1 ring-sky-500' : '',
+                draggingEntryId === entry.id ? 'opacity-50' : ''
               ]"
             >
               <div class="font-medium text-gray-200 text-sm truncate">{{ entry.title }}</div>
@@ -1052,7 +1214,43 @@ subscribe('entry.created', () => {
                 <span>📜 Steward: {{ entryCommission(entry.id)!.cost_used.toFixed(1) }}/{{ entryCommission(entry.id)!.max_cost }}</span>
               </div>
 
-              <!-- Pipeline action buttons (hidden when commissioned) -->
+              <!-- Manual action buttons (non-pipeline projects: Notebook, etc.) -->
+              <div v-else-if="isManualProject" class="flex gap-1.5 mt-2 pt-2 border-t border-gray-800 flex-wrap" @click.stop>
+                <button
+                  v-if="entry.status !== 'working' && entry.status !== 'done'"
+                  @click.stop="setManualStatus(entry.id, 'working', 'Started')"
+                  :disabled="transitioningEntry === entry.id"
+                  class="px-2 py-1 text-xs bg-blue-900/50 text-blue-300 rounded hover:bg-blue-800 transition-colors disabled:opacity-40"
+                  title="Move to Working"
+                >▶ Start</button>
+                <button
+                  v-if="entry.status !== 'done'"
+                  @click.stop="openDoneDialog(entry.id, entry.title)"
+                  :disabled="transitioningEntry === entry.id"
+                  class="px-2 py-1 text-xs bg-green-900/50 text-green-300 rounded hover:bg-green-800 transition-colors disabled:opacity-40"
+                >✓ Done</button>
+                <button
+                  v-if="entry.status === 'done'"
+                  @click.stop="setManualStatus(entry.id, 'active', 'Reopened')"
+                  :disabled="transitioningEntry === entry.id"
+                  class="px-2 py-1 text-xs bg-gray-800 text-gray-400 rounded hover:bg-gray-700 transition-colors disabled:opacity-40"
+                >↩ Reopen</button>
+                <button
+                  v-if="entry.status !== 'someday' && entry.status !== 'archived'"
+                  @click.stop="setManualStatus(entry.id, 'someday', 'Parked')"
+                  :disabled="transitioningEntry === entry.id"
+                  class="px-2 py-1 text-xs bg-amber-900/50 text-amber-300 rounded hover:bg-amber-800 transition-colors disabled:opacity-40"
+                  title="Move to Someday/backlog"
+                >⏸ Someday</button>
+                <button
+                  v-if="entry.status !== 'archived'"
+                  @click.stop="manualArchive(entry.id)"
+                  :disabled="transitioningEntry === entry.id"
+                  class="px-2 py-1 text-xs bg-stone-800 text-stone-400 rounded hover:bg-stone-700 transition-colors disabled:opacity-40"
+                >🗄 Archive</button>
+              </div>
+
+              <!-- Pipeline action buttons (hidden when commissioned or on manual projects) -->
               <div v-else-if="canAdvance(entry) || canRevise(entry) || canExecute(entry) || canVerify(entry) || canCancel(entry) || canComplete(entry) || canCommission(entry) || entry.maturity === 'complete'" class="flex gap-1.5 mt-2 pt-2 border-t border-gray-800 flex-wrap" @click.stop>
                 <button
                   v-if="canCommission(entry)"
@@ -1153,6 +1351,45 @@ subscribe('entry.created', () => {
                   :title="entryCommission(entry.id)!.intent"
                 >📜</span>
                 <template v-if="!entryCommission(entry.id)">
+                <!-- Manual buttons for non-pipeline projects (icon-only in list view) -->
+                <template v-if="isManualProject">
+                  <button
+                    v-if="entry.status !== 'working' && entry.status !== 'done'"
+                    @click="setManualStatus(entry.id, 'working', 'Started')"
+                    :disabled="transitioningEntry === entry.id"
+                    class="px-2 py-1 text-xs bg-blue-900/50 text-blue-300 rounded hover:bg-blue-800 transition-colors disabled:opacity-40"
+                    title="Start (move to Working)"
+                  >▶</button>
+                  <button
+                    v-if="entry.status !== 'done'"
+                    @click="openDoneDialog(entry.id, entry.title)"
+                    :disabled="transitioningEntry === entry.id"
+                    class="px-2 py-1 text-xs bg-green-900/50 text-green-300 rounded hover:bg-green-800 transition-colors disabled:opacity-40"
+                    title="Mark done"
+                  >✓</button>
+                  <button
+                    v-if="entry.status === 'done'"
+                    @click="setManualStatus(entry.id, 'active', 'Reopened')"
+                    :disabled="transitioningEntry === entry.id"
+                    class="px-2 py-1 text-xs bg-gray-800 text-gray-400 rounded hover:bg-gray-700 transition-colors disabled:opacity-40"
+                    title="Reopen"
+                  >↩</button>
+                  <button
+                    v-if="entry.status !== 'someday' && entry.status !== 'archived'"
+                    @click="setManualStatus(entry.id, 'someday', 'Parked')"
+                    :disabled="transitioningEntry === entry.id"
+                    class="px-2 py-1 text-xs bg-amber-900/50 text-amber-300 rounded hover:bg-amber-800 transition-colors disabled:opacity-40"
+                    title="Park to Someday"
+                  >⏸</button>
+                  <button
+                    v-if="entry.status !== 'archived'"
+                    @click="manualArchive(entry.id)"
+                    :disabled="transitioningEntry === entry.id"
+                    class="px-2 py-1 text-xs bg-stone-800 text-stone-400 rounded hover:bg-stone-700 transition-colors disabled:opacity-40"
+                    title="Archive"
+                  >🗄</button>
+                </template>
+                <template v-else>
                 <button
                   v-if="canCommission(entry)"
                   @click="openCommissionDialog(entry.id, entry.title)"
@@ -1205,6 +1442,7 @@ subscribe('entry.created', () => {
                   class="px-2 py-1 text-xs bg-amber-900/50 text-amber-300 rounded hover:bg-amber-800 transition-colors disabled:opacity-40"
                   title="Revise"
                 >↻</button>
+                </template>
                 </template>
                 <button
                   @click.prevent="removeEntry(entry.id)"

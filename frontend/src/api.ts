@@ -252,7 +252,7 @@ export const api = {
     return request<Entry>(`/entries/${encodeURIComponent(id)}`)
   },
 
-  createEntry(data: { title: string; body: string; category?: string; tags?: string[]; source?: string; notebook?: boolean }) {
+  createEntry(data: { title: string; body: string; category?: string; tags?: string[]; source?: string; notebook?: boolean; project_id?: number }) {
     return request<Entry>('/entries', {
       method: 'POST',
       body: JSON.stringify(data),

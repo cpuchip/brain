@@ -260,6 +260,7 @@ async function toggleDone() {
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: '', label: '(none)' },
   { value: 'active', label: 'Active' },
+  { value: 'working', label: 'Working' },
   { value: 'waiting', label: 'Waiting' },
   { value: 'roadmap', label: 'Roadmap' },
   { value: 'someday', label: 'Someday' },

@@ -294,12 +294,13 @@ func (s *Server) handleGetEntry(w http.ResponseWriter, r *http.Request) {
 }
 
 type createEntryRequest struct {
-	Title    string   `json:"title"`
-	Category string   `json:"category"`
-	Body     string   `json:"body"`
-	Tags     []string `json:"tags"`
-	Source   string   `json:"source"`
-	Notebook bool     `json:"notebook"`
+	Title     string   `json:"title"`
+	Category  string   `json:"category"`
+	Body      string   `json:"body"`
+	Tags      []string `json:"tags"`
+	Source    string   `json:"source"`
+	Notebook  bool     `json:"notebook"`
+	ProjectID *int     `json:"project_id,omitempty"`
 }
 
 func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
@@ -321,11 +322,12 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entry := &store.Entry{
-		Title:    req.Title,
-		Category: req.Category,
-		Body:     req.Body,
-		Tags:     req.Tags,
-		Source:   req.Source,
+		Title:     req.Title,
+		Category:  req.Category,
+		Body:      req.Body,
+		Tags:      req.Tags,
+		Source:    req.Source,
+		ProjectID: req.ProjectID,
 	}
 	// Preserve raw input text — never modified by classification.
 	if entry.Body != "" {
@@ -340,6 +342,14 @@ func (s *Server) handleCreateEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry.ID = id
+
+	// Persist project assignment if provided. InsertEntry doesn't write
+	// project_id — it lives on a separate UPDATE path (same as PUT does).
+	if req.ProjectID != nil {
+		if err := s.store.DB().SetEntryProject(id, req.ProjectID); err != nil {
+			log.Printf("warning: failed to set project_id=%d for %s: %v", *req.ProjectID, id, err)
+		}
+	}
 
 	// Set notebook flag if requested
 	if req.Notebook {

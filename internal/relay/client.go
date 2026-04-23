@@ -732,10 +732,27 @@ func (c *Client) handleEntryCreate(ws *websocket.Conn, data []byte) {
 	// Push confirmed entry back to ibeco.me cache
 	c.sendEntryCreated(ws, id)
 
-	// Auto-classify inbox entries that arrived without AI classification
-	if entry.Category == "inbox" && c.classify != nil {
+	// Auto-classify inbox entries that arrived without AI classification.
+	// Skip when entry is attached to a non-pipeline project (e.g. Notebook):
+	// the user explicitly chose that project, so the AI shouldn't move or
+	// recategorize it.
+	if entry.Category == "inbox" && c.classify != nil && !c.entryInNonPipelineProject(entry) {
 		go c.autoClassifyEntry(ws, id, entry)
 	}
+}
+
+// entryInNonPipelineProject returns true if the entry is attached to a project
+// whose pipeline_enabled flag is false. Errors and missing projects fall back
+// to false (allow classify) so a flaky DB query never silently disables AI.
+func (c *Client) entryInNonPipelineProject(entry *store.Entry) bool {
+	if entry == nil || entry.ProjectID == nil {
+		return false
+	}
+	proj, err := c.store.DB().GetProject(*entry.ProjectID)
+	if err != nil || proj == nil {
+		return false
+	}
+	return !proj.PipelineEnabled
 }
 
 // autoClassifyEntry runs the AI classifier on a newly created entry and syncs results back.
