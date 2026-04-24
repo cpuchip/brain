@@ -30,7 +30,7 @@ var Catalog = []Model{
 // Exposed via /api/models so the UI can pick sensible defaults without
 // hardcoding model strings.
 var StageDefaults = map[string]string{
-	"research":   "claude-haiku-4.5",
+	"research":   "claude-sonnet-4.6",
 	"plan":       "claude-opus-4.7",
 	"spec":       "claude-sonnet-4.6",
 	"execute":    "claude-sonnet-4.6",

@@ -221,8 +221,8 @@ func TestDefaultModelForStage(t *testing.T) {
 		{"specced maturity", "advance", "specced", "claude-sonnet-4.6"},
 		{"researched maturity", "advance", "researched", "claude-opus-4.7"},
 		{"planned maturity", "advance", "planned", "claude-opus-4.7"},
-		{"raw maturity", "advance", "raw", "claude-haiku-4.5"},
-		{"empty maturity", "advance", "", "claude-haiku-4.5"},
+		{"raw maturity", "advance", "raw", "claude-sonnet-4.6"},
+		{"empty maturity", "advance", "", "claude-sonnet-4.6"},
 	}
 
 	for _, tt := range tests {
@@ -247,52 +247,52 @@ func TestPickModel(t *testing.T) {
 		wantModel     string
 		wantEscalated bool
 	}{
-		// Transient: never escalate, use default
+		// Transient: never escalate, use default (research now defaults to sonnet)
 		{
 			"transient first failure research",
 			"advance", "raw", 1, FailureTransient,
-			"claude-haiku-4.5", false,
+			"claude-sonnet-4.6", false,
 		},
 		{
 			"transient second failure research",
 			"advance", "raw", 2, FailureTransient,
-			"claude-haiku-4.5", false,
+			"claude-sonnet-4.6", false,
 		},
 
 		// Model limit: always escalate
 		{
-			"model_limit first failure → escalate haiku to sonnet",
+			"model_limit first failure → escalate sonnet to opus",
 			"advance", "raw", 1, FailureModelLimit,
-			"claude-sonnet-4.6", true, // model can't handle it, go up one tier
+			"claude-opus-4.7", true, // model can't handle it, go up one tier
 		},
 
 		// Timeout: escalate on 2nd+
 		{
 			"timeout first failure → no escalation",
 			"advance", "raw", 1, FailureTimeout,
-			"claude-haiku-4.5", false,
+			"claude-sonnet-4.6", false,
 		},
 		{
-			"timeout second failure → escalate haiku to sonnet",
+			"timeout second failure → escalate sonnet to opus",
 			"advance", "raw", 2, FailureTimeout,
-			"claude-sonnet-4.6", true,
+			"claude-opus-4.7", true,
 		},
 		{
-			"timeout third failure → escalate haiku to opus",
+			"timeout third failure → chain exhausted from sonnet",
 			"advance", "raw", 3, FailureTimeout,
-			"claude-opus-4.7", true,
+			"", false, // sonnet(1) + 2 escalation steps = idx 3, beyond chain
 		},
 
 		// Tool error: escalate on 2nd+
 		{
 			"tool_error first failure → no escalation",
 			"advance", "raw", 1, FailureToolError,
-			"claude-haiku-4.5", false,
+			"claude-sonnet-4.6", false,
 		},
 		{
 			"tool_error second failure → escalate",
 			"advance", "raw", 2, FailureToolError,
-			"claude-sonnet-4.6", true,
+			"claude-opus-4.7", true,
 		},
 
 		// Execute stage (default: sonnet)
@@ -336,25 +336,25 @@ func TestPickModelModelLimitAlwaysEscalates(t *testing.T) {
 	s := New(nil, DefaultConfig())
 
 	// model_limit with failureCount=1: shouldEscalate=true, nextIdx=defaultIdx+1
-	// haiku(0) → sonnet(1), always escalated even on first failure
+	// Research default is now sonnet(1) → opus(2), always escalated even on first failure
 	entry := &store.Entry{ID: "test", Maturity: "raw", FailureCount: 1}
 	model, escalated := s.pickModel(entry, "advance", FailureModelLimit)
-	if model != "claude-sonnet-4.6" || !escalated {
-		t.Errorf("model_limit first failure: got (%q, %v), want (sonnet, true)", model, escalated)
+	if model != "claude-opus-4.7" || !escalated {
+		t.Errorf("model_limit first failure: got (%q, %v), want (opus, true)", model, escalated)
 	}
 
-	// failureCount=2 → escalate further: haiku(0) + escalationSteps(1) → sonnet(1)
+	// failureCount=2 → escalate further: sonnet(1) + escalationSteps(1) → opus(2)
 	entry.FailureCount = 2
 	model, escalated = s.pickModel(entry, "advance", FailureModelLimit)
-	if model != "claude-sonnet-4.6" || !escalated {
-		t.Errorf("model_limit second failure: got (%q, %v), want (sonnet, true)", model, escalated)
+	if model != "claude-opus-4.7" || !escalated {
+		t.Errorf("model_limit second failure: got (%q, %v), want (opus, true)", model, escalated)
 	}
 
-	// failureCount=3 → escalate further: haiku(0) + escalationSteps(2) → opus(2)
+	// failureCount=3 → escalate further: sonnet(1) + escalationSteps(2) → idx 3, exhausted
 	entry.FailureCount = 3
 	model, escalated = s.pickModel(entry, "advance", FailureModelLimit)
-	if model != "claude-opus-4.7" || !escalated {
-		t.Errorf("model_limit third failure: got (%q, %v), want (opus, true)", model, escalated)
+	if model != "" {
+		t.Errorf("model_limit third failure: got model %q, want empty (chain exhausted from sonnet)", model)
 	}
 
 	// failureCount=4 → chain exhausted

@@ -757,7 +757,7 @@ func TestModelForStageRespectsStageDefaults(t *testing.T) {
 	c := &store.Commission{Model: "claude-opus-4.7"}
 
 	cases := map[string]string{
-		"research": "claude-haiku-4.5",
+		"research": "claude-sonnet-4.6",
 		"plan":     "claude-opus-4.7", // plan is the one stage that legitimately wants opus
 		"spec":     "claude-sonnet-4.6",
 		"execute":  "claude-sonnet-4.6",

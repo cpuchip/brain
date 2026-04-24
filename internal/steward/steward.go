@@ -571,7 +571,7 @@ func (s *Steward) defaultModelForStage(stage, maturity string) string {
 	case maturity == "researched" || maturity == "planned":
 		return "claude-opus-4.7" // Plan default
 	default:
-		return "claude-haiku-4.5" // Research default
+		return "claude-sonnet-4.6" // Research default
 	}
 }
 
